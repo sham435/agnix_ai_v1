@@ -85,15 +85,15 @@
         <svg class="size-[18px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="8" r="4"/><path d="M20 21a8 8 0 1 0-16 0"/></svg>
         <span class="sidebar-label">Settings</span>
       <% end %>
-      <%= button_to logout_path, method: :delete, class: "flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-[14px] text-zinc-400 hover:bg-white/[0.04] hover:text-white transition" do %>
+      <%= button_to logout_path, method: :delete, form: { data: { turbo: false } }, class: "flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-[14px] text-zinc-400 hover:bg-white/[0.04] hover:text-white transition" do %>
         <svg class="size-[18px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
         <span class="sidebar-label">Logout</span>
       <% end %>
 
       <!-- User -->
       <div class="flex items-center gap-3 rounded-2xl bg-white/[0.03] p-2.5 mt-2">
-        <div class="size-9 rounded-full bg-gradient-to-br from-orange-400 to-orange-600 grid place-items-center text-sm font-bold text-black">
-          <%= current_user.name.to_s.first.upcase %>
+        <div class="shrink-0">
+          <%= render "shared/user_menu" %>
         </div>
         <div class="min-w-0 flex-1">
           <div class="text-[13px] font-medium text-white truncate"><%= current_user.name %></div>

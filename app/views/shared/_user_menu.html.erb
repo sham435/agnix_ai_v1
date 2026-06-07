@@ -1,0 +1,35 @@
+<div class="relative" data-controller="dropdown">
+  <button type="button"
+          data-dropdown-target="button"
+          class="size-8 rounded-full bg-gradient-to-br from-orange-400 to-orange-600 grid place-items-center text-xs font-bold text-black focus:outline-none focus:ring-2 focus:ring-orange-500/50"
+          data-action="click->dropdown#toggle"
+          aria-haspopup="true"
+          aria-expanded="false"
+          title="Open user menu (g a)">
+    <%= current_user.name.first.upcase %>
+  </button>
+
+  <div data-dropdown-target="menu"
+       class="hidden absolute right-0 mt-2 w-56 rounded-xl border border-white/[0.08] bg-zinc-900 shadow-xl py-1 z-50">
+    <div class="px-3 py-2 border-b border-white/[0.06]">
+      <div class="text-[13px] font-medium text-zinc-100"><%= current_user.name %></div>
+      <div class="text-[12px] text-zinc-500 truncate"><%= current_user.email %></div>
+    </div>
+
+    <%= link_to "Account settings", settings_profile_path,
+          class: "block px-3 py-2 text-[13px] text-zinc-300 hover:bg-white/[0.04]" %>
+
+    <div class="border-t border-white/[0.06] my-1"></div>
+
+    <button type="button"
+            class="w-full text-left px-3 py-2 text-[13px] text-red-400 hover:bg-white/[0.04]"
+            data-action="click->dropdown#openLogoutModal">
+      Log out
+    </button>
+
+    <div class="px-3 py-2 border-t border-white/[0.06] text-[11px] text-zinc-600 leading-relaxed">
+      <div>Press <kbd class="px-1 py-0.5 rounded bg-white/[0.06] border border-white/[0.08]">g</kbd> then <kbd class="px-1 py-0.5 rounded bg-white/[0.06] border border-white/[0.08]">a</kbd> to open</div>
+      <div>Press <kbd class="px-1 py-0.5 rounded bg-white/[0.06] border border-white/[0.08]">Shift</kbd>+<kbd class="px-1 py-0.5 rounded bg-white/[0.06] border border-white/[0.08]">L</kbd> to log out</div>
+    </div>
+  </div>
+</div>

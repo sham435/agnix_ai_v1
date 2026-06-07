@@ -1,0 +1,55 @@
+<div id="agent-run-<%= run.id %>" class="rounded-xl border border-emerald-500/20 bg-emerald-500/5 p-4 space-y-3">
+  <div class="flex items-center gap-2">
+    <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium border <%= mode_badge_classes(run.mode) %>">
+      <%= run.mode.humanize %>
+    </span>
+    <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium border <%= status_badge_classes("awaiting_confirmation") %>">
+      <span class="size-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+      Awaiting confirmation
+    </span>
+  </div>
+  <div class="flex items-center gap-2 text-sm text-emerald-300">
+    <svg class="size-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      <path d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+    </svg>
+    Step completed — continue to next step?
+  </div>
+
+  <div class="space-y-1">
+    <% run.todos.order(:position).each do |todo| %>
+      <div class="flex items-center gap-2 text-sm py-1">
+        <span class="size-4 grid place-items-center shrink-0">
+          <% if todo.status == "done" %>
+            <svg class="size-4 text-emerald-400" viewBox="0 0 24 24"><path fill="currentColor" d="M9 16.2l-3.5-3.5 1.4-1.4L9 13.4l7.1-7.1 1.4 1.4z"/></svg>
+          <% elsif todo.status == "in_progress" %>
+            <svg class="size-4 text-amber-400 animate-spin" viewBox="0 0 24 24">
+              <circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="2" fill="none" opacity="0.3"/>
+              <path d="M12 2a10 10 0 0 1 10 10" stroke="currentColor" stroke-width="2" fill="none"/>
+            </svg>
+          <% elsif todo.status == "failed" %>
+            <svg class="size-4 text-red-400" viewBox="0 0 24 24"><path fill="currentColor" d="M12 2C6.47 2 2 6.47 2 12s4.47 10 10 10 10-4.47 10-10S17.53 2 12 2zm5 13.59L15.59 17 12 13.41 8.41 17 7 15.59 10.59 12 7 8.41 8.41 7 12 10.59 15.59 7 17 8.41 13.41 12 17 15.59z"/></svg>
+          <% else %>
+            <span class="size-3 rounded-full border border-zinc-700"></span>
+          <% end %>
+        </span>
+        <span class="<%= todo.status == 'done' ? 'text-zinc-500 line-through' : todo.status == 'failed' ? 'text-red-300' : 'text-zinc-200' %>">
+          <%= todo.title %>
+        </span>
+      </div>
+    <% end %>
+  </div>
+
+  <div class="flex items-center gap-2 pt-1">
+    <button data-action="agent-plan#resume" data-agent-run-id="<%= run.id %>"
+            class="rounded-full bg-emerald-600 hover:bg-emerald-500 px-4 py-1.5 text-xs font-medium text-white transition">
+      <svg class="size-3.5 inline mr-1 -mt-0.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+        <path d="M5 13l4 4L19 7"/>
+      </svg>
+      Continue
+    </button>
+    <button data-action="agent-plan#interrupt" data-agent-run-id="<%= run.id %>"
+            class="rounded-full bg-zinc-800 hover:bg-zinc-700 px-4 py-1.5 text-xs text-zinc-400 transition">
+      Stop
+    </button>
+  </div>
+</div>

@@ -10,10 +10,8 @@ module ApplicationCable
     private
 
     def find_verified_user
-      if (user = env["rack.session"]&.dig("user_id") ? User.find_by(id: env["rack.session"]["user_id"]) : nil)
+      if (user_id = cookies.signed[:user_id]) && (user = User.find_by(id: user_id))
         user
-      elsif (token = request.params[:token])
-        User.find_by(remember_token: token)
       else
         reject_unauthorized_connection
       end

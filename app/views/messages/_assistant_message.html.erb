@@ -1,4 +1,4 @@
-<div class="flex gap-4 group/message relative isolate" data-chat-target="assistantMessage">
+<div id="assistant-message-<%= message.id %>" class="flex gap-4 group/message relative isolate" data-chat-target="assistantMessage">
   <div class="size-8 rounded-lg bg-gradient-to-br from-orange-500/20 to-orange-600/10 border border-orange-500/20 grid place-items-center shrink-0 mt-1">
     <svg class="size-5 text-orange-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
       <circle cx="12" cy="12" r="3"/>
@@ -15,11 +15,10 @@
       <% end %>
     </div>
 
-    <div class="mt-1 markdown-body text-[15px] leading-7">
+    <div class="mt-1 text-[15px] leading-7">
       <% if local_assigns.fetch(:streaming, false) %>
-        <div class="text-zinc-400 streaming-cursor" data-chat-target="streamingContent">
-          Thinking...
-        </div>
+        <div class="text-zinc-200 whitespace-pre-wrap" data-streaming-content="<%= message.id %>"><%= message.content %></div>
+        <span class="inline-block w-2 h-4 bg-orange-400 animate-pulse ml-0.5 align-text-top"></span>
       <% else %>
         <div class="prose prose-invert max-w-none break-words">
           <%= render_markdown(message.content) %>
@@ -43,7 +42,6 @@
       </div>
     <% end %>
 
-    <!-- Action buttons -->
     <div class="flex items-center gap-1 mt-2 opacity-0 group-hover/message:opacity-100 transition relative z-10 isolate">
       <button class="grid size-7 place-items-center rounded-lg hover:bg-white/[0.06] text-zinc-600 hover:text-zinc-300 transition" title="Copy" data-action="click->chat#copy">
         <svg class="size-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">

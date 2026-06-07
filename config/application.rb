@@ -26,7 +26,7 @@ module Agnix
 
     config.action_cable.mount_path = "/cable"
 
-    config.session_store :cookie_store, key: "_agnix_session", same_site: :lax
+    config.session_store :cache_store, key: "_agnix_session", same_site: :lax
 
     config.generators do |g|
       g.orm :active_record, primary_key_type: :uuid

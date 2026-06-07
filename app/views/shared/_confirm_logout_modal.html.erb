@@ -1,0 +1,24 @@
+<div id="logout-modal" class="fixed inset-0 z-[100] hidden" data-controller="confirm-modal">
+  <div class="absolute inset-0 bg-black/70 backdrop-blur-sm" data-action="click->confirm-modal#cancel"></div>
+
+  <div class="absolute inset-0 grid place-items-center p-4">
+    <div class="w-full max-w-sm rounded-2xl border border-white/[0.08] bg-zinc-900 shadow-2xl">
+      <div class="px-5 py-4 border-b border-white/[0.06]">
+        <h2 class="text-[15px] font-semibold text-zinc-100">Log out</h2>
+        <p class="mt-1 text-[13px] text-zinc-400">You will be signed out of this device.</p>
+      </div>
+
+      <div class="px-5 py-4 flex items-center justify-end gap-2">
+        <button type="button"
+                class="px-3 py-1.5 rounded-lg text-[13px] text-zinc-300 hover:bg-white/[0.04] border border-white/[0.08]"
+                data-action="click->confirm-modal#cancel">
+          Cancel
+        </button>
+
+        <%= button_to "Log out", logout_path, method: :delete,
+              form: { data: { turbo: false }, class: "inline" },
+              class: "px-3 py-1.5 rounded-lg text-[13px] font-medium bg-red-500 hover:bg-red-400 text-black" %>
+      </div>
+    </div>
+  </div>
+</div>

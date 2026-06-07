@@ -11,7 +11,15 @@ class ApplicationController < ActionController::Base
   private
 
   def set_current_user
-    Current.user = User.find_by(remember_token: cookies.signed[:remember_token]) if cookies.signed[:remember_token]
+    if session[:user_id]
+      Current.user = User.find_by(id: session[:user_id])
+    elsif cookies.signed[:user_id]
+      user = User.find_by(id: cookies.signed[:user_id])
+      if user
+        session[:user_id] = user.id
+        Current.user = user
+      end
+    end
     Current.request_id = request.request_id
   end
 

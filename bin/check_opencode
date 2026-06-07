@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+set -e
+
+echo "=== DB ==="
+bin/rails db:migrate:status | head -n 20
+
+echo ""
+echo "=== Routes ==="
+bin/rails routes | grep -E "agent_runs|conversations" | head
+
+echo ""
+echo "=== Spec ==="
+bundle exec rspec spec/services/agent_runner_spec.rb -fd
+
+echo ""
+echo "=== System ==="
+bundle exec rspec spec/system/conversation_flow_spec.rb -fd
+
+echo ""
+echo "=== All clear ==="

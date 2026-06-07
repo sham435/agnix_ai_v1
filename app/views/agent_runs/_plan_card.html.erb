@@ -1,0 +1,46 @@
+<div id="agent-run-<%= run.id %>" class="rounded-xl border border-white/[0.08] bg-white/[0.02] p-4 space-y-3">
+  <div class="flex items-center justify-between">
+    <div class="flex items-center gap-2">
+      <span class="text-[12px] font-medium tracking-wide text-zinc-400 uppercase">Plan</span>
+      <%= render "agent_runs/status_badge", run: run %>
+    </div>
+    <div class="text-[12px] text-zinc-600">
+      <%= run.todos.where(status: "done").count %>/<%= run.todos.count %> done
+    </div>
+  </div>
+
+  <div class="flex items-center gap-1">
+    <% AgentRun::MODES.each do |mode_key| %>
+      <% active = run.mode == mode_key %>
+      <%= button_to mode_key.to_s.humanize,
+          switch_mode_agent_run_path(run.id, mode: mode_key),
+          method: :patch,
+          form: { data: { turbo_stream: true } },
+          class: "px-2 py-0.5 rounded-full text-[11px] font-medium border transition
+                  #{active ? mode_badge_classes(mode_key) : 'border-white/[0.06] text-zinc-500 hover:text-zinc-300 hover:border-white/[0.12]'}" %>
+    <% end %>
+  </div>
+
+  <div class="space-y-1.5">
+    <% run.todos.order(:position).each do |todo| %>
+      <div class="flex items-center gap-2 text-[13px]">
+        <% if todo.status == "done" %>
+          <svg class="size-4 shrink-0 text-green-500" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+            <path d="M20 6L9 17l-5-5"/>
+          </svg>
+          <span class="line-through text-zinc-600"><%= todo.title %></span>
+        <% elsif todo.status == "in_progress" %>
+          <svg class="size-4 shrink-0 text-orange-400 animate-spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M21 12a9 9 0 1 1-6.219-8.56"/>
+          </svg>
+          <span class="text-zinc-300"><%= todo.title %></span>
+        <% else %>
+          <span class="size-4 grid place-items-center shrink-0">
+            <span class="size-1.5 rounded-full bg-zinc-700"></span>
+          </span>
+          <span class="text-zinc-500"><%= todo.title %></span>
+        <% end %>
+      </div>
+    <% end %>
+  </div>
+</div>

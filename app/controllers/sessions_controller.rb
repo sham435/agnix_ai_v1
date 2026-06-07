@@ -7,8 +7,9 @@ class SessionsController < ApplicationController
     user = User.find_by(email: params[:email].to_s.downcase)
 
     if user&.authenticate(params[:password])
-      cookies.signed[:remember_token] = {
-        value: user.remember_token,
+      session[:user_id] = user.id
+      cookies.signed[:user_id] = {
+        value: user.id,
         expires: 2.weeks.from_now,
         httponly: true,
         secure: Rails.env.production?,
@@ -25,7 +26,8 @@ class SessionsController < ApplicationController
   end
 
   def destroy
-    cookies.delete(:remember_token)
+    session.delete(:user_id)
+    cookies.delete(:user_id)
     redirect_to login_path, notice: "Signed out successfully."
   end
 end

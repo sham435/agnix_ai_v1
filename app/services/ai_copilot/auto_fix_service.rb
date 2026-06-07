@@ -33,7 +33,14 @@ module AiCopilot
         return false if patch.blank?
 
         backup = File.read(@file_path)
-        apply_patch(patch)
+        patch_applied, patch_err = apply_patch(patch)
+
+        unless patch_applied
+          broadcast "⚠ Patch application failed: #{patch_err}"
+          File.write(@file_path, backup)
+          current_error = output
+          next
+        end
 
         passed, output = run_spec
         write_telemetry(iteration, patch, passed, output)
@@ -41,9 +48,14 @@ module AiCopilot
         if passed
           broadcast "✓ Fix applied. Spec passed."
           return true
-        elsif worse_errors?(output, current_error, baseline_failures, iteration)
-          git_rollback!
-          broadcast "⟳ Patch introduced regressions — rolled back to HEAD. Retry #{iteration}/#{MAX_RETRIES}…"
+        elsif worse_errors?(output, baseline_failures, iteration)
+          rollback_ok, rollback_err = git_rollback!
+          if rollback_ok
+            broadcast "⟳ Patch introduced regressions — rolled back to HEAD. Retry #{iteration}/#{MAX_RETRIES}…"
+          else
+            broadcast "⟳ Git rollback failed (#{rollback_err}), restoring file backup. Retry #{iteration}/#{MAX_RETRIES}…"
+            File.write(@file_path, backup)
+          end
           current_error = output
         else
           File.write(@file_path, backup)
@@ -59,35 +71,35 @@ module AiCopilot
     private
 
     def run_spec
-      stubs_flag = "--require support/auto_fix_stubs"
       cmd = if @spec_path.to_s.end_with?("_spec.rb")
-              "bundle exec rspec #{@spec_path} #{stubs_flag} --format progress 2>&1"
+              %w[bundle exec rspec --require support/auto_fix_stubs --format progress]
             else
-              "bundle exec rails test #{@spec_path} 2>&1"
+              %w[bundle exec rails test]
             end
-      stdout, stderr, status = Open3.capture3(cmd)
-      @last_stderr = "#{stdout}\n#{stderr}"
+      stdout, stderr, status = Open3.capture3(*cmd, @spec_path.to_s)
+      @last_stderr = combine_output(stdout, stderr)
       [status.success?, @last_stderr]
+    end
+
+    def combine_output(stdout, stderr)
+      out = stdout.to_s.strip
+      err = stderr.to_s.strip
+      [out, err].reject(&:empty?).join("\n")
     end
 
     def last_stderr
       @last_stderr || ""
     end
 
-    # Count individual failures in rspec output by scanning for "Failure/Error:".
     def failure_count(output)
       output.scan(/Failure\/Error:/).size
     end
 
-    # Extract unique exception class names from the output.
     def error_signatures(output)
-      output.scan(/\b(\w+(?:::\w+)*(?:Error|Exception))\b/).flatten.uniq.sort
+      output.scan(/(?:\b|\n)((?:[A-Z]\w*::)*[A-Z]\w*(?:Error|Exception|NotFound|Invalid|NotUnique|NotSaved|NotDestroyed|Missing|Conflict|Forbidden|Timeout))\b/).flatten.uniq.sort
     end
 
-    # Detect if the patch made things worse:
-    #   - more failures than the original (baseline) run
-    #   - new error types that weren't in the original failure
-    def worse_errors?(output, _previous_error, baseline_failures, iteration)
+    def worse_errors?(output, baseline_failures, iteration)
       return false if iteration == 1
 
       current_failures = failure_count(output)
@@ -101,10 +113,14 @@ module AiCopilot
     end
 
     def build_context(error)
+      diff_stdout, diff_stderr, diff_status = Open3.capture3(
+        "git", "diff", "HEAD~1", "--", @file_path.to_s
+      )
+
       {
         error: error,
         code: File.read(@file_path),
-        diff: `git diff HEAD~1 -- #{@file_path}`,
+        diff: diff_status.success? ? diff_stdout : "Git diff failed: #{diff_stderr.strip}",
         backtrace: caller[0..20].join("\n")
       }
     end
@@ -139,7 +155,7 @@ module AiCopilot
     end
 
     def apply_patch(diff)
-      return if diff.blank?
+      return [false, "No diff content"] if diff.blank?
 
       patched = diff.dup
       patched.gsub!(/^```diff\n/, "")
@@ -150,16 +166,26 @@ module AiCopilot
         tmp = Tempfile.new(["patch", ".diff"])
         tmp.write(patched)
         tmp.close
-        system("patch", @file_path.to_s, tmp.path)
+        _stdout, stderr, status = Open3.capture3("patch", @file_path.to_s, tmp.path)
         tmp.unlink
+        [status.success?, stderr.to_s.strip]
       else
         File.write(@file_path, patched)
+        [true, ""]
       end
     end
 
     def git_rollback!
-      system("git", "checkout", "--", @file_path.to_s)
-      @rolled_back = true
+      _stdout, stderr, status = Open3.capture3(
+        "git", "checkout", "--", @file_path.to_s
+      )
+
+      if status.success?
+        @rolled_back = true
+        [true, ""]
+      else
+        [false, stderr.to_s.strip]
+      end
     end
 
     def write_telemetry(iteration, diff, passed, output)

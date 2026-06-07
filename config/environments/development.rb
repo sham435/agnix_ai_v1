@@ -19,6 +19,9 @@ Rails.application.configure do
   # Enable server timing.
   config.server_timing = true
 
+  # Use memory store so sessions are cleared on server restart.
+  config.cache_store = :memory_store
+
   # Enable/disable Action Controller caching.
   config.action_controller.perform_caching = false
 
@@ -33,6 +36,9 @@ Rails.application.configure do
 
   # Use a regular file watcher (no listen gem needed).
   config.file_watcher = ActiveSupport::FileUpdateChecker
+
+  # Run jobs inline so streaming works without a separate worker process.
+  config.active_job.queue_adapter = :inline
 
   # Dev mailer.
   config.action_mailer.delivery_method = :letter_opener

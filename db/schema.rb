@@ -10,10 +10,35 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_01_01_000016) do
+ActiveRecord::Schema[8.1].define(version: 2026_01_01_000019) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
   enable_extension "vector"
+
+  create_table "agent_runs", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
+    t.uuid "conversation_id", null: false
+    t.datetime "created_at", null: false
+    t.integer "current_step"
+    t.string "mode", default: "auto_plan", null: false
+    t.jsonb "plan", default: [], null: false
+    t.jsonb "reasoning_steps", default: []
+    t.string "status", default: "planning", null: false
+    t.datetime "updated_at", null: false
+    t.index ["conversation_id", "status"], name: "index_agent_runs_on_conversation_id_and_status"
+    t.index ["conversation_id"], name: "index_agent_runs_on_conversation_id"
+  end
+
+  create_table "agent_todos", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
+    t.uuid "agent_run_id", null: false
+    t.datetime "created_at", null: false
+    t.integer "position", null: false
+    t.text "result"
+    t.string "status", default: "pending", null: false
+    t.string "title", null: false
+    t.datetime "updated_at", null: false
+    t.index ["agent_run_id", "position"], name: "index_agent_todos_on_agent_run_id_and_position"
+    t.index ["agent_run_id"], name: "index_agent_todos_on_agent_run_id"
+  end
 
   create_table "agents", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
     t.jsonb "config", default: {}, null: false
@@ -53,6 +78,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_01_01_000016) do
     t.datetime "created_at", null: false
     t.integer "messages_count", default: 0, null: false
     t.jsonb "metadata", default: {}, null: false
+    t.string "mode", default: "", null: false
     t.uuid "project_id"
     t.string "status", default: "active", null: false
     t.string "title"
@@ -93,9 +119,21 @@ ActiveRecord::Schema[8.1].define(version: 2026_01_01_000016) do
     t.index ["user_id"], name: "index_memberships_on_user_id"
   end
 
-# Could not dump table "memories" because of following StandardError
-#   Unknown type 'vector' for column 'embedding'
-
+  create_table "memories", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
+    t.uuid "agent_id"
+    t.text "content", null: false
+    t.datetime "created_at", null: false
+    t.vector "embedding"
+    t.jsonb "metadata", default: {}, null: false
+    t.uuid "source_id"
+    t.string "source_type"
+    t.datetime "updated_at", null: false
+    t.uuid "user_id", null: false
+    t.index ["agent_id"], name: "index_memories_on_agent_id"
+    t.index ["source_type", "source_id"], name: "index_memories_on_source_type_and_source_id"
+    t.index ["user_id", "agent_id"], name: "index_memories_on_user_id_and_agent_id"
+    t.index ["user_id"], name: "index_memories_on_user_id"
+  end
 
   create_table "messages", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
     t.text "content"
@@ -377,6 +415,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_01_01_000016) do
     t.index ["whatsapp_phone"], name: "index_users_on_whatsapp_phone", unique: true, where: "(whatsapp_phone IS NOT NULL)"
   end
 
+  add_foreign_key "agent_runs", "conversations"
+  add_foreign_key "agent_todos", "agent_runs"
   add_foreign_key "agents", "organizations"
   add_foreign_key "conversations", "agents"
   add_foreign_key "conversations", "projects"

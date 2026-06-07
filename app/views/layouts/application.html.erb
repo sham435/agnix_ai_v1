@@ -45,6 +45,7 @@
   <%= yield %>
 
   <%= turbo_frame_tag "modal" %>
+  <%= render "shared/confirm_logout_modal" %>
 
   <div id="toast-container" class="fixed top-4 left-1/2 -translate-x-1/2 z-[60] pointer-events-none space-y-2"></div>
 </body>

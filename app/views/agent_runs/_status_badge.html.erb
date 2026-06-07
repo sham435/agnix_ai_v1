@@ -1,0 +1,19 @@
+<%
+  tz = "Asia/Colombo"
+  started_at = run.created_at.in_time_zone(tz)
+  tooltip = "Started #{started_at.strftime("%H:%M:%S")} · #{started_at.strftime("%d %b %Y")}"
+%>
+<span id="run-status-<%= run.id %>"
+      class="group relative inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full border text-[11px] font-medium <%= status_badge_classes(run.status) %>"
+      data-controller="run-timer"
+      data-run-timer-started-at-value="<%= run.created_at.iso8601 %>"
+      data-run-timer-status-value="<%= run.status %>">
+  <span class="size-1.5 rounded-full bg-current <%= 'animate-pulse' if %w[planning executing].include?(run.status.to_s) %>"></span>
+
+  <span data-run-timer-target="label"><%= run.status.to_s.gsub("_", " ").capitalize %></span>
+  <span class="text-[10px] opacity-70" data-run-timer-target="duration"></span>
+
+  <span class="pointer-events-none absolute left-1/2 -translate-x-1/2 -top-8 whitespace-nowrap rounded-md bg-zinc-900 border border-white/[0.08] px-2 py-1 text-[11px] text-zinc-300 opacity-0 group-hover:opacity-100 transition">
+    <%= tooltip %>
+  </span>
+</span>

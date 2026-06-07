@@ -6,8 +6,9 @@ module ApplicationHelper
     return "" if text.blank?
 
     begin
-      CommonMarker.render_html(text, options: [:UNSAFE, :FOOTNOTES])
-        .html_safe
+      defined?(CommonMarker) ?
+        CommonMarker.render_html(text, options: [:UNSAFE, :FOOTNOTES]).html_safe :
+        simple_format(text)
     rescue => e
       Rails.logger.error "Markdown render error: #{e.message}"
       simple_format(text)

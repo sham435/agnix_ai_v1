@@ -40,12 +40,18 @@ Rails.application.routes.draw do
   resources :conversations, only: [:index, :show, :create, :update, :destroy] do
     resources :messages, only: [:create]
     post :regenerate, on: :member
+    get  :regenerate, on: :member
     post :stop, on: :member
+    get  :stop, on: :member
+    post :interrupt, on: :member
   end
 
   resources :agents, except: [:index] do
     collection { get :search }
   end
+
+  post "agent_runs/:id/resume", to: "agent_runs#resume", as: :resume_agent_run
+  patch "agent_runs/:id/switch_mode", to: "agent_runs#switch_mode", as: :switch_mode_agent_run
 
   resources :memories, only: [:index, :show, :destroy] do
     collection { post :upload }

@@ -1,6 +1,6 @@
 class ConversationsController < ApplicationController
   before_action :authenticate_user!
-  before_action :set_conversation, only: [:show, :update, :destroy, :regenerate, :stop]
+  before_action :set_conversation, only: [:show, :update, :destroy, :regenerate, :stop, :interrupt]
 
   def index
     @conversations = current_user.conversations
@@ -45,8 +45,15 @@ class ConversationsController < ApplicationController
   end
 
   def update
-    @conversation.update(conversation_params)
-    redirect_to @conversation
+    @conversation.update!(conversation_params)
+    respond_to do |format|
+      streams = [turbo_stream.replace("mode_toggle", partial: "conversations/mode_toggle")]
+      @conversation.agent_runs.active.each do |run|
+        streams << turbo_stream.replace("agent-run-#{run.id}", partial: "agent_runs/plan_card", locals: { run: run })
+      end
+      format.turbo_stream { render turbo_stream: streams }
+      format.html { redirect_back fallback_location: @conversation }
+    end
   end
 
   def destroy
@@ -56,6 +63,8 @@ class ConversationsController < ApplicationController
 
   # Regenerate the last assistant response.
   def regenerate
+    redirect_to @conversation and return if request.get?
+
     last_assistant = @conversation.messages.where(role: "assistant").last
     return redirect_to @conversation, alert: "Nothing to regenerate." unless last_assistant
 
@@ -73,8 +82,13 @@ class ConversationsController < ApplicationController
   end
 
   def stop
-    @conversation.update(status: "paused")
-    redirect_to @conversation, notice: "Response generation stopped."
+    @conversation.agent_runs.active.update_all(status: "interrupted")
+    head :ok
+  end
+
+  def interrupt
+    @conversation.agent_runs.active.update_all(status: "interrupted")
+    head :ok
   end
 
   private
@@ -84,6 +98,6 @@ class ConversationsController < ApplicationController
   end
 
   def conversation_params
-    params.require(:conversation).permit(:title, :status)
+    params.require(:conversation).permit(:title, :status, :mode)
   end
 end

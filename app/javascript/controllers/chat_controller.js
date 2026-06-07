@@ -1,25 +1,28 @@
 import { Controller } from "@hotwired/stimulus"
 import { cable } from "@hotwired/turbo-rails"
 
-// Chat controller - handles streaming, message rendering, and auto-scroll.
 export default class extends Controller {
-  static targets = ["assistantMessage", "streamingContent"]
+  static targets = ["streamingContent"]
 
   connect() {
     this.subscribeToChannel()
     this.scrollToBottom()
   }
 
+  disconnect() {
+    if (this.subscription) {
+      this.subscription.unsubscribe()
+    }
+  }
+
   subscribeToChannel() {
     const conversationId = this.element.dataset.conversationId
     if (!conversationId) return
 
-    cable.subscribeTo(
+    this.subscription = cable.subscribeTo(
       { channel: "ConversationChannel", conversation_id: conversationId },
       {
         received: (data) => this.handleStream(data),
-        connected: () => console.log("Cable connected"),
-        disconnected: () => console.log("Cable disconnected")
       }
     )
   }
@@ -27,7 +30,7 @@ export default class extends Controller {
   handleStream(data) {
     switch (data.type) {
       case "content":
-        this.updateStreamingContent(data.content)
+        this.updateStreamingContent(data.content, data.message_id)
         break
       case "tool_call":
         this.showToolCall(data.tool, data.result)
@@ -41,34 +44,28 @@ export default class extends Controller {
     }
   }
 
-  updateStreamingContent(content) {
-    const el = this.streamingContentTarget
+  updateStreamingContent(content, messageId) {
+    const selector = `[data-streaming-content="${messageId}"]`
+    const el = document.querySelector(selector)
     if (!el) return
 
     el.textContent = content
-    el.classList.add("streaming-cursor")
     this.scrollToBottom()
   }
 
   showToolCall(tool, result) {
-    // Could show a toast or inline notification.
     console.log("Tool call:", tool, result)
   }
 
   completeStreaming() {
-    const el = this.streamingContentTarget
-    if (el) {
-      el.classList.remove("streaming-cursor")
-    }
-    // Reload to show the saved message.
-    setTimeout(() => window.location.reload(), 500)
+    // Turbo Stream broadcast_replace handles the final render.
+    this.scrollToBottom()
   }
 
   stopStreaming() {
-    const el = this.streamingContentTarget
+    const el = document.querySelector("[data-streaming-content]")
     if (el) {
       el.textContent += "\n\n[Generation stopped]"
-      el.classList.remove("streaming-cursor")
     }
   }
 
@@ -86,7 +83,6 @@ export default class extends Controller {
     const content = messageEl.querySelector(".prose, .markdown-body")?.textContent
     if (content) {
       navigator.clipboard.writeText(content)
-      // Show brief confirmation.
       const btn = event.target.closest("button")
       if (btn) {
         btn.classList.add("text-emerald-400")

@@ -85,6 +85,53 @@ RSpec.describe "Conversation flow", type: :system, js: true do
     expect(run.finished_at).to be_present
   end
 
+  it "chat-only prompt in OS mode produces an assistant message with no todos" do
+    login_as user
+
+    convo = Conversation.create!(user: user, agent: agent, title: "Hi", mode: "auto_build")
+    convo.messages.create!(role: "user", content: "hi")
+
+    # Stub: first call returns empty plan [], second returns the answer.
+    stub_request(:post, %r{opencode\.ai/zen/v1/chat/completions})
+      .to_return([
+        {
+          status: 200,
+          body: {
+            id: "chatcmpl-plan",
+            object: "chat.completion",
+            choices: [{ index: 0, message: { role: "assistant", content: "[]" }, finish_reason: "stop" }],
+            usage: { prompt_tokens: 10, completion_tokens: 1, total_tokens: 11 }
+          }.to_json,
+          headers: { "Content-Type" => "application/json" }
+        },
+        {
+          status: 200,
+          body: {
+            id: "chatcmpl-answer",
+            object: "chat.completion",
+            choices: [{ index: 0, message: { role: "assistant", content: "Hello there!" }, finish_reason: "stop" }],
+            usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 }
+          }.to_json,
+          headers: { "Content-Type" => "application/json" }
+        }
+      ])
+
+    AgentStreamJob.perform_now(
+      conversation_id: convo.id,
+      user_id: user.id,
+      message_content: "hi"
+    )
+
+    visit conversation_path(convo)
+
+    expect(page).to have_content("hi")
+    expect(page).to have_content("Hello there!")
+
+    agent_run = convo.agent_runs.last
+    expect(agent_run).to be_present
+    expect(agent_run.todos).to be_empty
+  end
+
   context "when agent uses a tool" do
     it "renders tool call pill when agent uses a tool" do
       login_as user

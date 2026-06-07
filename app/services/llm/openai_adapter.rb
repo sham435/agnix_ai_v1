@@ -13,6 +13,7 @@ module Llm
     end
 
     def chat(messages:, tools:, temperature:, max_tokens:, stream: false)
+      Rails.logger.info "[OpenCode] chat model=#{model} tools=#{tools.present?} stream=#{stream}"
       if stream
         stream_chat(messages: messages, tools: tools, temperature: temperature, max_tokens: max_tokens)
       else
@@ -81,6 +82,7 @@ module Llm
       )
 
       unless response.success?
+        Rails.logger.error "[OpenCode] ERROR #{response.code} - #{response.body.truncate(500)}"
         raise LlmError, "OpenAI API error: #{response.code} - #{response.body}"
       end
 
@@ -89,8 +91,8 @@ module Llm
 
       raw_tool_calls = choice["tool_calls"] || []
 
-      tool_calls = raw_tool_calls.map do |tc|
-        { id: tc["id"], type: "function", function: tc["function"] }
+      tool_calls = raw_tool_calls.map.with_index do |tc, i|
+        { id: tc["id"].presence || SecureRandom.hex(16), type: "function", function: tc["function"] }
       end
 
       {

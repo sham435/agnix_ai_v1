@@ -19,6 +19,7 @@ class Conversation < ApplicationRecord
 
   has_many :messages, dependent: :destroy_async, inverse_of: :conversation
   has_many :runs, dependent: :nullify
+  has_many :agent_runs, dependent: :destroy
 
   enum :status, { active: "active", archived: "archived" }, default: :active
 
