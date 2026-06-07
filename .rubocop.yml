@@ -1,0 +1,29 @@
+inherit_gem:
+  rubocop-rails-omakase: rubocop/default
+
+require:
+  - rubocop-rspec
+
+RSpec:
+  Enabled: true
+
+AllCops:
+  NewCops: enable
+  TargetRubyVersion: 3.4
+  Exclude:
+    - "db/schema.rb"
+    - "db/migrate/*"
+    - "bin/*"
+    - "node_modules/**/*"
+    - "vendor/**/*"
+
+Layout/LineLength:
+  Max: 120
+
+Metrics/BlockLength:
+  Exclude:
+    - "spec/**/*"
+    - "config/routes.rb"
+
+Style/Documentation:
+  Enabled: false

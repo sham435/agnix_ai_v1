@@ -1,0 +1,97 @@
+<%= render "layouts/chat_layout" do %>
+  <!-- Header -->
+  <header class="sticky top-0 z-20 flex h-[64px] items-center justify-between gap-3 border-b border-white/[0.06] bg-[#080809]/80 glass px-4">
+    <%= link_to agents_path, class: "flex items-center gap-2 text-zinc-400 hover:text-zinc-200 transition" do %>
+      <svg class="size-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m15 18-6-6 6-6"/></svg>
+    <% end %>
+    <div class="flex items-center gap-2">
+      <span class="size-6 rounded-lg bg-orange-500/10 grid place-items-center text-orange-400">
+        <svg class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 1v4M12 19v4"/></svg>
+      </span>
+      <span class="text-[14px] font-medium text-white"><%= @agent.name %></span>
+      <%= status_badge(@agent.is_active ? "active" : "inactive") %>
+    </div>
+    <div class="flex items-center gap-2">
+      <%= link_to test_agent_path(@agent), class: "btn-secondary text-[13px]" do %>
+        <svg class="size-4 mr-1.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></svg>
+        Test
+      <% end %>
+      <%= link_to edit_agent_path(@agent), class: "btn-secondary text-[13px]" do %>
+        Edit
+      <% end %>
+    </div>
+  </header>
+
+  <!-- Content -->
+  <main class="flex-1 overflow-y-auto p-6">
+    <div class="mx-auto max-w-[900px] space-y-6">
+      <!-- Info -->
+      <div class="card">
+        <h2 class="text-[15px] font-medium text-white mb-3">Configuration</h2>
+        <dl class="grid grid-cols-2 sm:grid-cols-4 gap-4 text-[13px]">
+          <div>
+            <dt class="text-zinc-500">Provider</dt>
+            <dd class="text-white font-medium"><%= @agent.provider.titleize %></dd>
+          </div>
+          <div>
+            <dt class="text-zinc-500">Model</dt>
+            <dd class="text-white font-medium">
+              <%= form_with model: @agent, url: agent_path(@agent), method: :patch, data: { turbo: true }, class: "inline-flex" do |f| %>
+                <%= f.select :model, Agent::MODELS.values.flatten.map { |m| [m, m] }, { selected: @agent.model }, class: "text-white font-medium bg-transparent border-0 outline-none cursor-pointer appearance-none pr-4", onchange: "this.form.requestSubmit()" %>
+              <% end %>
+            </dd>
+          </div>
+          <div>
+            <dt class="text-zinc-500">Temperature</dt>
+            <dd class="text-white font-medium"><%= @agent.config.fetch("temperature", 0.7) %></dd>
+          </div>
+          <div>
+            <dt class="text-zinc-500">Max Tokens</dt>
+            <dd class="text-white font-medium"><%= number_with_delimiter(@agent.config.fetch("max_tokens", 4096)) %></dd>
+          </div>
+        </dl>
+      </div>
+
+      <!-- System Prompt -->
+      <div class="card">
+        <h2 class="text-[15px] font-medium text-white mb-3">System Prompt</h2>
+        <pre class="rounded-lg bg-white/[0.02] border border-white/[0.04] p-4 text-[13px] text-zinc-300 font-mono whitespace-pre-wrap"><%= @agent.system_prompt %></pre>
+      </div>
+
+      <!-- Tools -->
+      <div class="card">
+        <h2 class="text-[15px] font-medium text-white mb-3">Tools</h2>
+        <div class="flex flex-wrap gap-2">
+          <% @agent.enabled_tools.each do |tool| %>
+            <span class="rounded-lg bg-orange-500/10 text-orange-400 px-3 py-1.5 text-[13px] font-medium">
+              <%= tool[:name] || tool["name"] %>
+            </span>
+          <% end %>
+        </div>
+      </div>
+
+      <!-- Recent Runs -->
+      <% if @runs&.any? %>
+        <div class="card">
+          <h2 class="text-[15px] font-medium text-white mb-3">Recent Runs</h2>
+          <div class="space-y-2">
+            <% @runs.each do |run| %>
+              <div class="flex items-center justify-between rounded-lg bg-white/[0.02] px-3 py-2 text-[13px]">
+                <div class="flex items-center gap-3">
+                  <%= status_badge(run.status) %>
+                  <span class="text-zinc-300 truncate max-w-[300px]"><%= run.input.dig("query") || "No query" %></span>
+                </div>
+                <div class="flex items-center gap-4 text-zinc-500">
+                  <span><%= number_with_delimiter(run.tokens_used) %> tokens</span>
+                  <span><%= time_ago(run.created_at) %></span>
+                </div>
+              </div>
+            <% end %>
+          </div>
+        </div>
+      <% end %>
+    </div>
+  </main>
+
+  <%= render "shared/sidebar_js" %>
+<% end %>

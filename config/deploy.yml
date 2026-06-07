@@ -1,0 +1,109 @@
+# Kamal 2 deployment configuration.
+# See: https://kamal-deploy.org/docs/
+
+service: agnix
+image: agnix
+
+servers:
+  web:
+    hosts:
+      - <%= ENV["SERVER_IP"] || "your-server-ip" %>
+    labels:
+      traefik.http.routers.agnix.rule: Host(`agnix.example.com`)
+      traefik.http.routers.agnix.entrypoints: websecure
+      traefik.http.routers.agnix.tls.certresolver: letsencrypt
+    options:
+      publish:
+        - "443:443"
+  job:
+    hosts:
+      - <%= ENV["SERVER_IP"] || "your-server-ip" %>
+    cmd: bin/jobs
+    options:
+      publish: []
+
+registry:
+  server: ghcr.io
+  username: ${{ github.actor }}
+  password: ${{ secrets.GITHUB_TOKEN }}
+
+builder:
+  arch: amd64
+
+env:
+  clear:
+    RAILS_ENV: production
+    RAILS_SERVE_STATIC_FILES: "true"
+    RAILS_LOG_TO_STDOUT: "true"
+  secret:
+    - RAILS_MASTER_KEY
+    - DATABASE_URL
+    - REDIS_URL
+    - STRIPE_SECRET_KEY
+    - STRIPE_PUBLISHABLE_KEY
+    - STRIPE_WEBHOOK_SECRET
+    - ANTHROPIC_API_KEY
+    - OPENAI_API_KEY
+    - POSTMARK_API_TOKEN
+    - WHATSAPP_ACCESS_TOKEN
+    - WHATSAPP_PHONE_NUMBER_ID
+    - WHATSAPP_VERIFY_TOKEN
+    - SENTRY_DSN
+    - GOOGLE_CLIENT_ID
+    - GOOGLE_CLIENT_SECRET
+    - GITHUB_CLIENT_ID
+    - GITHUB_CLIENT_SECRET
+    - AWS_ACCESS_KEY_ID
+    - AWS_SECRET_ACCESS_KEY
+    - AWS_REGION
+    - S3_BUCKET
+
+ssh:
+  user: rails
+
+healthcheck:
+  path: /up
+  port: 3000
+  max_attempts: 10
+  interval: 5s
+
+traefik:
+  args:
+    entrypoints.web.address: ":80"
+    entrypoints.websecure.address: ":443"
+    entrypoints.web.http.redirections.entrypoint.to: websecure
+    entrypoints.web.http.redirections.entrypoint.scheme: https
+    entrypoints.websecure.http.tls.certresolver: letsencrypt
+    certificatesresolvers.letsencrypt.acme.email: "admin@agnix.example.com"
+    certificatesresolvers.letsencrypt.acme.storage: "/letsencrypt/acme.json"
+    certificatesresolvers.letsencrypt.acme.httpchallenge: true
+    certificatesresolvers.letsencrypt.acme.httpchallenge.entrypoint: web
+
+accessories:
+  postgres:
+    image: pgvector/pgvector:pg16
+    host: <%= ENV["SERVER_IP"] %>
+    env:
+      clear:
+        POSTGRES_USER: agnix
+        POSTGRES_DB: agnix_production
+      secret:
+        - POSTGRES_PASSWORD
+    directories:
+      - data/postgres:/var/lib/postgresql/data
+    files:
+      - scripts/init.sql:/docker-entrypoint-initdb.d/init.sql
+    options:
+      volume:
+        - "pgdata:/var/lib/postgresql/data"
+      cap-add:
+        - SYS_NICE  # For memory locking
+
+  redis:
+    image: redis:7-alpine
+    host: <%= ENV["SERVER_IP"] %>
+    directories:
+      - data/redis:/data
+    options:
+      volume:
+        - "redis_data:/data"

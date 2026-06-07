@@ -1,0 +1,35 @@
+default: &default
+  adapter: postgresql
+  encoding: unicode
+  pool: 10
+  host: localhost
+  port: 5432
+  username: sham4
+  prepared_statements: true
+
+development:
+  <<: *default
+  database: agnix_development
+
+test:
+  <<: *default
+  database: agnix_test
+
+production:
+  <<: *default
+  database: agnix_production
+  pool: 25
+  url: <%= ENV["DATABASE_URL"] %>
+
+queue_development:
+  <<: *default
+  database: agnix_development_queue
+
+queue_test:
+  <<: *default
+  database: agnix_test_queue
+
+queue_production:
+  <<: *default
+  database: agnix_production_queue
+  url: <%= ENV["QUEUE_DATABASE_URL"] %>

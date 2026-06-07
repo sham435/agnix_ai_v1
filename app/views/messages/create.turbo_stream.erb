@@ -1,0 +1,8 @@
+<%# Append the user message and clear the composer form. %>
+<%= turbo_stream.append "messages-list" do %>
+  <%= render "messages/message", message: @message %>
+<% end %>
+
+<%= turbo_stream.update "message-form" do %>
+  <%= render "messages/form", conversation: @message.conversation, message: Message.new %>
+<% end %>

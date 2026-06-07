@@ -1,0 +1,7 @@
+<% if message.user_message? %>
+  <%= render "messages/user_message", message: message %>
+<% elsif message.assistant_message? %>
+  <%= render "messages/assistant_message", message: message %>
+<% else %>
+  <%= render "messages/system_message", message: message %>
+<% end %>

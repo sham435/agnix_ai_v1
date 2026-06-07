@@ -1,0 +1,47 @@
+# See https://help.github.com/articles/ignoring-files for more about ignoring files.
+
+# Rails defaults
+/.bundle
+/db/*.sqlite3
+/db/*.sqlite3-*
+/log/*
+/tmp/
+/public/packs
+/public/packs-test
+/public/assets
+/public/system
+/storage/
+/coverage/
+.yardoc/
+_yardoc/
+doc/
+/node_modules/
+/vendor/bundle/
+/binstub/
+
+# Environment
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+log/*.log
+log/auto_fixes/*.md
+
+# Keep these directories
+!/log/.keep
+!/tmp/.keep
+!/log/auto_fixes/.gitkeep

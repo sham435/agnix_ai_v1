@@ -1,0 +1,43 @@
+<%= render "layouts/chat_layout" do %>
+  <header class="sticky top-0 z-20 flex h-[64px] items-center justify-between gap-3 border-b border-white/[0.06] bg-[#080809]/80 glass px-4">
+    <div class="flex items-center gap-2">
+      <button id="menuBtn" class="lg:hidden grid size-9 place-items-center rounded-xl bg-white/[0.04] hover:bg-white/[0.08] text-zinc-300">
+        <svg class="size-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+      </button>
+      <h1 class="text-[16px] font-semibold text-white">Profile Settings</h1>
+    </div>
+  </header>
+
+  <main class="flex-1 overflow-y-auto p-6">
+    <div class="mx-auto max-w-[600px]">
+      <%= form_with model: current_user, url: settings_profile_path, method: :patch, class: "card space-y-6" do |f| %>
+        <div class="flex items-center gap-4">
+          <div class="size-16 rounded-full bg-gradient-to-br from-orange-400 to-orange-600 grid place-items-center text-xl font-bold text-black">
+            <%= current_user.name.to_s.first.upcase %>
+          </div>
+          <div>
+            <h2 class="text-[15px] font-medium text-white"><%= current_user.name %></h2>
+            <p class="text-[13px] text-zinc-500"><%= current_user.email %></p>
+          </div>
+        </div>
+
+        <div class="space-y-4">
+          <div>
+            <label class="block text-[13px] font-medium text-zinc-300 mb-1">Name</label>
+            <%= f.text_field :name, value: current_user.name, class: "input-field" %>
+          </div>
+          <div>
+            <label class="block text-[13px] font-medium text-zinc-300 mb-1">Email</label>
+            <%= f.email_field :email, value: current_user.email, class: "input-field" %>
+          </div>
+        </div>
+
+        <div class="flex justify-end">
+          <%= f.submit "Save Changes", class: "btn-primary" %>
+        </div>
+      <% end %>
+    </div>
+  </main>
+
+  <%= render "shared/sidebar_js" %>
+<% end %>

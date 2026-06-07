@@ -1,0 +1,5 @@
+# Solid Cache configuration.
+cache_store:
+  reaping: true
+  eviction: true
+  compaction: true

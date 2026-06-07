@@ -1,0 +1,14 @@
+<div class="flex gap-4 group/message">
+  <div class="size-8 rounded-full bg-gradient-to-br from-orange-400 to-orange-600 grid place-items-center text-xs font-bold text-black shrink-0 mt-1">
+    U
+  </div>
+  <div class="flex-1 min-w-0">
+    <div class="flex items-baseline gap-2">
+      <span class="text-[13px] font-medium text-white">You</span>
+      <span class="text-[11px] text-zinc-600"><%= message.created_at.strftime("%H:%M") %></span>
+    </div>
+    <div class="mt-1 text-[15px] leading-7 text-zinc-200 whitespace-pre-wrap">
+      <%= simple_format message.content, class: "" %>
+    </div>
+  </div>
+</div>

@@ -1,0 +1,75 @@
+<%= render "layouts/chat_layout" do %>
+  <header class="sticky top-0 z-20 flex h-[64px] items-center justify-between gap-3 border-b border-white/[0.06] bg-[#080809]/80 glass px-4">
+    <div class="flex items-center gap-2">
+      <button id="menuBtn" class="lg:hidden grid size-9 place-items-center rounded-xl bg-white/[0.04] hover:bg-white/[0.08] text-zinc-300">
+        <svg class="size-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+      </button>
+      <h1 class="text-[16px] font-semibold text-white">Billing</h1>
+    </div>
+    <%= link_to billing_portal_path, class: "btn-secondary text-[13px]", target: "_blank" do %>
+      <svg class="size-4 mr-1.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+      Manage in Stripe
+    <% end %>
+  </header>
+
+  <main class="flex-1 overflow-y-auto p-6">
+    <div class="mx-auto max-w-[700px] space-y-6">
+      <!-- Plan -->
+      <div class="card">
+        <h2 class="text-[15px] font-medium text-white mb-4">Current Plan</h2>
+        <div class="flex items-center justify-between">
+          <div>
+            <p class="text-2xl font-bold text-white capitalize"><%= current_organization.plan %></p>
+            <p class="text-[13px] text-zinc-500"><%= current_organization.name %></p>
+          </div>
+          <% if @subscription&.active? %>
+            <%= status_badge("active") %>
+          <% else %>
+            <%= link_to billing_checkout_path(price_id: ENV.fetch("STRIPE_PRICE_ID", "")), class: "btn-primary" do %>
+              Upgrade
+            <% end %>
+          <% end %>
+        </div>
+      </div>
+
+      <!-- Usage -->
+      <div class="card">
+        <h2 class="text-[15px] font-medium text-white mb-4">Usage This Month</h2>
+        <dl class="grid grid-cols-3 gap-4 text-[13px]">
+          <div class="rounded-xl bg-white/[0.03] px-4 py-3">
+            <dt class="text-zinc-500">Tokens</dt>
+            <dd class="text-xl font-bold text-white mt-1"><%= number_with_delimiter(@usage[:tokens_this_month]) %></dd>
+          </div>
+          <div class="rounded-xl bg-white/[0.03] px-4 py-3">
+            <dt class="text-zinc-500">Cost</dt>
+            <dd class="text-xl font-bold text-white mt-1">$<%= sprintf("%.2f", @usage[:cost_this_month_cents].to_f / 100) %></dd>
+          </div>
+          <div class="rounded-xl bg-white/[0.03] px-4 py-3">
+            <dt class="text-zinc-500">Events</dt>
+            <dd class="text-xl font-bold text-white mt-1"><%= @usage[:events_by_type].values.sum %></dd>
+          </div>
+        </dl>
+      </div>
+
+      <!-- Invoices -->
+      <% if @invoices&.any? %>
+        <div class="card">
+          <h2 class="text-[15px] font-medium text-white mb-4">Recent Invoices</h2>
+          <div class="space-y-2">
+            <% @invoices.each do |invoice| %>
+              <div class="flex items-center justify-between rounded-lg bg-white/[0.02] px-3 py-2 text-[13px]">
+                <div class="flex items-center gap-3">
+                  <%= status_badge(invoice.status) %>
+                  <span class="text-zinc-300">$<%= sprintf("%.2f", invoice.amount_dollars) %></span>
+                </div>
+                <span class="text-zinc-500"><%= invoice.created_at.strftime("%b %d, %Y") %></span>
+              </div>
+            <% end %>
+          </div>
+        </div>
+      <% end %>
+    </div>
+  </main>
+
+  <%= render "shared/sidebar_js" %>
+<% end %>

@@ -1,0 +1,58 @@
+<aside class="w-[280px] h-full bg-sidebar border-r border-border flex flex-col">
+  <!-- Logo -->
+  <div class="flex items-center gap-3 px-4 h-[64px] border-b border-white/[0.04]">
+    <div class="relative size-9 grid place-items-center">
+      <svg viewBox="0 0 100 100" class="size-9 drop-shadow-[0_0_20px_rgba(255,138,0,0.35)]">
+        <defs>
+          <linearGradient id="sunGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" stop-color="#FFA500"/>
+            <stop offset="100%" stop-color="#FF7A00"/>
+          </linearGradient>
+        </defs>
+        <g fill="url(#sunGrad)" stroke="url(#sunGrad)" stroke-linejoin="round">
+          <path d="M50 12 L53.5 32 L65 20 L58 38 L78 35 L62 48 L82 58 L62 62 L72 80 L54 68 L50 88 L46 68 L28 80 L38 62 L18 58 L38 48 L22 35 L42 38 L35 20 L46.5 32 Z" fill-opacity="0.95"/>
+          <path d="M50 28 L52 40 L60 36 L55 46 L65 50 L55 54 L60 64 L52 60 L50 72 L48 60 L40 64 L45 54 L35 50 L45 46 L40 36 L48 40 Z" fill-opacity="0.9"/>
+        </g>
+      </svg>
+    </div>
+    <div>
+      <div class="flex items-baseline gap-2">
+        <span class="font-semibold text-white tracking-tight">Shams</span>
+        <span class="font-arabic text-orange-400/90 text-sm">شمس</span>
+      </div>
+      <div class="text-[11px] text-zinc-500">AgentOS</div>
+    </div>
+  </div>
+
+  <!-- New Chat -->
+  <div class="p-3">
+    <%= link_to conversations_path, class: "flex items-center gap-2 rounded-2xl bg-gradient-to-b from-[#ff9a2e] to-[#ff7a00] px-4 py-3 text-[14px] font-semibold text-black justify-center hover:brightness-110 transition" do %>
+      <svg class="size-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 5v14M5 12h14" stroke-linecap="round"/></svg>
+      New Chat
+      <kbd class="ml-auto text-[11px] bg-black/20 px-1.5 py-0.5 rounded text-black/80">⌘K</kbd>
+    <% end %>
+  </div>
+
+  <!-- Conversations -->
+  <nav class="flex-1 overflow-y-auto px-2 space-y-0.5">
+    <% conversations.each do |conv| %>
+      <%= link_to conversation_path(conv), class: "flex items-center gap-2 rounded-lg px-3 py-2 text-[13px] text-zinc-400 hover:bg-white/[0.03] hover:text-zinc-200 truncate" do %>
+        <svg class="size-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+        <span class="truncate"><%= conv.title || "Untitled" %></span>
+      <% end %>
+    <% end %>
+  </nav>
+
+  <!-- User -->
+  <div class="p-3 border-t border-white/[0.04]">
+    <div class="flex items-center gap-3 rounded-2xl bg-white/[0.03] p-2.5">
+      <div class="size-9 rounded-full bg-gradient-to-br from-orange-400 to-orange-600 grid place-items-center text-sm font-bold text-black">
+        <%= user.name.to_s.first.upcase %>
+      </div>
+      <div class="min-w-0 flex-1">
+        <div class="text-[13px] font-medium text-white truncate"><%= user.name %></div>
+        <div class="text-[11px] text-zinc-500 truncate"><%= user.email %></div>
+      </div>
+    </div>
+  </div>
+</aside>

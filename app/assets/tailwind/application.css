@@ -1,0 +1,105 @@
+@import "tailwindcss";
+
+@theme {
+  --color-sidebar: #0f0f12;
+  --color-canvas: #080808;
+  --color-panel: #111113;
+  --color-border: #1f1f23;
+  --color-accent: #ff8a00;
+  --shadow-glow: 0 0 40px rgba(255,138,0,0.15);
+}
+
+@layer base {
+  * {
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  body {
+    @apply bg-canvas text-zinc-200;
+  }
+
+  /* Markdown prose styling */
+  .markdown-body {
+    @apply text-zinc-200 leading-relaxed;
+  }
+
+  .markdown-body h1, .markdown-body h2, .markdown-body h3 {
+    @apply text-white font-semibold mt-4 mb-2;
+  }
+
+  .markdown-body p {
+    @apply mb-3;
+  }
+
+  .markdown-body a {
+    @apply text-orange-400 underline hover:text-orange-300;
+  }
+
+  .markdown-body ul, .markdown-body ol {
+    @apply list-disc pl-6 mb-3;
+  }
+
+  .markdown-body blockquote {
+    @apply border-l-4 border-orange-500/30 pl-4 italic text-zinc-400;
+  }
+
+  .markdown-body pre {
+    @apply bg-zinc-900 rounded-lg p-4 overflow-x-auto text-sm;
+  }
+
+  .markdown-body code {
+    @apply bg-zinc-800/50 px-1.5 py-0.5 rounded text-sm;
+  }
+
+  .markdown-body pre code {
+    @apply bg-transparent p-0;
+  }
+
+  /* Code block header */
+  .code-block-header {
+    @apply flex items-center justify-between px-4 py-2 bg-zinc-800/50 text-xs text-zinc-400 rounded-t-lg;
+  }
+
+  /* Streaming cursor animation */
+  @keyframes blink {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0; }
+  }
+
+  .streaming-cursor::after {
+    content: "▊";
+    animation: blink 1s infinite;
+    @apply text-orange-400;
+  }
+}
+
+@layer components {
+  .btn-primary {
+    @apply inline-flex items-center justify-center rounded-xl bg-gradient-to-b from-orange-400 to-orange-600 px-4 py-2.5 text-sm font-medium text-black shadow-lg shadow-orange-900/20 hover:brightness-110 active:scale-[0.98] transition;
+  }
+
+  .btn-secondary {
+    @apply inline-flex items-center justify-center rounded-xl bg-white/[0.06] px-4 py-2.5 text-sm font-medium text-zinc-300 hover:bg-white/[0.1] transition;
+  }
+
+  .input-field {
+    @apply w-full rounded-xl bg-white/[0.04] border border-white/[0.08] px-4 py-2.5 text-sm text-zinc-100 placeholder-zinc-600 focus:border-orange-500/50 focus:ring-1 focus:ring-orange-500/20 focus:outline-none transition;
+  }
+
+  .card {
+    @apply rounded-2xl border border-white/[0.06] bg-gradient-to-b from-white/[0.04] to-transparent p-4;
+  }
+
+  .badge {
+    @apply inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium;
+  }
+
+  .badge-active {
+    @apply bg-emerald-500/15 text-emerald-400;
+  }
+
+  .badge-inactive {
+    @apply bg-zinc-500/15 text-zinc-400;
+  }
+}

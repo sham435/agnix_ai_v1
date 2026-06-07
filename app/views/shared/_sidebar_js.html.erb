@@ -1,0 +1,46 @@
+<script>
+  // Sidebar toggle.
+  const sidebar = document.getElementById('sidebar');
+  const overlay = document.getElementById('overlay');
+  const menuBtn = document.getElementById('menuBtn');
+  const collapseBtn = document.getElementById('collapseBtn');
+
+  if (menuBtn) {
+    menuBtn.addEventListener('click', () => {
+      sidebar?.classList.remove('-translate-x-full');
+      overlay?.classList.remove('hidden');
+    });
+  }
+
+  if (overlay) {
+    overlay.addEventListener('click', () => {
+      sidebar?.classList.add('-translate-x-full');
+      overlay.classList.add('hidden');
+    });
+  }
+
+  if (collapseBtn) {
+    collapseBtn.addEventListener('click', () => {
+      const labels = sidebar?.querySelectorAll('.sidebar-label');
+      if (sidebar?.classList.contains('w-[280px]')) {
+        sidebar.classList.remove('w-[280px]');
+        sidebar.classList.add('w-[80px]');
+        labels?.forEach(el => { el.classList.add('opacity-0', 'pointer-events-none', 'hidden'); });
+        collapseBtn.querySelector('svg').style.transform = 'rotate(180deg)';
+      } else {
+        sidebar?.classList.remove('w-[80px]');
+        sidebar?.classList.add('w-[280px]');
+        labels?.forEach(el => { el.classList.remove('opacity-0', 'pointer-events-none', 'hidden'); });
+        collapseBtn.querySelector('svg').style.transform = 'rotate(0deg)';
+      }
+    });
+  }
+
+  // ⌘K keyboard shortcut for new chat.
+  document.addEventListener('keydown', (e) => {
+    if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
+      e.preventDefault();
+      window.location.href = '<%= conversations_path %>';
+    }
+  });
+</script>

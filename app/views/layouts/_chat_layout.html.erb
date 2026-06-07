@@ -1,0 +1,118 @@
+<div class="flex h-screen w-full overflow-hidden">
+  <!-- Sidebar -->
+  <aside id="sidebar" class="group/sidebar relative z-40 flex h-full w-[280px] shrink-0 flex-col bg-sidebar border-r border-border transition-all duration-300 ease-[cubic-bezier(.2,.8,.2,1)] lg:translate-x-0 -translate-x-full fixed lg:translate-x-0">
+    <!-- Logo -->
+    <div class="flex items-center gap-3 px-4 h-[64px] border-b border-white/[0.04]">
+      <div class="relative size-9 grid place-items-center">
+        <svg viewBox="0 0 100 100" class="size-9 drop-shadow-[0_0_20px_rgba(255,138,0,0.35)]">
+          <defs>
+            <linearGradient id="sunGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+              <stop offset="0%" stop-color="#FFA500"/>
+              <stop offset="100%" stop-color="#FF7A00"/>
+            </linearGradient>
+          </defs>
+          <g fill="url(#sunGrad)" stroke="url(#sunGrad)" stroke-linejoin="round">
+            <path d="M50 12 L53.5 32 L65 20 L58 38 L78 35 L62 48 L82 58 L62 62 L72 80 L54 68 L50 88 L46 68 L28 80 L38 62 L18 58 L38 48 L22 35 L42 38 L35 20 L46.5 32 Z" fill-opacity="0.95"/>
+            <path d="M50 28 L52 40 L60 36 L55 46 L65 50 L55 54 L60 64 L52 60 L50 72 L48 60 L40 64 L45 54 L35 50 L45 46 L40 36 L48 40 Z" fill-opacity="0.9"/>
+          </g>
+        </svg>
+      </div>
+      <div class="min-w-0 sidebar-label">
+        <div class="flex items-baseline gap-2">
+          <span class="font-semibold text-white tracking-tight">Shams</span>
+          <span class="font-arabic text-orange-400/90 text-sm font-medium">شمس</span>
+        </div>
+        <div class="text-[11px] -mt-0.5 text-zinc-500 font-medium tracking-wide">AgentOS • Rails 8.1</div>
+      </div>
+    </div>
+
+    <!-- New Chat -->
+    <div class="p-3">
+      <%= link_to conversations_path, class: "group relative flex w-full items-center justify-center gap-2 rounded-2xl bg-gradient-to-b from-[#ff9a2e] to-[#ff7a00] px-4 py-3 text-[14px] font-semibold text-black shadow-glow hover:brightness-110 active:scale-[0.98] transition" do %>
+        <svg class="size-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+        <span class="sidebar-label">New Chat</span>
+        <kbd class="sidebar-label absolute right-3 top-1/2 -translate-y-1/2 rounded-md bg-black/20 px-1.5 py-0.5 text-[11px] font-medium text-black/80">⌘K</kbd>
+      <% end %>
+    </div>
+
+    <!-- Nav -->
+    <nav class="flex-1 overflow-y-auto px-2 py-1 space-y-0.5">
+      <div class="px-3 py-2">
+        <p class="sidebar-label text-[11px] font-semibold uppercase tracking-wider text-zinc-600">Workspace</p>
+      </div>
+      <%= link_to conversations_path, class: "nav-item flex items-center gap-3 rounded-xl px-3 py-2.5 text-[14px] text-zinc-300 hover:bg-white/[0.04] hover:text-white transition" do %>
+        <span class="grid size-8 place-items-center rounded-lg bg-white/[0.04] group-hover:bg-white/[0.08] transition">
+          <svg class="size-[18px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+        </span>
+        <span class="sidebar-label">Conversations</span>
+      <% end %>
+      <%= link_to agents_path, class: "nav-item flex items-center gap-3 rounded-xl px-3 py-2.5 text-[14px] text-zinc-300 hover:bg-white/[0.04] hover:text-white transition" do %>
+        <span class="grid size-8 place-items-center rounded-lg bg-orange-500/10 text-orange-400 transition">
+          <svg class="size-[18px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3"/><path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83M1 12h4M19 12h4M4.22 19.78l2.83-2.83M16.95 7.05l2.83-2.83"/></svg>
+        </span>
+        <span class="sidebar-label">Agents</span>
+      <% end %>
+      <%= link_to settings_integrations_path, class: "nav-item flex items-center gap-3 rounded-xl px-3 py-2.5 text-[14px] text-zinc-300 hover:bg-white/[0.04] hover:text-white transition" do %>
+        <span class="grid size-8 place-items-center rounded-lg bg-white/[0.04] transition">
+          <svg class="size-[18px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
+        </span>
+        <span class="sidebar-label">Integrations</span>
+      <% end %>
+      <%= link_to settings_billing_path, class: "nav-item flex items-center gap-3 rounded-xl px-3 py-2.5 text-[14px] text-zinc-300 hover:bg-white/[0.04] hover:text-white transition" do %>
+        <span class="grid size-8 place-items-center rounded-lg bg-white/[0.04] transition">
+          <svg class="size-[18px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M2 10h20"/></svg>
+        </span>
+        <span class="sidebar-label">Billing</span>
+      <% end %>
+
+      <% if @conversations&.any? %>
+        <div class="px-3 pt-4 pb-2">
+          <p class="sidebar-label text-[11px] font-semibold uppercase tracking-wider text-zinc-600">Recent</p>
+        </div>
+        <div class="space-y-0.5">
+          <% @conversations.limit(8).each do |conv| %>
+            <%= link_to conversation_path(conv), class: "flex items-center gap-2 rounded-lg px-3 py-2 text-[13px] text-zinc-400 hover:bg-white/[0.03] hover:text-zinc-200 truncate" do %>
+              <span class="truncate"><%= conv.title || "Untitled conversation" %></span>
+            <% end %>
+          <% end %>
+        </div>
+      <% end %>
+    </nav>
+
+    <!-- Bottom -->
+    <div class="mt-auto border-t border-white/[0.04] p-2 space-y-0.5">
+      <%= link_to settings_profile_path, class: "flex items-center gap-3 rounded-xl px-3 py-2.5 text-[14px] text-zinc-400 hover:bg-white/[0.04] hover:text-white transition" do %>
+        <svg class="size-[18px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="8" r="4"/><path d="M20 21a8 8 0 1 0-16 0"/></svg>
+        <span class="sidebar-label">Settings</span>
+      <% end %>
+      <%= button_to logout_path, method: :delete, class: "flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-[14px] text-zinc-400 hover:bg-white/[0.04] hover:text-white transition" do %>
+        <svg class="size-[18px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+        <span class="sidebar-label">Logout</span>
+      <% end %>
+
+      <!-- User -->
+      <div class="flex items-center gap-3 rounded-2xl bg-white/[0.03] p-2.5 mt-2">
+        <div class="size-9 rounded-full bg-gradient-to-br from-orange-400 to-orange-600 grid place-items-center text-sm font-bold text-black">
+          <%= current_user.name.to_s.first.upcase %>
+        </div>
+        <div class="min-w-0 flex-1">
+          <div class="text-[13px] font-medium text-white truncate"><%= current_user.name %></div>
+          <div class="text-[11px] text-zinc-500"><%= current_user.email %></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Collapse handle -->
+    <button id="collapseBtn" class="absolute -right-3 top-20 hidden lg:grid size-6 place-items-center rounded-full bg-sidebar border border-border text-zinc-500 hover:text-white hover:border-zinc-600 transition shadow-lg">
+      <svg class="size-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="m15 6-6 6 6 6"/></svg>
+    </button>
+  </aside>
+
+  <!-- Overlay for mobile -->
+  <div id="overlay" class="fixed inset-0 z-30 bg-black/60 backdrop-blur-sm lg:hidden hidden"></div>
+
+  <!-- Main Content -->
+  <div class="flex flex-1 flex-col min-w-0 bg-gradient-to-b from-[#0a0a0c] to-[#050507]">
+    <%= yield %>
+  </div>
+</div>

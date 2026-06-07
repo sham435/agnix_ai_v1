@@ -1,0 +1,58 @@
+<!-- Header -->
+<header class="sticky top-0 z-20 flex h-[64px] items-center justify-between gap-3 border-b border-white/[0.06] bg-[#080809]/80 glass px-4">
+  <div class="flex items-center gap-2 min-w-0">
+    <button id="menuBtn" class="lg:hidden grid size-9 place-items-center rounded-xl bg-white/[0.04] hover:bg-white/[0.08] text-zinc-300 shrink-0">
+      <svg class="size-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+    </button>
+    <div class="flex items-center gap-2 min-w-0">
+      <span class="size-6 rounded-lg bg-orange-500/10 grid place-items-center text-orange-400 shrink-0">
+        <svg class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 1v4M12 19v4"/></svg>
+      </span>
+      <span class="text-[14px] font-medium text-white truncate"><%= @conversation.agent.name %></span>
+      <%= form_with model: @conversation.agent, url: agent_path(@conversation.agent), method: :patch, class: "inline-flex", data: { turbo: true } do |f| %>
+        <%= hidden_field_tag :return_to, conversation_path(@conversation) %>
+        <%= f.select :model, Agent::MODELS.values.flatten.map { |m| [m, m] }, { selected: @conversation.agent.model }, class: "text-[12px] text-zinc-500 bg-transparent border-0 outline-none cursor-pointer appearance-none pr-4 focus:text-zinc-200", onchange: "this.form.requestSubmit()" %>
+      <% end %>
+    </div>
+  </div>
+  <div class="flex items-center gap-3 shrink-0">
+    <%= link_to regenerate_conversation_path(@conversation), method: :post,
+        class: "inline-flex items-center gap-2 rounded-full bg-zinc-800 hover:bg-zinc-700 px-4 py-2 text-sm text-zinc-200 transition shrink-0",
+        data: { turbo_confirm: "Regenerate last response?" } do %>
+      <svg class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M4 12a8 8 0 0 1 8-8v0a8 8 0 0 1 8 8" stroke-width="2" stroke-linecap="round"/></svg>
+      Regenerate
+    <% end %>
+    <div class="size-9 shrink-0 rounded-full bg-gradient-to-br from-amber-500 to-orange-500 grid place-items-center text-sm font-bold text-black">
+      <%= current_user.name.to_s.first.upcase %>
+    </div>
+  </div>
+</header>
+
+<!-- Messages -->
+<main class="flex-1 overflow-y-auto" id="messages-container" data-controller="chat" data-conversation-id="<%= @conversation.id %>">
+  <div class="mx-auto max-w-[800px] px-6 py-6 space-y-6" id="messages-list">
+    <% @messages.each do |message| %>
+      <%= render "messages/message", message: message %>
+    <% end %>
+
+    <!-- Streaming placeholder -->
+    <div id="streaming-message" class="hidden">
+      <%= render "messages/assistant_message", message: Message.new(role: :assistant, content: ""), streaming: true %>
+    </div>
+  </div>
+
+  <!-- Scroll to bottom spacer -->
+  <div class="h-32"></div>
+</main>
+
+<!-- Input -->
+<div id="message-form" class="sticky bottom-0 border-t border-white/[0.04] bg-gradient-to-b from-transparent to-[#080809]/90 p-4">
+  <div class="mx-auto max-w-[800px]">
+    <%= render "messages/form", conversation: @conversation, message: Message.new %>
+  </div>
+</div>
+
+<!-- Action Cable subscription for streaming -->
+<%= turbo_stream_from @conversation %>
+
+<%= render "shared/sidebar_js" %>

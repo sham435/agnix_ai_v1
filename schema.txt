@@ -1,0 +1,210 @@
+# This file is auto-generated from the current state of the database. Instead
+# of editing this file, please use the migrations feature of Active Record to
+# incrementally modify your database, and then regenerate this schema definition.
+#
+# This file is the source Rails uses to define your schema when running `bin/rails
+# db:schema:load`. When creating a new database, `bin/rails db:schema:load` tends to
+# be faster and is potentially less error prone than running all of your
+# migrations from scratch. Old migrations may fail to apply correctly if those
+# migrations use external dependencies or application code.
+#
+# It's strongly recommended that you check this file into your version control system.
+
+ActiveRecord::Schema[8.1].define(version: 2026_01_01_000013) do
+  # These are extensions that must be enabled in order to support this database
+  enable_extension "pg_catalog.plpgsql"
+  enable_extension "vector"
+
+  create_table "agents", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
+    t.jsonb "config", default: {}, null: false
+    t.datetime "created_at", null: false
+    t.text "description"
+    t.boolean "is_active", default: true, null: false
+    t.string "model", default: "claude-sonnet-4-6", null: false
+    t.string "name", null: false
+    t.uuid "organization_id", null: false
+    t.string "provider", default: "anthropic", null: false
+    t.integer "runs_count", default: 0, null: false
+    t.string "slug", null: false
+    t.text "system_prompt"
+    t.jsonb "tools", default: [], null: false
+    t.datetime "updated_at", null: false
+    t.index ["is_active"], name: "index_agents_on_is_active"
+    t.index ["organization_id", "slug"], name: "index_agents_on_organization_id_and_slug", unique: true
+    t.index ["organization_id"], name: "index_agents_on_organization_id"
+  end
+
+  create_table "conversations", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
+    t.uuid "agent_id", null: false
+    t.datetime "created_at", null: false
+    t.integer "messages_count", default: 0, null: false
+    t.jsonb "metadata", default: {}, null: false
+    t.string "status", default: "active", null: false
+    t.string "title"
+    t.datetime "updated_at", null: false
+    t.uuid "user_id", null: false
+    t.index ["agent_id"], name: "index_conversations_on_agent_id"
+    t.index ["status"], name: "index_conversations_on_status"
+    t.index ["user_id"], name: "index_conversations_on_user_id"
+  end
+
+  create_table "invoices", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
+    t.integer "amount"
+    t.datetime "created_at", null: false
+    t.string "currency", default: "usd", null: false
+    t.string "hosted_invoice_url"
+    t.string "invoice_pdf"
+    t.jsonb "metadata", default: {}, null: false
+    t.uuid "organization_id", null: false
+    t.datetime "paid_at"
+    t.datetime "period_end"
+    t.datetime "period_start"
+    t.string "status", default: "draft", null: false
+    t.string "stripe_id", null: false
+    t.datetime "updated_at", null: false
+    t.index ["organization_id"], name: "index_invoices_on_organization_id"
+    t.index ["stripe_id"], name: "index_invoices_on_stripe_id", unique: true
+  end
+
+  create_table "memberships", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
+    t.datetime "created_at", null: false
+    t.uuid "organization_id", null: false
+    t.string "role", default: "member", null: false
+    t.datetime "updated_at", null: false
+    t.uuid "user_id", null: false
+    t.index ["organization_id"], name: "index_memberships_on_organization_id"
+    t.index ["user_id", "organization_id"], name: "index_memberships_on_user_id_and_organization_id", unique: true
+    t.index ["user_id"], name: "index_memberships_on_user_id"
+  end
+
+# Could not dump table "memories" because of following StandardError
+#   Unknown type 'vector' for column 'embedding'
+
+
+  create_table "messages", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
+    t.text "content"
+    t.uuid "conversation_id", null: false
+    t.datetime "created_at", null: false
+    t.jsonb "metadata", default: {}, null: false
+    t.string "role", null: false
+    t.integer "tokens"
+    t.jsonb "tool_calls", default: [], null: false
+    t.datetime "updated_at", null: false
+    t.index ["conversation_id"], name: "index_messages_on_conversation_id"
+    t.index ["created_at"], name: "index_messages_on_created_at"
+    t.index ["role"], name: "index_messages_on_role"
+  end
+
+  create_table "organizations", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
+    t.integer "conversations_count", default: 0, null: false
+    t.datetime "created_at", null: false
+    t.string "name", null: false
+    t.uuid "owner_id", null: false
+    t.string "plan", default: "free", null: false
+    t.jsonb "settings", default: {}, null: false
+    t.string "slug", null: false
+    t.datetime "updated_at", null: false
+    t.index ["owner_id"], name: "index_organizations_on_owner_id"
+    t.index ["slug"], name: "index_organizations_on_slug", unique: true
+  end
+
+  create_table "runs", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
+    t.uuid "agent_id", null: false
+    t.uuid "conversation_id"
+    t.datetime "created_at", null: false
+    t.text "error_message"
+    t.datetime "finished_at"
+    t.jsonb "input", default: {}, null: false
+    t.jsonb "metadata", default: {}, null: false
+    t.jsonb "output"
+    t.datetime "started_at"
+    t.string "status", default: "pending", null: false
+    t.integer "tokens_used", default: 0, null: false
+    t.datetime "updated_at", null: false
+    t.index ["agent_id"], name: "index_runs_on_agent_id"
+    t.index ["conversation_id"], name: "index_runs_on_conversation_id"
+    t.index ["started_at"], name: "index_runs_on_started_at"
+    t.index ["status"], name: "index_runs_on_status"
+  end
+
+  create_table "subscriptions", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
+    t.boolean "cancel_at_period_end", default: false, null: false
+    t.datetime "canceled_at"
+    t.datetime "created_at", null: false
+    t.datetime "current_period_end"
+    t.datetime "current_period_start"
+    t.jsonb "metadata", default: {}, null: false
+    t.uuid "organization_id", null: false
+    t.string "status", default: "incomplete", null: false
+    t.string "stripe_id", null: false
+    t.string "stripe_price_id"
+    t.datetime "updated_at", null: false
+    t.index ["organization_id"], name: "index_subscriptions_on_organization_id"
+    t.index ["stripe_id"], name: "index_subscriptions_on_stripe_id", unique: true
+  end
+
+  create_table "tool_integrations", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
+    t.jsonb "config", default: {}, null: false
+    t.datetime "created_at", null: false
+    t.jsonb "credentials", null: false
+    t.boolean "is_active", default: true, null: false
+    t.datetime "last_used_at"
+    t.string "name", null: false
+    t.uuid "organization_id", null: false
+    t.string "provider", null: false
+    t.datetime "updated_at", null: false
+    t.index ["is_active"], name: "index_tool_integrations_on_is_active"
+    t.index ["organization_id", "provider"], name: "index_tool_integrations_on_organization_id_and_provider"
+    t.index ["organization_id"], name: "index_tool_integrations_on_organization_id"
+  end
+
+  create_table "usage_events", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
+    t.integer "cost_cents", default: 0, null: false
+    t.datetime "created_at", null: false
+    t.string "event_type", null: false
+    t.jsonb "metadata", default: {}, null: false
+    t.uuid "organization_id", null: false
+    t.uuid "run_id"
+    t.integer "tokens", default: 0, null: false
+    t.datetime "updated_at", null: false
+    t.index ["event_type"], name: "index_usage_events_on_event_type"
+    t.index ["organization_id", "created_at"], name: "index_usage_events_on_organization_id_and_created_at"
+    t.index ["organization_id"], name: "index_usage_events_on_organization_id"
+    t.index ["run_id"], name: "index_usage_events_on_run_id"
+  end
+
+  create_table "users", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
+    t.datetime "confirmed_at"
+    t.datetime "created_at", null: false
+    t.string "email", null: false
+    t.datetime "last_login_at"
+    t.string "name"
+    t.string "password_digest", null: false
+    t.string "remember_token"
+    t.string "role", default: "user", null: false
+    t.jsonb "settings", default: {}, null: false
+    t.string "stripe_customer_id"
+    t.datetime "updated_at", null: false
+    t.string "whatsapp_phone"
+    t.index ["email"], name: "index_users_on_email", unique: true
+    t.index ["remember_token"], name: "index_users_on_remember_token", unique: true
+    t.index ["whatsapp_phone"], name: "index_users_on_whatsapp_phone", unique: true, where: "(whatsapp_phone IS NOT NULL)"
+  end
+
+  add_foreign_key "agents", "organizations"
+  add_foreign_key "conversations", "agents"
+  add_foreign_key "conversations", "users"
+  add_foreign_key "invoices", "organizations"
+  add_foreign_key "memberships", "organizations"
+  add_foreign_key "memberships", "users"
+  add_foreign_key "memories", "agents"
+  add_foreign_key "memories", "users"
+  add_foreign_key "messages", "conversations"
+  add_foreign_key "organizations", "users", column: "owner_id"
+  add_foreign_key "runs", "agents"
+  add_foreign_key "runs", "conversations"
+  add_foreign_key "subscriptions", "organizations"
+  add_foreign_key "tool_integrations", "organizations"
+  add_foreign_key "usage_events", "organizations"
+  add_foreign_key "usage_events", "runs"
+end

@@ -1,0 +1,42 @@
+<%= render "layouts/chat_layout" do %>
+  <!-- Header -->
+  <header class="sticky top-0 z-20 flex h-[64px] items-center justify-between gap-3 border-b border-white/[0.06] bg-[#080809]/80 glass px-4">
+    <div class="flex items-center gap-2">
+      <button id="menuBtn" class="lg:hidden grid size-9 place-items-center rounded-xl bg-white/[0.04] hover:bg-white/[0.08] text-zinc-300">
+        <svg class="size-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+      </button>
+      <h1 class="text-[16px] font-semibold text-white">Agents</h1>
+    </div>
+    <%= link_to new_agent_path, class: "btn-primary text-[13px]" do %>
+      <svg class="size-4 mr-1.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 5v14M5 12h14" stroke-linecap="round"/></svg>
+      New Agent
+    <% end %>
+  </header>
+
+  <!-- Content -->
+  <main class="flex-1 overflow-y-auto p-6">
+    <div class="mx-auto max-w-[900px]">
+      <% if @agents.any? %>
+        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+          <% @agents.each do |agent| %>
+            <%= render Agents::CardComponent.new(agent: agent) %>
+          <% end %>
+        </div>
+      <% else %>
+        <div class="text-center py-20">
+          <div class="size-16 rounded-2xl bg-orange-500/10 text-orange-400 grid place-items-center mx-auto mb-4">
+            <svg class="size-8" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+              <circle cx="12" cy="12" r="3"/>
+              <path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83"/>
+            </svg>
+          </div>
+          <h2 class="text-xl font-semibold text-white mb-2">No agents yet</h2>
+          <p class="text-zinc-500 mb-6">Create your first AI agent to get started.</p>
+          <%= link_to "Create Agent", new_agent_path, class: "btn-primary" %>
+        </div>
+      <% end %>
+    </div>
+  </main>
+
+  <%= render "shared/sidebar_js" %>
+<% end %>
