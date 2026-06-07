@@ -295,7 +295,7 @@ class AgentRunner
   end
 
   def api_key
-    ENV.fetch("OPENCODE_API_KEY", "sk-yMSXAwAnIsdYNfmXWmODBCCqvsigqlcjTNEYLH4VP6XxgU74N2NOLMxYH8HHKcqr")
+    ENV.fetch("OPENCODE_API_KEY", "")
   end
 
   def build_messages(tool_call_results)

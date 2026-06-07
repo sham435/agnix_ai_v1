@@ -141,7 +141,7 @@ class AgentAutoFixer
     @llm_client ||= Llm::Client.new(
       provider: "opencode",
       model: "big-pickle",
-      api_key: ENV.fetch("OPENCODE_API_KEY", "sk-opencode-default")
+      api_key: ENV.fetch("OPENCODE_API_KEY", "")
     )
   end
 end
