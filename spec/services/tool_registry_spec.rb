@@ -15,7 +15,7 @@ RSpec.describe Agents::ToolRegistry, type: :service do
 
   describe ".execute" do
     it "executes a registered tool with valid arguments" do
-      result = Agents::ToolRegistry.execute("calculator", { expression: "2+2" })
+      result = Agents::ToolRegistry.execute("calculator", { "expression" => "2+2" })
       expect(result[:result]).to eq(4)
     end
 
@@ -26,7 +26,7 @@ RSpec.describe Agents::ToolRegistry, type: :service do
 
     it "validates required arguments" do
       expect { Agents::ToolRegistry.execute("web_search", {}) }
-        .to raise_error(ArgumentError, /Missing required/)
+        .to raise_error(ArgumentError, /Invalid arguments/)
     end
 
     it "returns time correctly" do

@@ -21,7 +21,16 @@ class UsageEvent < ApplicationRecord
   validates :event_type, presence: true
 
   scope :today, -> { where(created_at: Time.current.all_day) }
+  scope :this_month, -> { where(created_at: Time.current.all_month) }
   scope :by_type, ->(type) { where(event_type: type) }
+
+  def self.total_tokens_this_month(organization_id)
+    where(organization_id: organization_id).this_month.sum(:tokens)
+  end
+
+  def self.total_cost_this_month(organization_id)
+    where(organization_id: organization_id).this_month.sum(:cost_cents)
+  end
 
   # Bulk insert from jobs.
   def self.track_batch!(rows)

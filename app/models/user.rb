@@ -33,6 +33,7 @@ class User < ApplicationRecord
   normalizes :email, with: ->(e) { e.strip.downcase }
   normalizes :whatsapp_phone, with: ->(p) { p&.gsub(/\D/, "") }
 
+  validates :name, presence: true
   validates :email, presence: true, uniqueness: true, format: { with: URI::MailTo::EMAIL_REGEXP }
   validates :password_digest, presence: true
 

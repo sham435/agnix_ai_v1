@@ -27,7 +27,7 @@ class Agent < ApplicationRecord
 
   belongs_to :organization, touch: true
 
-  has_many :conversations, dependent: :nullify
+  has_many :conversations, dependent: :destroy
   has_many :runs, dependent: :destroy, counter_cache: true
   has_many :memories, dependent: :nullify
   has_many :projects, dependent: :destroy

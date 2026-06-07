@@ -4,13 +4,31 @@ RSpec.describe StripeService, type: :service do
   let(:organization) { create(:organization, plan: "pro") }
 
   describe ".handle_webhook" do
-    let(:payload) { '{"type": "invoice.payment_succeeded", "data": {"object": {"id": "in_test", "amount_due": 1000, "currency": "usd", "status": "paid", "hosted_invoice_url": "https://invoice.stripe.com/test", "period_start": 1704067200, "period_end": 1706745600, "status_transitions": {"paid_at": 1704067200}}}}' }
+    let(:payload) do
+      {
+        type: "invoice.payment_succeeded",
+        data: {
+          object: {
+            id: "in_test",
+            amount_due: 1000,
+            currency: "usd",
+            status: "paid",
+            hosted_invoice_url: "https://invoice.stripe.com/test",
+            invoice_pdf: "https://invoice.stripe.com/test/pdf",
+            period_start: 1704067200,
+            period_end: 1706745600,
+            status_transitions: { paid_at: 1704067200 },
+            metadata: { organization_id: organization.id }
+          }
+        }
+      }.to_json
+    end
     let(:signature) { "test_signature" }
 
     before do
       allow(Stripe::Webhook).to receive(:construct_event)
         .with(payload, signature, anything)
-        .and_return(Stripe::Event.construct(JSON.parse(payload)))
+        .and_return(Stripe::Event.construct_from(JSON.parse(payload)))
     end
 
     it "creates an invoice record" do
