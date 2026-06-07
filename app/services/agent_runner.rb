@@ -146,7 +146,7 @@ class AgentRunner
     step_outputs = agent_run.todos.order(:position).map { |t| t.result.to_s.strip }.reject(&:blank?)
     if step_outputs.any? && conversation.messages.where(role: "assistant").where("content LIKE ?", "[Step summary]%").none?
       summary = step_outputs.first.truncate(2000)
-      conversation.messages.create!(role: "assistant", content: summary, agent: agent)
+      conversation.messages.create!(role: "assistant", content: summary)
     end
   end
 
