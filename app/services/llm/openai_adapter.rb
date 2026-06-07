@@ -13,7 +13,7 @@ module Llm
     end
 
     def chat(messages:, tools:, temperature:, max_tokens:, stream: false)
-      Rails.logger.info "[OpenCode] chat model=#{model} tools=#{tools.present?} stream=#{stream}"
+      Rails.logger.info "[agnix] chat model=#{model} tools=#{tools.present?} stream=#{stream}"
       if stream
         stream_chat(messages: messages, tools: tools, temperature: temperature, max_tokens: max_tokens)
       else
@@ -82,7 +82,7 @@ module Llm
       )
 
       unless response.success?
-        Rails.logger.error "[OpenCode] ERROR #{response.code} - #{response.body.truncate(500)}"
+        Rails.logger.error "[agnix] ERROR #{response.code} - #{response.body.truncate(500)}"
         raise LlmError, "OpenAI API error: #{response.code} - #{response.body}"
       end
 

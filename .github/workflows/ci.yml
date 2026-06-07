@@ -11,7 +11,7 @@ jobs:
 
     services:
       postgres:
-        image: postgres:16
+        image: pgvector/pgvector:pg16
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
@@ -40,12 +40,11 @@ jobs:
       - name: Install system deps
         run: |
           sudo apt-get update
-          sudo apt-get install -y libpq-dev libvips postgresql-client postgresql-16-pgvector
+          sudo apt-get install -y libpq-dev libvips
 
       - name: Setup DB
         run: |
-          PGPASSWORD=postgres psql -h localhost -U postgres -c "CREATE DATABASE agnix_test ENCODING 'unicode'" || true
-          PGPASSWORD=postgres psql -h localhost -U postgres -d agnix_test -c "CREATE EXTENSION IF NOT EXISTS vector"
+          bin/rails db:create
           bin/rails db:schema:load
 
       - name: Run RSpec
