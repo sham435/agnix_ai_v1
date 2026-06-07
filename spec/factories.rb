@@ -156,4 +156,18 @@ FactoryBot.define do
     tokens { 500 }
     cost_cents { 15 }
   end
+
+  factory :agent_run do
+    association :conversation
+    mode { "auto_plan" }
+    status { "planning" }
+    reasoning_steps { [] }
+  end
+
+  factory :agent_todo do
+    association :agent_run
+    title { "Do something" }
+    status { "pending" }
+    position { 0 }
+  end
 end

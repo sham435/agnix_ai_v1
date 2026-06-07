@@ -31,6 +31,11 @@ Shoulda::Matchers.configure do |config|
   end
 end
 
+# Include ActiveSupport time helpers for travel_to/freeze_time.
+RSpec.configure do |config|
+  config.include ActiveSupport::Testing::TimeHelpers
+end
+
 # Configure Capybara.
 Capybara.server = :puma, { Silent: true }
 Capybara.javascript_driver = :cuprite
