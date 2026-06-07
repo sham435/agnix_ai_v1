@@ -40,11 +40,12 @@ jobs:
       - name: Install system deps
         run: |
           sudo apt-get update
-          sudo apt-get install -y libpq-dev libvips
+          sudo apt-get install -y libpq-dev libvips postgresql-client postgresql-16-pgvector
 
       - name: Setup DB
         run: |
-          bin/rails db:create
+          PGPASSWORD=postgres psql -h localhost -U postgres -c "CREATE DATABASE agnix_test ENCODING 'unicode'" || true
+          PGPASSWORD=postgres psql -h localhost -U postgres -d agnix_test -c "CREATE EXTENSION IF NOT EXISTS vector"
           bin/rails db:schema:load
 
       - name: Run RSpec
