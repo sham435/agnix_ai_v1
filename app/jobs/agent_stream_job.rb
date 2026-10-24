@@ -1,8 +1,21 @@
+require "timeout"
+
 class AgentStreamJob < ApplicationJob
   queue_as :agents
 
+  # Runaway guard (seconds). Comfortably above the slowest legitimate
+  # generation (local models can take minutes per the adapter read timeouts),
+  # so it only trips when a provider socket has truly wedged. On trip, Timeout
+  # raises; whatever error path catches it (the runner's internal rescue or
+  # this job's) the placeholder is finalized and the browser stops "thinking"
+  # instead of spinning forever.
+  RUN_TIMEOUT_SECONDS = 15 * 60
+
   def perform(conversation_id:, user_id:, message_content: nil, channel: :web, phone_number: nil, resume_agent_run_id: nil, message_id: nil, request_id: nil)
     @request_id = request_id.presence
+    # Latch flipped exactly once a terminal frame (completed/failed) has gone
+    # out, so the `ensure` safety net never double-announces.
+    @terminal_broadcasted = false
     conversation = Conversation.find(conversation_id)
     user = User.find(user_id)
     agent = conversation.agent
@@ -51,14 +64,18 @@ class AgentStreamJob < ApplicationJob
       streaming_message: streaming_msg
     )
 
-    if resume_agent_run_id
-      agent_run = AgentRun.find(resume_agent_run_id)
-      runner.resume_plan(agent_run, stream: true) do |chunk|
-        broadcast_chunk(conversation, streaming_msg.id, chunk)
-      end
-    else
-      runner.run(message_content, stream: true) do |chunk|
-        broadcast_chunk(conversation, streaming_msg.id, chunk)
+    # Bound the whole run so a wedged provider call can never pin this worker
+    # (and leave a placeholder spinning with no terminal frame) indefinitely.
+    Timeout.timeout(RUN_TIMEOUT_SECONDS) do
+      if resume_agent_run_id
+        agent_run = AgentRun.find(resume_agent_run_id)
+        runner.resume_plan(agent_run, stream: true) do |chunk|
+          broadcast_chunk(conversation, streaming_msg.id, chunk)
+        end
+      else
+        runner.run(message_content, stream: true) do |chunk|
+          broadcast_chunk(conversation, streaming_msg.id, chunk)
+        end
       end
     end
 
@@ -66,7 +83,7 @@ class AgentStreamJob < ApplicationJob
 
     # Replace streaming message with final rendered version (no cursor).
     broadcast_replace(conversation, streaming_msg.reload, streaming: false)
-
+    mark_terminal
     ActionCable.server.broadcast("conversation:#{conversation.id}",
       terminal_payload(conversation, streaming_msg.id, type: "completed"))
 
@@ -92,20 +109,81 @@ class AgentStreamJob < ApplicationJob
       failed[:message_id] = @streaming_msg_id if @streaming_msg_id
       failed[:request_id] = @request_id if @request_id
       ActionCable.server.broadcast("conversation:#{conversation.id}", failed)
+      mark_terminal
     rescue StandardError, NameError => be
       # `conversation` itself may be nil/undefined if the failure happened
       # before it was loaded — that is still only a logging condition here.
       Rails.logger.error "[AgentStreamJob] BROADCAST-ERROR #{be.class}: #{be.message}"
     end
 
+    # The runner clears the placeholder's streaming flag on the paths it
+    # controls, but a failure that never reached a final update (a raise before
+    # the loop, a Timeout the runner couldn't swallow, a mid-stream crash) would
+    # otherwise leave the row "live" — a refresh would keep showing the thinking
+    # indicator until the stale window elapsed. Finalize it now so recovery is
+    # immediate and honest.
+    finalize_placeholder_if_streaming(streaming_msg)
+
     begin
       AgentAutoFixer.new(error: e, backtrace: e.backtrace.to_a, conversation: conversation).call
     rescue StandardError, NameError => fe
       Rails.logger.error "[AgentStreamJob] AUTO-FIX-ERROR (ignored) #{fe.class}: #{fe.message}"
     end
+  ensure
+    # Ultimate safety net. If neither the happy path nor the rescue emitted a
+    # terminal frame — an Exception outside the StandardError rescue, or a
+    # failure while broadcasting — force one so the live browser never spins
+    # forever and no phantom "streaming" row is left behind.
+    recover_unended_run(conversation, streaming_msg) unless @terminal_broadcasted
   end
 
   private
+
+  # Flip the terminal latch so `ensure` knows a completed/failed frame went out.
+  def mark_terminal
+    @terminal_broadcasted = true
+  end
+
+  # Drop the live "streaming" flag on a placeholder that is still marked live.
+  # Marks an empty body as `empty_response` so the finalized render shows an
+  # honest recovery state rather than a blank bubble. Never clobbers a real
+  # answer that already cleared the flag (guarded by `streaming?`).
+  def finalize_placeholder_if_streaming(message)
+    return unless message&.persisted?
+
+    fresh = message.reload
+    return unless fresh.streaming?
+
+    meta = fresh.metadata.is_a?(Hash) ? fresh.metadata.dup : {}
+    meta.delete("streaming")
+    meta["stream_started_at"] ||= Time.current.utc.iso8601
+    meta["empty_response"] = true if fresh.content.to_s.empty?
+    fresh.update!(metadata: meta)
+  rescue StandardError, NameError => e
+    Rails.logger.error "[AgentStreamJob] PLACEHOLDER-FINALIZE-ERROR #{e.class}: #{e.message}"
+  end
+
+  # Emit a terminal `failed` frame (and finalize the row) when a run exited
+  # without one. Best-effort: everything is guarded so this never raises out of
+  # the `ensure` clause.
+  def recover_unended_run(conversation, streaming_msg)
+    return if conversation.nil?
+
+    finalize_placeholder_if_streaming(streaming_msg)
+    payload = {
+      type: "failed",
+      code: "run_incomplete",
+      message: "The response did not complete. Please try again.",
+      conversation_id: conversation.id
+    }
+    payload[:message_id] = streaming_msg&.id
+    payload[:request_id] = @request_id if @request_id
+    ActionCable.server.broadcast("conversation:#{conversation.id}", payload)
+    broadcast_replace(conversation, streaming_msg.reload, streaming: false) if streaming_msg&.persisted?
+    @terminal_broadcasted = true
+  rescue StandardError, NameError => e
+    Rails.logger.error "[AgentStreamJob] RECOVER-ERROR #{e.class}: #{e.message}"
+  end
 
   # A retried enqueue (Solid Queue at-least-once) must never stack two live
   # placeholders for the same request. Reuse the in-flight row when present.

@@ -246,4 +246,43 @@ RSpec.describe AgentStreamJob, type: :job do
     )
     expect(conversation.messages.where(role: "assistant").count).to eq(first_count)
   end
+
+  # ── stalled / failed run live-recovery (spec: no perpetual thinking) ──
+
+  it "clears the placeholder's live flag on failure so recovery is immediate (not deferred to the stale window)" do
+    # A provider error raised straight out of the run (bypassing the runner's
+    # internal finalize) must not leave the row "streaming" — otherwise a
+    # refresh keeps showing the thinking indicator until the 2-minute stale
+    # window elapses. The job's rescue now finalizes it in one write.
+    allow(runner).to receive(:run).and_raise(Llm::OpenaiAdapter::LlmError, "provider down")
+
+    described_class.perform_now(
+      conversation_id: conversation.id, user_id: user.id,
+      message_content: "Hi", request_id: "req-fail"
+    )
+
+    placeholder = conversation.messages.reload.where(role: "assistant").order(:created_at).last
+    expect(placeholder.streaming?).to be(false)
+    expect(placeholder.metadata).to include("empty_response" => true)
+    expect(placeholder.metadata).not_to include("streaming")
+  end
+
+  it "still emits a terminal frame and finalizes the row when no StandardError handler runs" do
+    # A non-StandardError (or an error escaping the rescue) is caught by the
+    # `ensure` safety net: the browser gets a terminal `failed` frame and the
+    # placeholder stops being live, so the UI never spins forever.
+    allow(runner).to receive(:run).and_raise(Exception, "wedged worker")
+    payloads = broadcasted_payloads
+
+    expect do
+      described_class.perform_now(
+        conversation_id: conversation.id, user_id: user.id,
+        message_content: "Hi", request_id: "req-ensure"
+      )
+    end.to raise_error(Exception, "wedged worker")
+
+    expect(payloads.map { |p| p[:type] }).to include("failed")
+    placeholder = conversation.messages.reload.where(role: "assistant").order(:created_at).last
+    expect(placeholder.streaming?).to be(false)
+  end
 end

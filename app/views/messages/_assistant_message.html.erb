@@ -7,6 +7,7 @@
   streaming = raw_streaming && !stale
   is_empty = !streaming && message.empty_response?
   req_id = message.metadata.is_a?(Hash) ? message.metadata["request_id"] : nil
+  stream_started_at = message.metadata.is_a?(Hash) ? message.metadata["stream_started_at"] : nil
 %>
 <div id="assistant-message-<%= message.id %>"
      class="group/message relative isolate"
@@ -15,7 +16,8 @@
      data-message-role="assistant"
      data-streaming="<%= streaming ? "true" : "false" %>"
      data-empty-response="<%= is_empty ? "true" : "false" %>"
-     <% if req_id.present? %>data-request-id="<%= req_id %>"<% end %>>
+     <% if req_id.present? %>data-request-id="<%= req_id %>"<% end %>
+     <% if streaming && stream_started_at.present? %>data-stream-started-at="<%= stream_started_at %>"<% end %>>
   <div class="flex gap-3.5">
 
     <%= link_to conversation_path(message.conversation), class: "shrink-0 mt-1" do %>

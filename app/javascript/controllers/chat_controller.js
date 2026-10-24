@@ -32,17 +32,50 @@ export default class extends Controller {
   // the user stay where they are.
   static SCROLL_PIN_THRESHOLD = 160
 
+  // A genuinely active run keeps emitting frames (status heartbeats, tool
+  // events, content deltas), each of which refreshes its turn's activity
+  // clock. When a run falls completely silent for longer than this, the job
+  // has hung or its worker died mid-flight — no terminal frame will ever
+  // arrive. Retire the perpetual "thinking" state and show an honest recovery
+  // hint so the live tab never spins forever. Set just under the server's
+  // 2-minute stale window and well above normal inter-token gaps.
+  static STALL_MS = 100000
+
+  // Absolute upper bound on how long we're willing to show a "thinking"
+  // indicator for a single run, measured from the run's start stamp (not its
+  // last frame). A slow-but-talking run legitimately keeps its dots alive
+  // past STALL_MS, but if a run has been streaming reasoning for longer than
+  // the composer's GENERATION_TIMEOUT_MS without finalising, we surface an
+  // honest "didn't finish" state at the same instant the composer frees its
+  // Send guard. Keeps visual state and input state in lock-step. Aligned
+  // with ChatInputController.GENERATION_TIMEOUT_MS.
+  static GENERATION_CEILING_MS = 130000
+
   connect() {
-    this.turns = new Map() // key -> { key, rid, mid, text, phase, done, failed, error }
+    this.turns = new Map() // key -> { key, rid, mid, text, phase, done, failed, error, lastActivity }
     this.subscribeToChannel()
     this.observeMessagesList()
     this.bindScrollTracking()
     // First paint on a loaded conversation should always show the newest
     // message; subsequent auto-pins honour the wasNearBottom flag.
     this.forceScrollToBottom()
+    // Periodic stall sweep — the live-view counterpart of the server-side
+    // stale-run recovery, which only helps after a manual refresh. Two passes:
+    //   * sweepStalledTurns retires cable-bridged turns that fell silent
+    //   * sweepStalledPlaceholders retires server-rendered placeholders that
+    //     never produced a turn at all (e.g. the dashboard's first message
+    //     after the Turbo redirect, when the job died before any frame landed)
+    this._sweepTimer = setInterval(() => {
+      this.sweepStalledTurns()
+      this.sweepStalledPlaceholders()
+    }, 5000)
   }
 
   disconnect() {
+    if (this._sweepTimer) {
+      clearInterval(this._sweepTimer)
+      this._sweepTimer = null
+    }
     if (this.subscription) {
       this.subscription.unsubscribe()
       this.subscription = null
@@ -123,7 +156,7 @@ export default class extends Controller {
     if (!turn) {
       const key = rid || mid
       if (!key) return null
-      turn = { key, rid: rid || null, mid: mid || null, text: "", phase: null, done: false, failed: false, error: null }
+      turn = { key, rid: rid || null, mid: mid || null, text: "", phase: null, done: false, failed: false, error: null, startedAt: Date.now() }
       this.turns.set(key, turn)
     }
     if (rid && turn.key !== rid) {
@@ -134,6 +167,9 @@ export default class extends Controller {
     }
     if (rid) turn.rid = rid
     if (mid && !turn.mid) turn.mid = mid
+    // Any frame touching this turn refreshes its activity clock — the stall
+    // sweep only fires on genuine silence, never on a slow-but-live run.
+    if (turn && !turn.done && !turn.failed) turn.lastActivity = Date.now()
     return turn
   }
 
@@ -178,6 +214,12 @@ export default class extends Controller {
     if (body) {
       if (turn.mid) body.setAttribute("data-streaming-content", turn.mid)
       if (body.textContent !== turn.text) body.textContent = turn.text
+    }
+
+    // A late token after a stall hint: real content has arrived, so drop the
+    // "didn't finish" recovery banner — the answer is actually coming.
+    if (turn.text) {
+      container.querySelectorAll("[data-stale-response-body]").forEach((n) => n.remove())
     }
 
     // Drive the collapsible trace if the container carries one.
@@ -351,6 +393,104 @@ export default class extends Controller {
       el.textContent += "\n\n[Generation stopped]"
     }
     this.destroyIndicators(document)
+  }
+
+  // ── Stall sweep (hung / dead-worker live recovery) ──────────────────
+  // The server can only flip a run to "didn't finish" on a refresh once its
+  // stale window elapses. A live tab that never receives a terminal frame
+  // (provider socket wedged, job worker killed) would spin forever. Retire
+  // those silent turns locally, honestly, without waiting on a refresh.
+  //
+  // Two independent triggers, either one is enough:
+  //   * Silence: no frame for STALL_MS (100s) — the run has clearly stopped
+  //     talking to us (dead worker / wedged socket / dropped connection).
+  //   * Absolute ceiling: total elapsed since the run's start exceeds
+  //     GENERATION_CEILING_MS (130s) — the run may still be streaming
+  //     reasoning frames but we've held the user's "thinking" indicator
+  //     long enough; matches the composer's GENERATION_TIMEOUT_MS so input
+  //     state and visual state free together.
+  sweepStalledTurns() {
+    const now = Date.now()
+    for (const turn of Array.from(this.turns.values())) {
+      if (turn.done || turn.failed) continue
+      if (!turn.lastActivity) continue
+      const silent = now - turn.lastActivity > this.constructor.STALL_MS
+      const exceeded = this.turnElapsed(turn, now) > this.constructor.GENERATION_CEILING_MS
+      if (!silent && !exceeded) continue
+      this.stallTurn(turn)
+      this.turns.delete(turn.key)
+    }
+  }
+
+  // Absolute ms since the run's start, using the server stamp when the browser
+  // received one and falling back to the local turn-creation clock otherwise.
+  turnElapsed(turn, now = Date.now()) {
+    if (turn.streamStartedAt) {
+      const started = Date.parse(turn.streamStartedAt)
+      if (!Number.isNaN(started)) return now - started
+    }
+    if (turn.startedAt) return now - turn.startedAt
+    return 0
+  }
+
+  stallTurn(turn) {
+    const container = this.resolveContainer(turn.rid, turn.mid)
+    if (container) {
+      // Stop the animated dots and remove the transient acknowledgment cue.
+      this.destroyIndicators(container)
+      container.dataset.streaming = "false"
+      // Only fall back to the recovery banner when nothing real has streamed —
+      // a partial answer stays on screen rather than being overwritten.
+      const body = container.querySelector("[data-streaming-content]")
+      const hasContent = body && body.textContent.trim().length > 0
+      if (!hasContent && !container.querySelector("[data-stale-response-body]")) {
+        const hint = document.createElement("div")
+        hint.className = "rounded-xl border border-amber-500/20 bg-amber-500/[0.04] px-3.5 py-2.5 text-[13.5px] text-amber-200/80 mt-2"
+        hint.setAttribute("data-stale-response-body", "")
+        hint.textContent = "This response didn't finish. Click Regenerate to try again."
+        if (body) body.insertAdjacentElement("beforebegin", hint)
+        else container.appendChild(hint)
+      }
+    }
+    // Free the composer guard so Send is usable again for this stalled run.
+    this.broadcastTerminal("stalled", turn.rid, turn.mid)
+  }
+
+  // DOM counterpart for placeholders the server rendered but that never
+  // produced a cable-bridged turn — the dashboard's first message after the
+  // Turbo redirect when the job died before emitting any frame. Those have no
+  // entry in this.turns, so sweepStalledTurns can't see them. We retire them
+  // off their absolute start stamp, leaving any live turn to sweepStalledTurns
+  // (which is activity-aware and therefore safer for in-flight streaming).
+  sweepStalledPlaceholders() {
+    const now = Date.now()
+    this.element
+      .querySelectorAll('[data-message-role="assistant"][data-streaming="true"][data-stream-started-at]')
+      .forEach((container) => {
+        const rid = container.getAttribute("data-request-id")
+        const turn = rid ? this.turns.get(rid) : null
+        // A live turn owns this container — defer to the activity-aware sweep.
+        if (turn && !turn.done && !turn.failed) return
+
+        const started = Date.parse(container.getAttribute("data-stream-started-at"))
+        if (Number.isNaN(started)) return
+        if (now - started <= this.constructor.STALL_MS) return
+
+        // Keep any partial answer already on screen; only retire empty ones.
+        const body = container.querySelector("[data-streaming-content]")
+        if (body && body.textContent.trim().length > 0) return
+
+        this.destroyIndicators(container)
+        container.dataset.streaming = "false"
+        if (body && !container.querySelector("[data-stale-response-body]")) {
+          const hint = document.createElement("div")
+          hint.className = "rounded-xl border border-amber-500/20 bg-amber-500/[0.04] px-3.5 py-2.5 text-[13.5px] text-amber-200/80 mt-2"
+          hint.setAttribute("data-stale-response-body", "")
+          hint.textContent = "This response didn't finish. Click Regenerate to try again."
+          body.insertAdjacentElement("beforebegin", hint)
+        }
+        this.broadcastTerminal("stalled", rid, container.getAttribute("data-message-id"))
+      })
   }
 
   // ── Scroll pinning ─────────────────────────────────────────────────────

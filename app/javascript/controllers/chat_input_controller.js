@@ -320,6 +320,11 @@ export default class extends Controller {
     node.setAttribute("data-request-id", clientRequestId)
     node.setAttribute("data-message-role", "assistant")
     node.setAttribute("data-streaming", "true")
+    // Absolute start stamp so the DOM sweep can retire this optimistic
+    // container even if Action Cable never bridges a single frame (e.g. the
+    // job was enqueued but its worker died before broadcasting
+    // assistant_started). Mirrors the server-rendered placeholder contract.
+    node.setAttribute("data-stream-started-at", new Date().toISOString())
     node.innerHTML = `
       <div class="flex gap-3.5">
         <div class="shrink-0 mt-1">
