@@ -41,12 +41,43 @@
 }
 
 @theme {
+  /* Semantic surfaces — Phase 1 two-theme system. These are the DARK (default)
+     values; [data-theme="light"] below overrides the same variable names so
+     every `bg-canvas` / `text-fg` / `border-border-subtle` utility flips in
+     lock-step without touching component markup. */
   --color-sidebar: #0d0d0d;
   --color-canvas: #050505;
   --color-panel: #171716;
+  --color-elevated: #0c0c0f;
+  --color-hover: #ffffff0a;
   --color-border: #262626;
+  --color-border-subtle: #ffffff10;
+  --color-fg: #f4f4f5;          /* zinc-100 */
+  --color-fg-muted: #a1a1aa;    /* zinc-400 */
+  --color-fg-subtle: #71717a;   /* zinc-500 */
   --color-accent: #5cb870;
+  --color-accent-fg: #052e16;
   --shadow-glow: 0 0 40px rgba(92, 184, 112, 0.15);
+}
+
+/* Light theme: override the same custom properties so the shell + tokenized
+   surfaces read correctly on a light canvas. Dark stays the default (the repo
+   ships <html class="dark"> and [data-theme="dark"]). Secondary pages that use
+   literal zinc/white-alpha colors keep their dark styling in light mode — only
+   the app shell is guaranteed light-correct per the Phase 1 acceptance. */
+:root[data-theme="light"] {
+  --color-sidebar: #f7f7f8;
+  --color-canvas: #ffffff;
+  --color-panel: #ffffff;
+  --color-elevated: #ffffff;
+  --color-hover: #0000000a;
+  --color-border: #e4e4e7;
+  --color-border-subtle: #00000014;
+  --color-fg: #18181b;          /* zinc-900 */
+  --color-fg-muted: #52525b;    /* zinc-600 */
+  --color-fg-subtle: #71717a;   /* zinc-500 */
+  --color-accent: #16a34a;      /* a deeper emerald that clears 4.5:1 on white */
+  --color-accent-fg: #ffffff;
 }
 
 @layer base {
@@ -433,4 +464,54 @@
   .badge-inactive {
     @apply bg-zinc-500/15 text-zinc-400;
   }
+
+  /* ── Phase 1 app shell ───────────────────────────────────────────────────
+     The sidebar is token-driven (bg-sidebar / border-border / text-fg-*) so it
+     flips correctly between dark and light. Width, rail collapse and the mobile
+     drawer are all state-driven via data- attributes (set by
+     sidebar_controller.js) rather than juggling Tailwind classes in JS, which
+     keeps the transition smooth and the headless-browser DOM stable. */
+  .shell-sidebar {
+    @apply fixed inset-y-0 left-0 z-40 flex h-full flex-col border-r bg-sidebar;
+    width: 288px;
+    border-color: var(--color-border);
+    transform: translateX(-100%);
+    transition: width .25s cubic-bezier(.2,.8,.2,1), transform .25s cubic-bezier(.2,.8,.2,1);
+  }
+
+  @media (min-width: 1024px) {
+    .shell-sidebar {
+      position: static;
+      transform: none;
+    }
+  }
+
+  /* Icon-rail mode (desktop only): labels collapse, tooltips stand in. */
+  .shell-sidebar[data-collapsed="true"] { width: 64px; }
+  .shell-sidebar[data-collapsed="true"] .sidebar-label,
+  .shell-sidebar[data-collapsed="true"] .sidebar-hide-rail {
+    display: none;
+  }
+  .shell-sidebar[data-collapsed="true"] .sidebar-rail-center { @apply justify-center px-0; }
+
+  /* Rail tooltips — only meaningful (and only shown) when collapsed. */
+  .sidebar-tip { @apply pointer-events-none absolute left-full ml-2 hidden whitespace-nowrap rounded-md bg-panel px-2 py-1 text-[12px] text-fg shadow-lg border; }
+  .shell-sidebar[data-collapsed="true"] .sidebar-tip { @apply block; }
+
+  /* Drawer open state on mobile. */
+  .shell-sidebar[data-open="true"] { transform: translateX(0); }
+
+  .shell-overlay {
+    @apply fixed inset-0 z-30 bg-black/60 backdrop-blur-sm;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity .2s ease;
+  }
+  .shell-overlay[data-open="true"] { opacity: 1; pointer-events: auto; }
+  @media (min-width: 1024px) { .shell-overlay { display: none; } }
+
+  /* Semantic nav-item (kept as a class so pages don't re-tokenize each link). */
+  .shell-nav-item { @apply flex items-center gap-3 rounded-xl px-3 py-2.5 text-[14px] text-fg-muted hover:bg-hover hover:text-fg transition; }
+  .shell-nav-active { @apply bg-hover text-fg; }
+  .shell-section-label { @apply px-3 py-2 text-[11px] font-semibold uppercase tracking-wider text-fg-subtle; }
 }

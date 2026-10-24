@@ -1,16 +1,27 @@
 class ConversationsController < ApplicationController
   before_action :authenticate_user!
-  before_action :set_conversation, only: [:show, :update, :destroy, :regenerate, :stop, :interrupt]
+  before_action :set_conversation, only: [ :show, :update, :destroy, :regenerate, :stop, :interrupt ]
 
   def index
     @conversations = current_user.conversations
       .where(status: "active")
       .order(updated_at: :desc)
-      .includes(:agent, :messages)
+      .includes(:agent)
+  end
+
+  # GET /conversations/search — backs the ⌘K command palette. Authorization is
+  # guaranteed by scoping through current_user inside the model helper; the
+  # controller only reads params and serializes.
+  def search
+    results = Conversation.search(current_user, params[:q], limit: 25)
+    render json: {
+      query: params[:q].to_s,
+      results: results.map { |c| conversation_search_json(c) }
+    }
   end
 
   def show
-    @messages = @conversation.messages.order(created_at: :asc)
+    @messages = @conversation.messages.order(created_at: :asc).limit(200)
   end
 
   def create
@@ -66,7 +77,7 @@ class ConversationsController < ApplicationController
   def update
     @conversation.update!(conversation_params)
     respond_to do |format|
-      streams = [turbo_stream.replace("mode_toggle", partial: "conversations/mode_toggle")]
+      streams = [ turbo_stream.replace("mode_toggle", partial: "conversations/mode_toggle") ]
       @conversation.agent_runs.active.each do |run|
         streams << turbo_stream.replace("agent-run-#{run.id}", partial: "agent_runs/plan_card", locals: { run: run })
       end
@@ -76,7 +87,7 @@ class ConversationsController < ApplicationController
   end
 
   def destroy
-    @conversation.update(status: "deleted")
+    @conversation.update(status: "archived")
     redirect_to conversations_path, notice: "Conversation archived."
   end
 
@@ -111,6 +122,16 @@ class ConversationsController < ApplicationController
   end
 
   private
+
+  def conversation_search_json(conversation)
+    {
+      id: conversation.id,
+      title: conversation.title.presence || "Untitled conversation",
+      agent: conversation.agent&.name,
+      updated_at: conversation.updated_at&.iso8601,
+      path: conversation_path(conversation)
+    }
+  end
 
   def set_conversation
     @conversation = current_user.conversations.find(params[:id])

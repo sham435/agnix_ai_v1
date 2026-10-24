@@ -252,6 +252,12 @@ export default class extends Controller {
       || !!this.hostBusyRun()
   }
 
+  // True when the composer holds no sendable text. Drives the Send button's
+  // idle disabled state (disabled while empty, live once there is text).
+  inputIsEmpty() {
+    return !this.hasInputTarget || this.inputTarget.value.trim() === ""
+  }
+
   uploadInProgress() {
     return Array.from(this.attachments.values()).some((a) => a.status === "uploading")
   }
@@ -329,8 +335,12 @@ export default class extends Controller {
         btn.setAttribute("aria-disabled", "true")
         btn.dataset.submitState = next
       } else {
-        btn.disabled = false
-        btn.removeAttribute("aria-disabled")
+        // Idle: disabled only while the composer is empty. The send-target /
+        // submit button lights up the moment there is real text.
+        const empty = this.inputIsEmpty()
+        btn.disabled = empty
+        if (empty) btn.setAttribute("aria-disabled", "true")
+        else btn.removeAttribute("aria-disabled")
         btn.dataset.submitState = "idle"
       }
     }
@@ -990,6 +1000,8 @@ export default class extends Controller {
     el.style.height = "auto"
     el.style.height = `${el.scrollHeight}px`
     this.checkMultiline()
+    // Keep the Send control in sync with the draft while idle (empty -> off).
+    if (this._submitState === "idle") this.setSubmitState("idle")
   }
 
   checkMultiline() {

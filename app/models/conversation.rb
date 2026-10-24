@@ -29,6 +29,33 @@ class Conversation < ApplicationRecord
 
   scope :recent, -> { order(updated_at: :desc) }
 
+  # ── Phase 1: search + sidebar history ──────────────────────────────────
+  # All query logic lives here (never in controllers/views). `search` powers
+  # the ⌘K modal's GET /conversations/search endpoint; `sidebar_history` powers
+  # the recency-grouped list in the app shell. Both are hard-scoped to the
+  # owner and to active conversations.
+  def self.ransackable_attributes(_auth_object = nil)
+    %w[title status created_at updated_at]
+  end
+
+  def self.ransackable_associations(_auth_object = nil)
+    %w[agent messages]
+  end
+
+  def self.search(user, query, limit: 25)
+    scope = user.conversations.where(status: "active").includes(:agent)
+    term = query.to_s.strip
+    return scope.order(updated_at: :desc).limit(limit) if term.blank?
+
+    scope.ransack(title_i_cont: term).result(distinct: true)
+         .order(updated_at: :desc).limit(limit)
+  end
+
+  def self.sidebar_history(user, limit: 30)
+    user.conversations.where(status: "active")
+        .order(updated_at: :desc).includes(:agent).limit(limit)
+  end
+
   after_create :increment_organization_counter
   after_destroy :decrement_organization_counter
 
@@ -74,6 +101,20 @@ class Conversation < ApplicationRecord
     messages.where(role: %w[user assistant system])
       .order(created_at: :asc)
       .limit(50)
+      .reject { |m| placeholder_assistant?(m) }
       .map(&:to_llm_hash)
+  end
+
+  # Assistant rows that carry no real payload must never enter the LLM
+  # context window: streaming placeholders (metadata.streaming), blank
+  # content, and legacy "." / ".." / "..." rows created by the pre-fix
+  # code path all qualify. When in doubt, prefer dropping — a stray dot
+  # in history confuses models far more than a skipped turn.
+  def placeholder_assistant?(message)
+    return false unless message.role == "assistant"
+    return true if message.respond_to?(:streaming?) && message.streaming?
+    stripped = message.content.to_s.strip
+    return true if stripped.empty?
+    [ ".", "..", "..." ].include?(stripped)
   end
 end

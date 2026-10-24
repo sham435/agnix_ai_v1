@@ -25,6 +25,10 @@ import ThinkingIndicatorController from "controllers/thinking_indicator_controll
 import ExecutionTraceController from "controllers/execution_trace_controller"
 import ToolsPanelController from "controllers/tools_panel_controller"
 import PlatformHintController from "controllers/platform_hint_controller"
+import ThemeController from "controllers/theme_controller"
+import SidebarController from "controllers/sidebar_controller"
+import ShortcutsController from "controllers/shortcuts_controller"
+import SearchPaletteController from "controllers/search_palette_controller"
 
 window.Stimulus = Application.start()
 window.Stimulus.register("chat", ChatController)
@@ -40,3 +44,7 @@ window.Stimulus.register("thinking-indicator", ThinkingIndicatorController)
 window.Stimulus.register("execution-trace", ExecutionTraceController)
 window.Stimulus.register("tools-panel", ToolsPanelController)
 window.Stimulus.register("platform-hint", PlatformHintController)
+window.Stimulus.register("theme", ThemeController)
+window.Stimulus.register("sidebar", SidebarController)
+window.Stimulus.register("shortcuts", ShortcutsController)
+window.Stimulus.register("search-palette", SearchPaletteController)

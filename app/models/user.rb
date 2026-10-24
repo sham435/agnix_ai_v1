@@ -28,6 +28,9 @@ class User < ApplicationRecord
   has_many :conversations, dependent: :destroy
   has_many :memories, dependent: :destroy
 
+  has_many :assets, dependent: :destroy
+  has_many :library_items, dependent: :destroy
+
   enum :role, { user: "user", admin: "admin" }, default: :user
 
   normalizes :email, with: ->(e) { e.strip.downcase }
@@ -37,7 +40,15 @@ class User < ApplicationRecord
   validates :email, presence: true, uniqueness: true, format: { with: URI::MailTo::EMAIL_REGEXP }
   validates :password_digest, presence: true
 
-  store_accessor :settings, :theme, :locale, :notifications_enabled
+  store_accessor :settings, :theme, :ui_theme, :locale, :notifications_enabled
+
+  # Phase 1 theme resolution order for the no-FOUC head script:
+  #   explicit ui_theme (dark|light) > legacy theme > nil (client decides).
+  # Returns "dark" / "light" / nil — nil means "let the browser hint decide".
+  def resolved_ui_theme
+    val = ui_theme.presence || theme.presence
+    %w[dark light].include?(val.to_s) ? val.to_s : nil
+  end
 
   generates_token_for :password_reset, expires_in: 15.minutes
 

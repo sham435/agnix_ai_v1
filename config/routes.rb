@@ -25,6 +25,7 @@ Rails.application.routes.draw do
     get   :billing, to: "billing#index"
     get   :integrations, to: "integrations#index"
     get   :api_keys, to: "api_keys#index"
+    patch :theme, to: "preferences#update_theme"
   end
 
   resources :organizations do
@@ -40,6 +41,7 @@ Rails.application.routes.draw do
   end
 
   resources :conversations, only: [ :index, :show, :create, :update, :destroy ] do
+    collection { get :search }
     resources :messages, only: [ :create ]
     member do
       match :regenerate, via: [ :get, :post ]

@@ -4,6 +4,7 @@ class ApplicationController < ActionController::Base
 
   # Set current context for each request.
   before_action :set_current_user
+  before_action :set_sidebar_context
 
   # Current user.
   helper_method :current_user, :user_signed_in?, :current_organization
@@ -23,6 +24,12 @@ class ApplicationController < ActionController::Base
     Current.request_id = request.request_id
   end
 
+  # Populate the persistent sidebar with the user's recent conversations. The
+  # query itself lives in Conversation.sidebar_history (model), not here.
+  def set_sidebar_context
+    @sidebar_conversations = user_signed_in? ? Conversation.sidebar_history(current_user) : nil
+  end
+
   def current_user
     Current.user
   end
@@ -40,7 +47,12 @@ class ApplicationController < ActionController::Base
 
   def authenticate_user!
     return if user_signed_in?
-    redirect_to login_path, alert: "Please sign in to continue."
+
+    if request.format.json?
+      render json: { error: "Please sign in to continue." }, status: :unauthorized
+    else
+      redirect_to login_path, alert: "Please sign in to continue."
+    end
   end
 
   def require_organization!

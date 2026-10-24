@@ -1,10 +1,11 @@
 <!DOCTYPE html>
-<html lang="en" class="dark">
+<html lang="en" class="dark" data-theme="dark" data-server-theme="<%= initial_theme %>">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title><%= content_for?(:title) ? yield(:title) : "Shams شمس AgentOS" %></title>
   <meta name="description" content="AI Agentic Agent Platform - Better Coding, Smarter Agents">
+  <meta name="theme-color" content="#050505">
   <meta name="csrf-token" content="<%= form_authenticity_token %>">
 
   <%= csp_meta_tag %>
@@ -13,24 +14,43 @@
 
   <%= stylesheet_link_tag "tailwind", "data-turbo-track": "reload" %>
 
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Noto+Sans+Arabic:wght@400;500;700&display=swap" rel="stylesheet">
+  <%# Fonts are self-hosted: @font-face rules live in app/assets/tailwind/application.css
+      and the woff2 files in public/fonts/. No runtime dependency on fonts.googleapis.com. %>
 
   <style>
     .font-arabic { font-family: 'Noto Sans Arabic', 'Inter', sans-serif; }
-    .font-sans { font-family: 'Inter', system-ui, sans-serif; }
-    ::-webkit-scrollbar { width: 8px; height: 8px; }
-    ::-webkit-scrollbar-thumb { background: #2a2a30; border-radius: 999px; }
-    ::-webkit-scrollbar-thumb:hover { background: #3a3a42; }
-    .glass { backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); }
+    .font-sans { font-family: 'Instrument Sans', 'Inter', system-ui, sans-serif; }
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: #2a2a2a; border-radius: 999px; }
+    ::-webkit-scrollbar-thumb:hover { background: #3a3a3a; }
+    .glass { backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px); }
+    .glass-card { background: rgba(23, 23, 22, 0.6); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); border: 1px solid rgba(255,255,255,0.06); }
+    .accent-glow { box-shadow: 0 0 30px rgba(92, 184, 112, 0.15); }
   </style>
+
+  <script nonce="<%= content_security_policy_nonce %>">
+    // Phase 1b — apply the theme before first paint (no flash of wrong theme).
+    // Order: localStorage (per-device) -> server preference -> OS hint -> dark.
+    (function () {
+      var html = document.documentElement;
+      var server = html.getAttribute("data-server-theme") || "";
+      var stored = null;
+      try { stored = localStorage.getItem("shams.theme"); } catch (e) {}
+      var system = (window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches) ? "light" : "dark";
+      var theme = (stored === "light" || stored === "dark") ? stored : (server === "light" || server === "dark") ? server : system;
+      html.setAttribute("data-theme", theme);
+      html.classList.toggle("dark", theme === "dark");
+      var meta = document.querySelector('meta[name="theme-color"]');
+      if (meta) meta.setAttribute("content", theme === "light" ? "#ffffff" : "#050505");
+    })();
+  </script>
 
   <%= yield :head %>
   <%= javascript_importmap_tags %>
 </head>
 
-<body class="bg-canvas text-zinc-200 font-sans antialiased min-h-screen selection:bg-orange-500/20 selection:text-orange-300">
+<body class="bg-canvas text-zinc-200 font-sans antialiased min-h-screen selection:bg-emerald-500/20 selection:text-emerald-300">
   <% if notice %>
     <div class="fixed top-4 right-4 z-50 rounded-xl bg-emerald-500/10 border border-emerald-500/20 px-4 py-3 text-sm text-emerald-400" data-controller="flash">
       <%= notice %>
@@ -42,7 +62,17 @@
     </div>
   <% end %>
 
-  <%= yield %>
+  <%# Global shell affordances (mounted once for every page). %>
+  <div data-controller="shortcuts" data-shortcuts-new-chat-url-value="<%= conversations_path %>"></div>
+  <%= render "shared/search_palette" %>
+
+  <% if user_signed_in? %>
+    <%# Phase 1a — the ChatGPT-style app shell wraps the page so every signed-in
+        surface shares the collapsible sidebar + theme toggle. %>
+    <%= render(layout: "layouts/app_shell") { yield } %>
+  <% else %>
+    <%= yield %>
+  <% end %>
 
   <%= turbo_frame_tag "modal" %>
   <%= render "shared/confirm_logout_modal" %>
