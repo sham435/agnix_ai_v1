@@ -1,26 +1,31 @@
-<div id="mode_toggle" class="flex items-center gap-2">
-  <div class="flex items-center bg-white/[0.04] rounded-full p-1 border border-white/[0.06]">
+<div id="mode_toggle" class="flex items-center gap-2 min-w-0" role="group" aria-label="Conversation mode">
+  <div class="flex items-center bg-white/[0.04] rounded-full p-1 border border-white/[0.06] min-w-0 max-w-full overflow-x-auto">
     <% modes = [
-      ["manual_plan", "Manual Plan"],
-      ["auto_plan", "Auto Plan"],
-      ["manual_build", "Manual Build"],
-      ["auto_build", "Auto Build"]
+      ["", "Chat", "Standard question-and-answer — no plan or build step"],
+      ["manual_plan", "Manual Plan", "Agent proposes a plan and waits for your approval before executing"],
+      ["auto_plan", "Auto Plan", "Agent plans then executes without pausing"],
+      ["manual_build", "Manual Build", "Build mode: proposes file changes and waits for confirmation"],
+      ["auto_build", "Auto Build", "Build mode: applies file changes automatically"]
     ] %>
-    <% modes.each do |key, label| %>
+    <% modes.each do |key, label, hint| %>
+      <% active = @conversation.mode.to_s == key %>
       <%= button_to label,
           conversation_path(@conversation, conversation: { mode: key }),
           method: :patch,
           form: { data: { turbo_stream: true } },
-          class: "px-3 py-1.5 text-[13px] rounded-full transition whitespace-nowrap #{@conversation.mode.to_s == key ? 'bg-orange-500/20 text-orange-300' : 'text-zinc-400 hover:text-zinc-200'}" %>
+          class: "px-3 py-1.5 text-[13px] rounded-full transition whitespace-nowrap #{active ? 'bg-emerald-500/20 text-emerald-300' : 'text-zinc-400 hover:text-zinc-200'}",
+          "aria-pressed": active.to_s,
+          "data-mode": key,
+          title: hint %>
     <% end %>
   </div>
 
   <%= button_to stop_conversation_path(@conversation),
       method: :post,
-      class: "size-9 grid place-items-center rounded-full bg-red-500/20 hover:bg-red-500/30 text-red-400 transition",
-      title: "Interrupt",
+      class: "size-9 shrink-0 grid place-items-center rounded-full bg-red-500/20 hover:bg-red-500/30 text-red-400 transition",
+      title: "Interrupt current run",
       form: { data: { turbo_stream: true } } do %>
-    <svg class="size-4" viewBox="0 0 24 24" fill="currentColor"><rect x="7" y="7" width="10" height="10" rx="1"/></svg>
+    <svg class="size-4" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="1"/></svg>
     <span class="sr-only">Stop</span>
   <% end %>
 </div>

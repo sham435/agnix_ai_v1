@@ -73,6 +73,7 @@ RSpec.describe "In-flight guard & live thinking indicator", :js, type: :system d
   # state the old code got wrong.
   def submit_deferred(text)
     visit conversation_path(conversation)
+    stub_composer_desktop!
     fill_in "message-input", with: text
     find("#message-input").send_keys(:enter)
     expect(page).to have_css("[data-assistant-pending][data-request-id]", wait: 5)
@@ -212,6 +213,7 @@ RSpec.describe "In-flight guard & live thinking indicator", :js, type: :system d
     end
 
     visit conversation_path(conversation)
+    stub_composer_desktop!
     fill_in "message-input", with: "this send will fail"
     find("#message-input").send_keys(:enter)
 

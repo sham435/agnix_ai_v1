@@ -1,18 +1,25 @@
 <!-- Header -->
 <header class="sticky top-0 z-20 flex h-[64px] items-center justify-between gap-3 border-b border-white/[0.06] bg-[#080809]/80 glass px-4">
-  <div class="flex items-center gap-2">
-    <button id="menuBtn" class="lg:hidden grid size-9 place-items-center rounded-xl bg-white/[0.04] hover:bg-white/[0.08] text-zinc-300">
+  <div class="flex items-center gap-2 min-w-0">
+    <button id="menuBtn" class="lg:hidden grid size-9 place-items-center rounded-xl bg-white/[0.04] hover:bg-white/[0.08] text-zinc-300" aria-label="Open navigation menu">
       <svg class="size-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
     </button>
-    <h1 class="text-[16px] font-semibold text-white">Shams <span class="font-arabic text-orange-400">شمس</span> AgentOS</h1>
+    <h1 class="text-[16px] font-semibold text-white truncate">Shams <span class="font-arabic text-emerald-400">شمس</span> AgentOS</h1>
   </div>
 
-  <div class="flex items-center gap-2">
-    <div class="hidden sm:flex items-center gap-1.5 rounded-xl bg-white/[0.04] px-3 py-2 text-[13px] text-zinc-300">
-      <span class="size-2 rounded-full bg-emerald-500 animate-pulse"></span>
-      Rails 8.1 Live
+  <div class="flex items-center gap-2 shrink-0">
+    <%# §1-2 / §11: Rails 8.1 Live badge — always visible (never hidden sm:flex)
+        so the assistant identity stays intact on mobile. Label text collapses
+        to the emerald dot on very narrow viewports (max-sm hides the words).
+        animate-pulse is behind motion-safe: so prefers-reduced-motion users
+        see a steady dot. %>
+    <div class="inline-flex items-center gap-1.5 rounded-xl bg-white/[0.04] border border-white/[0.06] px-2.5 py-1.5 sm:px-3 sm:py-2 text-[12px] sm:text-[13px] text-zinc-300"
+         role="status"
+         aria-label="Shams AI is running Rails 8.1">
+      <span class="size-2 rounded-full bg-emerald-500 motion-safe:animate-pulse" aria-hidden="true"></span>
+      <span class="max-sm:hidden" aria-hidden="true">Rails 8.1 Live</span>
     </div>
-    <div class="size-8 rounded-full bg-gradient-to-br from-orange-400 to-orange-600 grid place-items-center text-xs font-bold text-black">
+    <div class="size-8 rounded-full bg-gradient-to-br from-emerald-400 to-emerald-600 grid place-items-center text-xs font-bold text-black" aria-hidden="true">
       <%= current_user.name.to_s.first.upcase %>
     </div>
   </div>
@@ -20,11 +27,11 @@
 
 <!-- Chat Home -->
 <main class="flex-1 overflow-y-auto">
-  <div class="mx-auto max-w-[900px] px-6 py-16 lg:py-24">
+  <div class="mx-auto max-w-[900px] px-4 sm:px-6 py-12 sm:py-16 lg:py-24">
     <!-- Hero -->
     <div class="text-center">
       <div class="mx-auto mb-8 grid size-24 place-items-center">
-        <svg viewBox="0 0 100 100" class="size-24 drop-shadow-[0_0_60px_rgba(255,138,0,0.4)]">
+        <svg viewBox="0 0 100 100" class="size-24 drop-shadow-[0_0_60px_rgba(255,138,0,0.4)]" role="img" aria-label="Shams sun mark">
           <defs>
             <radialGradient id="glow" cx="50%" cy="50%">
               <stop offset="0%" stop-color="#FFB366" stop-opacity="1"/>
@@ -41,76 +48,154 @@
           </g>
         </svg>
       </div>
-      <h1 class="text-[42px] lg:text-[56px] font-semibold tracking-tight text-white">
-        Shams <span class="font-arabic text-orange-400">شمس</span> AgentOS
+      <h1 class="text-[32px] sm:text-[42px] lg:text-[56px] font-semibold tracking-tight text-white">
+        Shams <span class="font-arabic text-emerald-400">شمس</span> AgentOS
       </h1>
-      <p class="mt-3 text-[18px] text-zinc-400">Better Coding, Smarter Agents</p>
-      <p class="mt-1 text-[13px] text-zinc-600">Powered by Rails 8.1 • Solid Queue • Kamal 2 • Action Cable</p>
+      <p class="mt-3 text-[16px] sm:text-[18px] text-zinc-400">Better Coding, Smarter Agents</p>
+      <%# §7: footer describes the verified stack, not runtime health. Rails 8.1
+          is confirmed at boot (Rails::VERSION). Solid Queue adapter is the
+          ActiveJob adapter in dev+prod. Action Cable is mounted at /cable
+          (async in dev, solid_cable in prod). Kamal 2 is the deploy tool, so
+          we describe it as such rather than implying a live health check. %>
+      <p class="mt-1 text-[12px] sm:text-[13px] text-zinc-600 leading-snug px-2">
+        Built on Rails <%= Rails::VERSION::STRING %> · Solid Queue · Action Cable · deployed with Kamal 2
+      </p>
     </div>
 
     <!-- Input -->
-    <div class="mx-auto mt-14 max-w-[720px]">
-      <%= form_with url: conversations_path, method: :post, class: "group relative rounded-[28px] border border-white/[0.08] bg-gradient-to-b from-white/[0.06] to-white/[0.02] p-1.5 shadow-[inset_0_1px_0_0_rgba(255,255,255,0.04),0_20px_80px_rgba(0,0,0,0.5)] backdrop-blur-xl", data: { turbo_stream: true, controller: "chat-input" } do |f| %>
-        <div class="rounded-[22px] bg-[#0c0c0f] px-4 py-3">
+    <div class="relative mx-auto mt-10 sm:mt-14 max-w-[720px]"
+         data-controller="tools-panel">
+      <%= form_with url: conversations_path, method: :post, class: "group relative rounded-[28px] border border-white/[0.08] bg-gradient-to-b from-white/[0.06] to-white/[0.02] p-1.5 shadow-[inset_0_1px_0_0_rgba(255,255,255,0.04),0_20px_80px_rgba(0,0,0,0.5)] backdrop-blur-xl", data: { turbo_stream: true, controller: "chat-input", action: "turbo:submit-end->chat-input#clear" } do |f| %>
+        <div class="rounded-[22px] bg-[#0c0c0f] px-3 sm:px-4 py-3">
           <%= f.text_area :content,
             rows: 1,
             placeholder: "Ask Anything...",
             class: "w-full resize-none bg-transparent placeholder-zinc-600 text-[16px] leading-7 text-zinc-100 outline-none py-2",
             id: "composer-input",
+            autocomplete: "off",
+            value: params[:prompt],
+            "aria-label": "Message",
             data: { chat_input_target: "input" } %>
           <%= f.hidden_field :agent_id, value: params[:agent_id] || Agent.where(is_active: true).first&.id %>
+          <%# §3: when arriving via a quick-start chip or a feature card the
+              composer already contains the prefill (rendered server-side above).
+              We focus the textarea so the user can hit Enter (or ⌘↵ on macOS)
+              to send, and place the caret at the end so the tail of a long
+              prompt stays visible. Using a plain inline script (NOT
+              type="module") so it runs during parsing and Capybara's first
+              `have_field` poll sees the focused textarea. %>
+          <% if params[:prompt].present? %>
+            <script>
+              (function () {
+                var ta = document.getElementById("composer-input")
+                if (!ta) return
+                ta.focus()
+                try { ta.setSelectionRange(ta.value.length, ta.value.length) } catch (e) {}
+              })()
+            </script>
+          <% end %>
 
-          <div class="flex items-center justify-between pt-2 border-t border-white/[0.06] mt-2">
-            <div class="flex items-center gap-1.5">
-              <button type="button" class="grid size-9 place-items-center rounded-xl hover:bg-white/[0.06] text-zinc-500 hover:text-zinc-200 transition" title="Attach">
-                <svg class="size-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48"/></svg>
-              </button>
-              <button type="button" class="flex items-center gap-1.5 rounded-xl hover:bg-white/[0.06] px-2.5 py-2 text-[13px] text-zinc-400 hover:text-zinc-200 transition">
-                <svg class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
+          <div class="flex items-center justify-between pt-2 border-t border-white/[0.06] mt-2 gap-2">
+            <div class="flex items-center gap-1.5 min-w-0">
+              <%# §4-5: Tools button — the panel opens above the composer and
+                  lists Capabilities::Registry entries with truthful state, plus
+                  the four integrations named in the requirements. %>
+              <button type="button"
+                      class="flex items-center gap-1.5 rounded-xl hover:bg-white/[0.06] px-2.5 py-2 text-[13px] text-zinc-400 hover:text-zinc-200 transition"
+                      data-action="click->tools-panel#toggle"
+                      data-tools-panel-target="toggle"
+                      aria-haspopup="dialog"
+                      aria-expanded="false"
+                      aria-controls="dashboard-tools-panel"
+                      title="Tools and integrations">
+                <svg class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
                 Tools
               </button>
+              <%# Attach intentionally not offered on the dashboard composer;
+                  file attachments are handled inside an open conversation where
+                  the draft-token pipeline and Library reuse flow already exist.
+                  Kept hidden rather than dead so the layout does not imply a
+                  broken button (§ Definition of done). %>
             </div>
-            <div class="flex items-center gap-1.5">
-              <span class="hidden sm:block text-[12px] text-zinc-600 mr-1">⌘ ↵</span>
-              <button type="submit" class="grid size-9 place-items-center rounded-xl bg-gradient-to-b from-orange-400 to-orange-600 text-black hover:brightness-110 active:scale-95 transition shadow-lg shadow-orange-900/30">
-                <svg class="size-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M5 12l14-7-7 14-2-5-2z"/></svg>
+            <div class="flex items-center gap-1.5 shrink-0" data-controller="platform-hint" data-platform-hint-modifier-value="Meta">
+              <%# §6: the visible hint updates to match the platform's actual
+                  submit combo (Enter on Windows/Linux/mobile, ⌘↵ on macOS). %>
+              <span class="hidden sm:block text-[12px] text-zinc-600 mr-1" data-platform-hint-target="label">↵</span>
+              <button type="submit"
+                      class="grid size-9 place-items-center rounded-xl bg-gradient-to-b from-emerald-400 to-emerald-600 text-black hover:brightness-110 active:scale-95 transition shadow-lg shadow-emerald-900/30"
+                      aria-label="Send message"
+                      title="Send">
+                <svg class="size-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M5 12l14-7-7 14-2-5-2z"/></svg>
               </button>
             </div>
           </div>
         </div>
       <% end %>
 
+      <%# §4-5: Tools panel — server-rendered from Capabilities::Registry so
+          every entry reflects the app's actual state (enabled /
+          needs_authorization / disabled). Positioned so it stays inside the
+          viewport at every width from 320px upward. %>
+      <div id="dashboard-tools-panel"
+           hidden
+           class="absolute z-40 mt-2 w-[min(560px,calc(100vw-1.5rem))] max-h-[min(480px,60vh)] overflow-y-auto rounded-2xl border border-white/[0.08] bg-[#0c0c0f]/95 backdrop-blur-xl shadow-2xl shadow-black/50"
+           data-tools-panel-target="panel"
+           role="dialog"
+           aria-modal="false"
+           aria-label="Tools and integrations"
+           aria-hidden="true">
+        <%= render "conversations/tools_panel" %>
+      </div>
+
       <!-- Suggestions -->
       <div class="mt-4 flex flex-wrap justify-center gap-2">
-        <button class="suggest px-3 py-1.5 rounded-full bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.06] text-[13px] text-zinc-400 hover:text-zinc-200 transition">Generate a Rails 8.1 controller</button>
-        <button class="suggest px-3 py-1.5 rounded-full bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.06] text-[13px] text-zinc-400 hover:text-zinc-200 transition">Explain Solid Queue vs Sidekiq</button>
-        <button class="suggest px-3 py-1.5 rounded-full bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.06] text-[13px] text-zinc-400 hover:text-zinc-200 transition">Create agent swarm workflow</button>
+        <%# §3: quick-start prompts. Each is a REAL link to the same page with
+            a prefill `?prompt=` param (handled by the module script above).
+            They do not create a conversation themselves — the composer is
+            pre-populated so the user reviews and submits intentionally, which
+            also keeps the in-flight guard meaningful. %>
+        <% [
+          "Generate a Rails 8.1 controller for a Shams AI conversation endpoint with Turbo Stream responses.",
+          "Explain Solid Queue vs Sidekiq for a Rails 8.1 app like this one — deployment, retries, scheduling, concurrency, monitoring, and which fits production.",
+          "Design a multi-agent swarm workflow on the existing AgentRunner: sub-agents, tool calls, memory, authorization, and execution tracing."
+        ].each do |text| %>
+          <%= link_to text.truncate(48, omission: "…"),
+              conversations_path(prompt: text),
+              class: "px-3 py-1.5 rounded-full bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.06] text-[13px] text-zinc-400 hover:text-zinc-200 transition",
+              data: { turbo_action: "advance" },
+              title: text %>
+        <% end %>
       </div>
     </div>
 
     <!-- Features grid -->
-    <div class="mt-20 grid grid-cols-1 sm:grid-cols-3 gap-3 max-w-[720px] mx-auto">
-      <div class="group rounded-2xl border border-white/[0.06] bg-gradient-to-b from-white/[0.04] to-transparent p-4 hover:border-orange-500/30 transition">
-        <div class="size-10 rounded-xl bg-orange-500/10 text-orange-400 grid place-items-center mb-3">
-          <svg class="size-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M16 18l6-6-6-6"/><path d="M8 6l-6 6 6 6"/></svg>
-        </div>
-        <h3 class="font-medium text-white">Better Coding</h3>
-        <p class="text-[13px] text-zinc-500 mt-1">Rails 8.1 generators, linters & tests in one flow.</p>
-      </div>
-      <div class="group rounded-2xl border border-white/[0.06] bg-gradient-to-b from-white/[0.04] to-transparent p-4 hover:border-orange-500/30 transition">
-        <div class="size-10 rounded-xl bg-orange-500/10 text-orange-400 grid place-items-center mb-3">
-          <svg class="size-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg>
-        </div>
-        <h3 class="font-medium text-white">Smarter Agents</h3>
-        <p class="text-[13px] text-zinc-500 mt-1">Multi-agent swarm with memory & tool use.</p>
-      </div>
-      <div class="group rounded-2xl border border-white/[0.06] bg-gradient-to-b from-white/[0.04] to-transparent p-4 hover:border-orange-500/30 transition">
-        <div class="size-10 rounded-xl bg-orange-500/10 text-orange-400 grid place-items-center mb-3">
-          <svg class="size-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 2v4"/><path d="M12 18v4"/><path d="M4.9 4.9l2.8 2.8"/><path d="M16.3 16.3l2.8 2.8"/><path d="M2 12h4"/><path d="M18 12h4"/><path d="M4.9 19.1l2.8-2.8"/><path d="M16.3 7.7l2.8-2.8"/></svg>
-        </div>
-        <h3 class="font-medium text-white">Rails 8.1 Native</h3>
-        <p class="text-[13px] text-zinc-500 mt-1">Solid Cable, Queue, Cache built-in.</p>
-      </div>
+    <div class="mt-16 sm:mt-20 grid grid-cols-1 sm:grid-cols-3 gap-3 max-w-[720px] mx-auto">
+      <%# §3: each feature card is a real, useful action — a link that lands
+          on the homepage with a prefilled prompt matching the card's
+          description. Same prefill mechanism as the quick-start chips, so the
+          user reviews before sending. %>
+      <% cards = [
+        { title: "Better Coding",
+          blurb: "Rails 8.1 generators, linters & tests in one flow.",
+          prompt: "Walk me through a safe Rails 8.1 coding workflow: scaffold a resource, run rubocop, and write the matching RSpec specs." },
+        { title: "Smarter Agents",
+          blurb: "Multi-agent swarm with memory & tool use.",
+          prompt: "Help me extend Shams AI's AgentRunner with a small swarm: a planner agent, an executor agent, and a critic, all sharing conversation memory and tool calls." },
+        { title: "Rails 8.1 Native",
+          blurb: "Solid Queue, Cable & Cache — production configuration.",
+          prompt: "Explain how Shams AI wires Solid Queue, Solid Cable and Solid Cache in production, and what changes in development." }
+      ] %>
+      <% cards.each do |card| %>
+        <%= link_to conversations_path(prompt: card[:prompt]),
+            class: "group rounded-2xl border border-white/[0.06] bg-gradient-to-b from-white/[0.04] to-transparent p-4 hover:border-emerald-500/30 transition text-left",
+            data: { turbo_action: "advance" } do %>
+          <div class="size-10 rounded-xl bg-emerald-500/10 text-emerald-400 grid place-items-center mb-3">
+            <svg class="size-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M16 18l6-6-6-6"/><path d="M8 6l-6 6 6 6"/></svg>
+          </div>
+          <h3 class="font-medium text-white"><%= card[:title] %></h3>
+          <p class="text-[13px] text-zinc-500 mt-1"><%= card[:blurb] %></p>
+        <% end %>
+      <% end %>
     </div>
   </div>
 </main>

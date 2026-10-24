@@ -170,23 +170,78 @@ export default class extends Controller {
     if (e.isComposing || e.keyCode === 229) return
 
     const isEnter = e.key === "Enter"
-    const submitCombo = isEnter && (e.metaKey || e.ctrlKey)
-    const plainEnter = isEnter && !e.shiftKey && !e.metaKey && !e.ctrlKey
+    if (!isEnter) return
 
-    if (submitCombo || plainEnter) {
-      e.preventDefault()
-      if (!this.hasInputTarget || this.inputTarget.value.trim() === "") return
-      // Ignore duplicate submissions while the same run is in flight.
-      if (this.isBusy()) return
-      // Never submit while an upload is still in flight: the message would
-      // go out without the attachment. The hint explains why nothing sent.
-      if (this.uploadInProgress()) { this.showTempHint(); return }
-      if (typeof this.element.requestSubmit === "function") {
-        this.element.requestSubmit()
-      } else {
-        this.element.submit()
-      }
+    const platform = this.constructor.platformOf()
+    const hasModifier = e.metaKey || e.ctrlKey
+    const shouldSubmit = (() => {
+      // §6 policy:
+      //   macOS  — Cmd+Enter submits; bare Enter + Shift+Enter insert newlines
+      //            so multi-line prompts stay editable.
+      //   mobile — bare Enter (keyboard Send) submits; Shift+Enter newline.
+      //            Cmd/Ctrl+Enter also submits as a desktop-parity fallback.
+      //   other  — bare Enter submits; Shift+Enter newline;
+      //            Cmd/Ctrl+Enter also submits (matches the visible ⌘↵/Ctrl↵
+      //            hint on the composer).
+      if (platform === "mac") return e.metaKey && !e.shiftKey
+      if (platform === "mobile") return !e.shiftKey
+      // Desktop Windows/Linux: bare Enter or Cmd/Ctrl+Enter both send;
+      // Shift+Enter always inserts a newline.
+      return !e.shiftKey
+    })()
+
+    if (!shouldSubmit) return
+
+    e.preventDefault()
+    if (!this.hasInputTarget || this.inputTarget.value.trim() === "") return
+    // Ignore duplicate submissions while the same run is in flight.
+    if (this.isBusy()) return
+    // Never submit while an upload is still in flight: the message would
+    // go out without the attachment. The hint explains why nothing sent.
+    if (this.uploadInProgress()) { this.showTempHint(); return }
+    if (typeof this.element.requestSubmit === "function") {
+      this.element.requestSubmit()
+    } else {
+      this.element.submit()
     }
+    // Suppress the unused-var lint hint while making the modifier logic readable.
+    void hasModifier
+  }
+
+  // §6: platform classification used by both keydown() and the visible hint.
+  // Prefer the modern `navigator.userAgentData.platform` when present, fall
+  // back to `navigator.platform` / `navigator.userAgent`, then to a coarse
+  // pointer + touch heuristic for mobile. Exposed as a static method so specs
+  // can stub it in a headless browser and assert the exact submit combo
+  // without faking a real device.
+  static platformOf() {
+    if (this._platformCache && (Date.now() - this._platformCache.at) < 60_000) {
+      return this._platformCache.value
+    }
+    const nav = typeof navigator !== "undefined" ? navigator : {}
+    const uaData = nav.userAgentData
+    const coarsePointer = typeof window !== "undefined"
+      && typeof window.matchMedia === "function"
+      && window.matchMedia("(pointer: coarse)").matches
+    const hasTouch = (nav.maxTouchPoints || 0) > 0
+    let token = ""
+    if (uaData && typeof uaData.platform === "string") token = uaData.platform
+    else if (typeof nav.platform === "string") token = nav.platform
+    else if (typeof nav.userAgent === "string") token = nav.userAgent
+
+    // Detect phones/tablets before Mac, since iPhone/iPad UA strings do NOT
+    // contain "Mac" but a coarse pointer with touch is the honest signal.
+    const looksMobile = /Android|iPhone|iPad|iPod|Mobile|Silk/i.test(token)
+      || (coarsePointer && hasTouch)
+    const looksMac = /Mac|iPhone|iPad|iPod/i.test(token)
+
+    let value
+    if (looksMobile) value = "mobile"
+    else if (looksMac) value = "mac"
+    else value = "desktop"
+
+    this._platformCache = { value, at: Date.now() }
+    return value
   }
 
   // True while a submission or its async generation is in flight. Consults the

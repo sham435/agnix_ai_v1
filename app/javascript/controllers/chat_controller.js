@@ -600,19 +600,92 @@ export default class extends Controller {
     const btn = event.currentTarget
     const messageEl = btn.closest("[data-chat-target=assistantMessage]")
     if (!messageEl) return
-
+    // Prefer the rendered markdown body; if streaming placeholders haven't
+    // resolved to markdown yet, fall back to the raw streaming content so a
+    // copy mid-stream never silently does nothing.
     const content = messageEl.querySelector(".markdown-body")?.textContent
-    if (content) {
-      navigator.clipboard.writeText(content).then(() => this.flashCopy(btn))
-    }
+      || messageEl.querySelector("[data-streaming-content]")?.textContent
+      || ""
+    this._doCopy(btn, content, "Copied response", "Copy failed")
   }
 
   copyCode(event) {
     const btn = event.currentTarget
     const pre = btn.closest(".code-block")?.querySelector(".code-pre")
     if (!pre) return
+    this._doCopy(btn, pre.textContent || "", "Copied code", "Copy failed")
+  }
 
-    navigator.clipboard.writeText(pre.textContent).then(() => this.flashCopy(btn))
+  // §8: unified clipboard path with graceful degradation. Uses the async
+  // Clipboard API when available; falls back to a hidden textarea +
+  // document.execCommand("copy") for non-secure contexts and older browsers
+  // (and Cuprite / some headless setups). Either way the button's title and
+  // aria-label cycle through the outcome so assistive tech + sighted users
+  // both get feedback, and a failure briefly tints the button red.
+  _doCopy(btn, text, okLabel, failLabel) {
+    const finish = (ok) => {
+      const label = ok ? okLabel : failLabel
+      btn.setAttribute("aria-label", label)
+      btn.setAttribute("title", label)
+      if (ok) this.flashCopy(btn)
+      else this.flashCopyFail(btn)
+      setTimeout(() => {
+        // Restore the neutral label after the toast window so a later copy
+        // click re-announces "Copied" fresh instead of stacking.
+        const base = btn.dataset.copyBaseLabel || "Copy"
+        btn.setAttribute("aria-label", base)
+        btn.setAttribute("title", base)
+      }, 1400)
+    }
+
+    if (!text) { finish(false); return }
+
+    // Prefer navigator.clipboard.writeText; guarded because some browsers
+    // expose only `navigator.clipboard.write` or nothing at all.
+    if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+      navigator.clipboard.writeText(text).then(
+        () => finish(true),
+        () => finish(this._legacyCopy(text))
+      )
+    } else {
+      finish(this._legacyCopy(text))
+    }
+  }
+
+  _legacyCopy(text) {
+    try {
+      const ta = document.createElement("textarea")
+      ta.value = text
+      ta.setAttribute("readonly", "")
+      ta.style.position = "fixed"
+      ta.style.opacity = "0"
+      ta.style.pointerEvents = "none"
+      document.body.appendChild(ta)
+      ta.select()
+      const ok = document.execCommand("copy")
+      document.body.removeChild(ta)
+      return ok
+    } catch (_e) {
+      return false
+    }
+  }
+
+  flashCopy(el, className = "text-emerald-400") {
+    // Remember the pre-flash label once so we can restore it later without
+    // clobbering an author-supplied aria-label.
+    if (!el.dataset.copyBaseLabel) {
+      el.dataset.copyBaseLabel = el.getAttribute("aria-label") || el.getAttribute("title") || "Copy"
+    }
+    el.classList.add(className)
+    setTimeout(() => el.classList.remove(className), 1200)
+  }
+
+  flashCopyFail(el) {
+    if (!el.dataset.copyBaseLabel) {
+      el.dataset.copyBaseLabel = el.getAttribute("aria-label") || el.getAttribute("title") || "Copy"
+    }
+    el.classList.add("text-red-400")
+    setTimeout(() => el.classList.remove("text-red-400"), 1400)
   }
 
   regenerate(event) {

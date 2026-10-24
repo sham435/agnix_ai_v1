@@ -24,6 +24,7 @@ RSpec.describe "Dashboard new-chat thinking indicator", :js, type: :system do
     visit conversations_path(agent_id: agent.id)
 
     expect(page).to have_css("#composer-input", wait: 10)
+    stub_composer_desktop!
     find("#composer-input").set("hello")
     find("#composer-input").send_keys(:enter)
 

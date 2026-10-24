@@ -1,0 +1,109 @@
+<%
+  # §4-5: server-rendered capability + integration list. Capabilities::Registry
+  # already tells us the truth about each entry (enabled / needs_authorization
+  # / disabled) — we surface that state verbatim rather than pretending every
+  # advertised tool works.
+  #
+  # Grouped into "Native tools" (implemented inside the app) and
+  # "Integrations" (external services requiring per-user connection). Selecting
+  # a native tool prefills the composer with a matching prompt (via the same
+  # ?prompt=... mechanism as the quick-start chips) so the action is real; the
+  # user reviews and submits intentionally.
+  registry = Capabilities::Registry.index
+  native_keys = %w[chat attachments library file_extraction thinking web_search deep_research image_generation sketch]
+  integration_keys = %w[github notion figma openai_model]
+  native = registry.select { |c| native_keys.include?(c[:key].to_s) }
+  integrations = registry.select { |c| integration_keys.include?(c[:key].to_s) }
+
+  state_style = {
+    "enabled" => "text-emerald-400 bg-emerald-500/10 border-emerald-500/20",
+    "needs_authorization" => "text-amber-400 bg-amber-500/10 border-amber-500/20",
+    "disabled" => "text-zinc-500 bg-zinc-500/10 border-zinc-500/20"
+  }
+  state_label = {
+    "enabled" => "Ready",
+    "needs_authorization" => "Needs setup",
+    "disabled" => "Unavailable"
+  }
+
+  integration_urls = {
+    "github" => "https://github.com/",
+    "notion" => "https://www.notion.so/",
+    "figma" => "https://www.figma.com/",
+    "openai_model" => "https://platform.openai.com/"
+  }
+%>
+
+<div class="p-4 sm:p-5">
+  <h3 class="text-[11px] font-semibold uppercase tracking-wider text-zinc-500 mb-2">Native tools</h3>
+  <ul class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+    <% native.each do |cap| %>
+      <li>
+        <%
+          # Only enabled tools get a real prompt prefill; needs_authorization
+          # / disabled items are shown truthfully but marked non-actionable so
+          # we never send users down a broken path.
+          actionable = cap[:state].to_s == "enabled" && cap[:key].to_s != "chat"
+          prompt_text = case cap[:key].to_s
+                        when "attachments" then "Help me attach and analyse a PDF in this conversation."
+                        when "library"     then "Show me how to reuse an existing Library file without re-uploading it."
+                        when "file_extraction" then "Extract and summarise the tables from a CSV or PDF."
+                        when "thinking"    then "Compare low, medium and high thinking effort for a code review prompt."
+                        when "web_search"  then "Search the web and cite sources for Rails 8.1 security advisories this quarter."
+                        when "deep_research" then "Run a deep research pass on the trade-offs of Solid Queue vs Sidekiq."
+                        when "image_generation" then "Generate a hero illustration for the Shams AI landing page."
+                        when "sketch"      then "Draw an SVG sketch of a new-visitor onboarding flow."
+                        end
+        %>
+        <div class="rounded-xl border border-white/[0.06] bg-white/[0.02] p-3 flex items-start gap-3">
+          <div class="flex-1 min-w-0">
+            <div class="flex items-center gap-2 min-w-0 flex-wrap">
+              <span class="text-[13px] font-medium text-white truncate"><%= cap[:label] %></span>
+              <span class="text-[10px] px-1.5 py-0.5 rounded-md border <%= state_style[cap[:state].to_s] %>"><%= state_label[cap[:state].to_s] %></span>
+            </div>
+            <p class="text-[12px] text-zinc-500 mt-1 leading-snug"><%= cap[:description] %></p>
+            <% if cap[:reason].present? && cap[:state].to_s != "enabled" %>
+              <p class="text-[11px] text-amber-400/80 mt-1"><%= cap[:reason] %></p>
+            <% end %>
+            <% if actionable && prompt_text %>
+              <%= link_to "Try it",
+                  conversations_path(prompt: prompt_text),
+                  class: "inline-block mt-2 text-[12px] text-emerald-400 hover:text-emerald-300",
+                  data: { action: "click->tools-panel#pick", turbo_action: "advance" } %>
+            <% end %>
+          </div>
+        </div>
+      </li>
+    <% end %>
+  </ul>
+
+  <h3 class="text-[11px] font-semibold uppercase tracking-wider text-zinc-500 mt-5 mb-2">Integrations</h3>
+  <ul class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+    <% integrations.each do |cap| %>
+      <li>
+        <div class="rounded-xl border border-white/[0.06] bg-white/[0.02] p-3">
+          <div class="flex items-center gap-2 flex-wrap min-w-0">
+            <span class="text-[13px] font-medium text-white truncate"><%= cap[:label] %></span>
+            <span class="text-[10px] px-1.5 py-0.5 rounded-md border <%= state_style[cap[:state].to_s] %>"><%= state_label[cap[:state].to_s] %></span>
+          </div>
+          <p class="text-[12px] text-zinc-500 mt-1 leading-snug"><%= cap[:description] %></p>
+          <% if cap[:reason].present? %>
+            <p class="text-[11px] text-amber-400/80 mt-1"><%= cap[:reason] %></p>
+          <% end %>
+          <div class="mt-2 flex items-center gap-3">
+            <%= link_to "Connect",
+                settings_integrations_path,
+                class: "text-[12px] text-emerald-400 hover:text-emerald-300" %>
+            <% if (url = integration_urls[cap[:key].to_s]) %>
+              <%= link_to "#{cap[:label]} site",
+                  url,
+                  class: "text-[12px] text-zinc-400 hover:text-zinc-200",
+                  target: "_blank",
+                  rel: "noopener noreferrer" %>
+            <% end %>
+          </div>
+        </div>
+      </li>
+    <% end %>
+  </ul>
+</div>

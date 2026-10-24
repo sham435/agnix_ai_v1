@@ -20,14 +20,22 @@
      <% if streaming && stream_started_at.present? %>data-stream-started-at="<%= stream_started_at %>"<% end %>>
   <div class="flex gap-3.5">
 
-    <%= link_to conversation_path(message.conversation), class: "shrink-0 mt-1" do %>
-      <div class="size-8 rounded-xl bg-gradient-to-br from-emerald-500/25 to-emerald-700/15 border border-emerald-500/25 grid place-items-center shadow-lg shadow-emerald-950/30">
-        <svg class="size-4.5 text-emerald-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
-          <circle cx="12" cy="12" r="3"/>
-          <path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83"/>
-        </svg>
+    <div class="shrink-0 mt-1">
+      <%# Assistant identity: the "Rails 8.1 Live" branding badge replaces the
+          old sun/gear "S" avatar. Visible on every viewport (never hidden
+          behind sm:flex). On very small screens we collapse to just the emerald
+          status dot so the identity still reads without pushing the bubble off
+          alignment. The dot is decorative (aria-hidden); the sr-only label
+          keeps the badge announced to assistive tech even when the visible text
+          is compacted. animate-pulse is behind motion-safe: so prefers-
+          reduced-motion users see a steady dot. %>
+      <div class="inline-flex items-center gap-1.5 rounded-xl bg-white/[0.04] border border-white/[0.06] px-2 py-1.5 text-[12px] text-zinc-300"
+           role="status"
+           aria-label="Shams AI response — Rails 8.1 Live">
+        <span class="size-2 rounded-full bg-emerald-500 motion-safe:animate-pulse" aria-hidden="true"></span>
+        <span class="max-sm:hidden" aria-hidden="true">Rails 8.1 Live</span>
       </div>
-    <% end %>
+    </div>
 
     <div class="flex-1 min-w-0">
       <div class="flex items-center gap-2 flex-wrap">
@@ -135,9 +143,12 @@
       </div>
 
       <div class="flex items-center gap-1 mt-3 opacity-0 group-hover/message:opacity-100 transition relative z-10">
-        <button class="grid size-8 place-items-center rounded-lg hover:bg-white/[0.06] text-zinc-600 hover:text-zinc-300 transition" title="Copy"
+        <button type="button"
+                class="grid size-8 place-items-center rounded-lg hover:bg-white/[0.06] text-zinc-600 hover:text-zinc-300 transition"
+                title="Copy response"
+                aria-label="Copy response"
                 data-action="click->chat#copy">
-          <svg class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <svg class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
             <rect x="9" y="9" width="13" height="13" rx="2"/>
             <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
           </svg>
