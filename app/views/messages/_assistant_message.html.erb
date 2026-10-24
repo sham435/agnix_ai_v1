@@ -62,6 +62,11 @@
               (Connecting → Thinking → Generating → Completed) and tool steps —
               NEVER the model's private reasoning. The animated dots live inside
               the trace summary and are retired once real text lands. %>
+          <%# Immediate acknowledgment cue shown the moment the run starts. It
+              is transient progress UI only — never persisted as the answer —
+              and is removed alongside .thinking-indicator once the first real
+              content_delta lands or the run finalizes. %>
+          <div class="thinking-ack" data-thinking-ack>Your valuable input is received</div>
           <div data-execution-trace
                class="execution-trace"
                data-controller="execution-trace">
@@ -81,7 +86,7 @@
                 <span class="thinking-dots" aria-hidden="true"></span>
                 <span class="sr-only">Shams AI is thinking</span>
               </span>
-              <span class="execution-trace__phase" data-execution-trace-target="phase">Shams AI is thinking…</span>
+              <span class="execution-trace__phase" data-execution-trace-target="phase">Shams AI is thinking</span>
               <svg class="execution-trace__chevron" data-execution-trace-target="chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
                 <path d="m6 9 6 6 6-6"/>
               </svg>

@@ -329,13 +329,14 @@ export default class extends Controller {
         </div>
         <div class="flex-1 min-w-0">
           <div class="mt-2.5">
+            <div class="thinking-ack" data-thinking-ack>Your valuable input is received</div>
             <div data-execution-trace class="execution-trace" data-controller="execution-trace">
               <button type="button" class="execution-trace__summary" data-execution-trace-target="summary" data-action="execution-trace#toggle" aria-expanded="false">
                 <span data-thinking-indicator class="thinking-indicator" data-controller="thinking-indicator" data-thinking-indicator-target="root" data-dot-count="0" role="status" aria-live="polite" aria-atomic="true">
                   <span class="thinking-dots" aria-hidden="true"></span>
                   <span class="sr-only">Shams AI is thinking</span>
                 </span>
-                <span class="execution-trace__phase" data-execution-trace-target="phase">Shams AI is thinking…</span>
+                <span class="execution-trace__phase" data-execution-trace-target="phase">Shams AI is thinking</span>
                 <svg class="execution-trace__chevron" data-execution-trace-target="chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
               </button>
               <ol class="execution-trace__log" data-execution-trace-target="log" hidden></ol>

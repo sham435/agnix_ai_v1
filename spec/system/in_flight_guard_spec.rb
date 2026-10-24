@@ -88,7 +88,10 @@ RSpec.describe "In-flight guard & live thinking indicator", :js, type: :system d
 
     # Browser-owned container with a single live indicator, before any broadcast.
     expect(page).to have_css("[data-assistant-pending][data-request-id] [data-thinking-indicator][role='status']", count: 1, wait: 5)
-    expect(page).to have_content("Shams AI is thinking…")
+    # Immediate acknowledgment line + the thinking caption (dots provide the
+    # progressive ellipsis, so the label itself has no trailing "…").
+    expect(page).to have_css("[data-assistant-pending] [data-thinking-ack]", text: "Your valuable input is received", count: 1, wait: 5)
+    expect(page).to have_content("Shams AI is thinking")
     # The composer guard is engaged on the stable host.
     expect(page).to have_css("#messages-container[data-composer-busy]", wait: 2)
   end
@@ -111,11 +114,12 @@ RSpec.describe "In-flight guard & live thinking indicator", :js, type: :system d
         div.setAttribute('data-request-id', #{rid.to_json});
         div.setAttribute('data-message-id', 'real-mid-1');
         div.setAttribute('data-streaming', 'true');
-        div.innerHTML = '<div data-execution-trace data-controller="execution-trace">' +
+        div.innerHTML = '<div class="thinking-ack" data-thinking-ack>Your valuable input is received</div>' +
+          '<div data-execution-trace data-controller="execution-trace">' +
           '<button class="execution-trace__summary"><span data-thinking-indicator role="status" ' +
           'aria-live="polite"><span class="thinking-dots" aria-hidden="true"></span>' +
           '<span class="sr-only">Shams AI is thinking</span></span>' +
-          '<span class="execution-trace__phase" data-execution-trace-target="phase">Shams AI is thinking…</span>' +
+          '<span class="execution-trace__phase" data-execution-trace-target="phase">Shams AI is thinking</span>' +
           '</button></div><div data-streaming-content="real-mid-1"></div>';
         list.appendChild(div);
       })()
@@ -125,6 +129,8 @@ RSpec.describe "In-flight guard & live thinking indicator", :js, type: :system d
     expect(page).to have_no_css("[data-assistant-pending][data-request-id='#{rid}']", wait: 5)
     expect(js("document.querySelectorAll('[data-request-id=#{rid.to_json}][data-message-role=assistant]').length")).to eq(1)
     expect(js("document.querySelectorAll('[data-thinking-indicator]').length")).to eq(1)
+    # Exactly one acknowledgment line survives the reconcile (no duplicated ack).
+    expect(js("document.querySelectorAll('[data-thinking-ack]').length")).to eq(1)
   end
 
   # §4: the first status/content event cannot be lost to a missing target, and
@@ -145,6 +151,8 @@ RSpec.describe "In-flight guard & live thinking indicator", :js, type: :system d
     expect(js("document.querySelector('[data-request-id=#{rid.to_json}]').getAttribute('data-message-id')")).to eq(mid)
     # Indicator retired on the first genuine token.
     expect(js("document.querySelectorAll('[data-request-id=#{rid.to_json}] [data-thinking-indicator]').length")).to eq(0)
+    # ...and so is the transient acknowledgment line — it is never part of the answer.
+    expect(js("document.querySelectorAll('[data-request-id=#{rid.to_json}] [data-thinking-ack]').length")).to eq(0)
   end
 
   # §4: a completed frame terminates the live state and releases the guard.
@@ -160,6 +168,7 @@ RSpec.describe "In-flight guard & live thinking indicator", :js, type: :system d
     expect(js("document.getElementById('messages-container').dataset.composerBusy || ''")).to eq("")
     expect(js("document.querySelector('#message-form button[type=submit]').disabled")).to be(false)
     expect(js("document.querySelectorAll('[data-thinking-indicator]').length")).to eq(0)
+    expect(js("document.querySelectorAll('[data-thinking-ack]').length")).to eq(0)
   end
 
   # §4: a provider failure stops the indicator and unlocks the composer.
@@ -172,6 +181,7 @@ RSpec.describe "In-flight guard & live thinking indicator", :js, type: :system d
     dispatch({ type: "failed", message_id: mid, request_id: rid, message: "provider down", conversation_id: conversation.id })
 
     expect(js("document.querySelectorAll('[data-thinking-indicator]').length")).to eq(0)
+    expect(js("document.querySelectorAll('[data-thinking-ack]').length")).to eq(0)
     expect(js("document.getElementById('messages-container').dataset.composerBusy || ''")).to eq("")
     expect(js("document.querySelector('#message-form button[type=submit]').disabled")).to be(false)
   end
@@ -208,6 +218,7 @@ RSpec.describe "In-flight guard & live thinking indicator", :js, type: :system d
     # Draft preserved, optimistic assistant container retired, guard freed.
     expect(page).to have_field("message-input", with: "this send will fail", wait: 5)
     expect(page).to have_no_css("[data-assistant-pending]", wait: 5)
+    expect(page).to have_no_css("[data-thinking-ack]", wait: 5)
     expect(js("document.getElementById('messages-container').dataset.composerBusy || ''")).to eq("")
     expect(js("document.querySelector('#message-form button[type=submit]').disabled")).to be(false)
   end
@@ -224,6 +235,8 @@ RSpec.describe "In-flight guard & live thinking indicator", :js, type: :system d
 
     expect(page).to have_css(%([data-message-id="#{live.id}"][data-streaming="true"][data-request-id="live-run"]), wait: 5)
     expect(page).to have_css("[data-thinking-indicator][role='status']", count: 1, wait: 5)
+    # The acknowledgment line is restored too, straight from the persisted run.
+    expect(page).to have_css("[data-thinking-ack]", text: "Your valuable input is received", count: 1, wait: 5)
   end
 
   # §4: a completed/stale run must NOT reappear as perpetually thinking.
@@ -240,6 +253,7 @@ RSpec.describe "In-flight guard & live thinking indicator", :js, type: :system d
     expect(page).to have_css(%([data-message-id="#{dead.id}"][data-streaming="false"]), wait: 5)
     expect(page).to have_css("[data-stale-response-body]", text: /didn't finish/i, wait: 2)
     expect(page).to have_no_css("[data-thinking-indicator]")
+    expect(page).to have_no_css("[data-thinking-ack]")
     expect(page).not_to have_content("Shams AI is thinking")
   end
 end

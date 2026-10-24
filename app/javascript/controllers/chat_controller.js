@@ -292,6 +292,9 @@ export default class extends Controller {
       if (ctrl && typeof ctrl.stop === "function") ctrl.stop()
       node.remove()
     })
+    // The acknowledgment line is transient progress UI, not part of the answer,
+    // so retire it alongside the dots. It carries no timer of its own.
+    scope.querySelectorAll("[data-thinking-ack]").forEach((node) => node.remove())
   }
 
   showToolCall(tool, result, messageId, rid) {
