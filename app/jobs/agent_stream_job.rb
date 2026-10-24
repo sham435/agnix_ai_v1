@@ -24,12 +24,13 @@ class AgentStreamJob < ApplicationJob
     # The request_id + stream_started_at let the browser bridge its optimistic
     # container to this row (idempotency) and let a refresh reconcile a run that
     # died mid-flight instead of showing perpetual "thinking".
-    streaming_msg = existing_streaming_message(conversation) ||
-      conversation.messages.create!(
-        role: "assistant",
-        content: "",
-        metadata: streaming_metadata
-      )
+    streaming_msg = existing_streaming_message(conversation)
+    reused_placeholder = streaming_msg.present?
+    streaming_msg ||= conversation.messages.create!(
+      role: "assistant",
+      content: "",
+      metadata: streaming_metadata
+    )
 
     # Announce the assistant response BEFORE the first status frame. This is
     # delivered over the reliable ConversationChannel (Action Cable), so the
@@ -38,8 +39,10 @@ class AgentStreamJob < ApplicationJob
     # request_id + conversation_id so the client can key exactly one container.
     broadcast_assistant_started(conversation, streaming_msg)
     # Also push the server-rendered container over Turbo for tabs/pages that
-    # render from the database (the client de-dupes by request_id).
-    broadcast_append(conversation, streaming_msg, streaming: true)
+    # render from the database (the client de-dupes by request_id). Skip this
+    # when we reused a row the show page already rendered (dashboard flow) —
+    # appending it again would duplicate the acknowledgment in the DOM.
+    broadcast_append(conversation, streaming_msg, streaming: true) unless reused_placeholder
 
     runner = AgentRunner.new(
       agent: agent,

@@ -29,11 +29,30 @@ class ConversationsController < ApplicationController
         content: params[:content]
       )
 
+      # The dashboard composer has no #messages-list, so it cannot render the
+      # optimistic assistant container that the in-conversation composer uses.
+      # To avoid the "sent but nothing appears until the job wakes" gap,
+      # provision the streaming assistant placeholder NOW and hand its
+      # request_id to the job. When Turbo redirects to the show page it renders
+      # this row immediately (acknowledgment + progressive thinking dots), and
+      # the job reuses the exact row rather than creating a second placeholder.
+      request_id = SecureRandom.uuid
+      @conversation.messages.create!(
+        role: "assistant",
+        content: "",
+        metadata: {
+          "streaming" => true,
+          "stream_started_at" => Time.current.utc.iso8601,
+          "request_id" => request_id
+        }
+      )
+
       # Queue agent response.
       AgentStreamJob.perform_later(
         conversation_id: @conversation.id,
         user_id: current_user.id,
-        message_content: message.content
+        message_content: message.content,
+        request_id: request_id
       )
     end
 
