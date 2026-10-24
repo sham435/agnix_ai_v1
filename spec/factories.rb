@@ -1,6 +1,6 @@
 FactoryBot.define do
   factory :user do
-    sequence(:email) { |n| "user#{n}@agnix.ai" }
+    sequence(:email) { |n| "user#{n}@shams.ai" }
     name { "Test User" }
     password { "password123" }
     role { "user" }
@@ -47,7 +47,7 @@ FactoryBot.define do
     system_prompt { "You are a helpful AI assistant." }
     model { "claude-sonnet-4-6" }
     provider { "anthropic" }
-    tools { ["calculator", "time"] }
+    tools { [ "calculator", "time" ] }
     config { { temperature: 0.7, max_tokens: 4096 } }
     is_active { true }
 
@@ -72,6 +72,14 @@ FactoryBot.define do
     status { "active" }
   end
 
+  factory :project do
+    association :user
+    association :agent
+    association :organization
+    sequence(:name) { |n| "Project #{n}" }
+    description { "A test project" }
+  end
+
   factory :message do
     association :conversation
     role { "user" }
@@ -84,7 +92,7 @@ FactoryBot.define do
 
     trait :with_tools do
       role { "assistant" }
-      tool_calls { [{ id: "call_1", type: "function", function: { name: "calculator", arguments: '{"expression": "2+2"}' } }] }
+      tool_calls { [ { id: "call_1", type: "function", function: { name: "calculator", arguments: '{"expression": "2+2"}' } } ] }
     end
   end
 
@@ -169,5 +177,34 @@ FactoryBot.define do
     title { "Do something" }
     status { "pending" }
     position { 0 }
+  end
+
+  factory :asset do
+    association :user
+    filename { "notes.txt" }
+    content_type { "text/plain" }
+    byte_size { 100 }
+    checksum { SecureRandom.hex(32) }
+    status { "ready" }
+    metadata { { "category" => "text", "ext" => "txt" } }
+  end
+
+  factory :asset_extraction do
+    association :asset
+    status { "pending" }
+    error_code { nil }
+    content { nil }
+    meta { {} }
+  end
+
+  factory :library_item do
+    association :user
+    association :asset
+    label { nil }
+  end
+
+  factory :message_attachment do
+    association :message
+    association :asset
   end
 end

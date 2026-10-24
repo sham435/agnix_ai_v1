@@ -1,66 +1,155 @@
-<div id="assistant-message-<%= message.id %>" class="flex gap-4 group/message relative isolate" data-chat-target="assistantMessage">
-  <div class="size-8 rounded-lg bg-gradient-to-br from-orange-500/20 to-orange-600/10 border border-orange-500/20 grid place-items-center shrink-0 mt-1">
-    <svg class="size-5 text-orange-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
-      <circle cx="12" cy="12" r="3"/>
-      <path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83"/>
-    </svg>
-  </div>
+<%
+  raw_streaming = local_assigns.fetch(:streaming, false) || message.streaming?
+  # A run whose placeholder was stamped and has exceeded the execution timeout
+  # is stale — the job died before finalizing. Render a recoverable state
+  # instead of a perpetual "thinking" indicator on refresh.
+  stale = message.stale_streaming?
+  streaming = raw_streaming && !stale
+  is_empty = !streaming && message.empty_response?
+  req_id = message.metadata.is_a?(Hash) ? message.metadata["request_id"] : nil
+%>
+<div id="assistant-message-<%= message.id %>"
+     class="group/message relative isolate"
+     data-chat-target="assistantMessage"
+     data-message-id="<%= message.id %>"
+     data-message-role="assistant"
+     data-streaming="<%= streaming ? "true" : "false" %>"
+     data-empty-response="<%= is_empty ? "true" : "false" %>"
+     <% if req_id.present? %>data-request-id="<%= req_id %>"<% end %>>
+  <div class="flex gap-3.5">
 
-  <div class="flex-1 min-w-0">
-    <div class="flex items-baseline gap-2 flex-wrap">
-      <span class="text-[13px] font-medium text-white"><%= message.agent&.name || "Assistant" %></span>
-      <span class="text-[11px] text-zinc-600"><%= message.created_at&.strftime("%H:%M") %></span>
-      <% if message.tokens %>
-        <span class="text-[11px] text-zinc-700"><%= number_with_delimiter(message.tokens) %> tokens</span>
-      <% end %>
-    </div>
-
-    <div class="mt-1 text-[15px] leading-7">
-      <% if local_assigns.fetch(:streaming, false) %>
-        <div class="text-zinc-200 whitespace-pre-wrap" data-streaming-content="<%= message.id %>"><%= message.content %></div>
-        <span class="inline-block w-2 h-4 bg-orange-400 animate-pulse ml-0.5 align-text-top"></span>
-      <% else %>
-        <div class="prose prose-invert max-w-none break-words">
-          <%= render_markdown(message.content) %>
-        </div>
-      <% end %>
-    </div>
-
-    <% if message.has_tool_calls? %>
-      <div class="mt-3 space-y-2">
-        <% message.tool_calls.each do |tool_call| %>
-          <details class="rounded-lg border border-white/[0.06] bg-white/[0.02] overflow-hidden">
-            <summary class="px-3 py-2 text-[13px] text-zinc-400 cursor-pointer hover:bg-white/[0.04] list-none">
-              <svg class="size-3.5 inline mr-1 -mt-0.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>
-              </svg>
-              Tool: <%= tool_call.dig("function", "name") || tool_call.dig(:function, :name) %>
-            </summary>
-            <pre class="px-3 py-2 text-[12px] text-zinc-500 overflow-x-auto"><%= JSON.pretty_generate(tool_call) rescue tool_call.to_s %></pre>
-          </details>
-        <% end %>
+    <%= link_to conversation_path(message.conversation), class: "shrink-0 mt-1" do %>
+      <div class="size-8 rounded-xl bg-gradient-to-br from-emerald-500/25 to-emerald-700/15 border border-emerald-500/25 grid place-items-center shadow-lg shadow-emerald-950/30">
+        <svg class="size-4.5 text-emerald-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+          <circle cx="12" cy="12" r="3"/>
+          <path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83"/>
+        </svg>
       </div>
     <% end %>
 
-    <div class="flex items-center gap-1 mt-2 opacity-0 group-hover/message:opacity-100 transition relative z-10 isolate">
-      <button class="grid size-7 place-items-center rounded-lg hover:bg-white/[0.06] text-zinc-600 hover:text-zinc-300 transition" title="Copy" data-action="click->chat#copy">
-        <svg class="size-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <rect x="9" y="9" width="13" height="13" rx="2"/>
-          <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
-        </svg>
-      </button>
-      <button class="grid size-7 place-items-center rounded-lg hover:bg-white/[0.06] text-zinc-600 hover:text-zinc-300 transition" title="Regenerate">
-        <svg class="size-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <path d="M21 2v6h-6"/>
-          <path d="M3 12a9 9 0 0 1 15-6.7L21 8"/>
-        </svg>
-      </button>
-      <button class="grid size-7 place-items-center rounded-lg hover:bg-white/[0.06] text-zinc-600 hover:text-zinc-300 transition" title="Good response">
-        <svg class="size-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <path d="M7 10v12"/>
-          <path d="M15 5.88 14 10h5.83a2 2 0 0 1 1.92 2.56l-2.33 8A2 2 0 0 1 17.5 22H4a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2h2.76a2 2 0 0 0 1.79-1.1L12 2a3.13 3.13 0 0 1 3 3.88Z"/>
-        </svg>
-      </button>
+    <div class="flex-1 min-w-0">
+      <div class="flex items-center gap-2 flex-wrap">
+        <span class="text-[13.5px] font-semibold text-white"><%= message.agent&.name || "Assistant" %></span>
+        <span class="size-1 rounded-full bg-zinc-700"></span>
+        <span class="text-[12px] text-zinc-400"><%= message.created_at&.strftime("%H:%M") %></span>
+        <% if message.tokens %>
+          <span class="text-[12px] px-1.5 py-0.5 rounded-md bg-zinc-800/60 text-zinc-400 font-mono">
+            <%= number_with_delimiter(message.tokens) %> tok
+          </span>
+        <% end %>
+        <% if message.metadata["error"] %>
+          <span class="inline-flex items-center gap-1 text-[11px] text-red-400/90 opacity-0 group-hover/message:opacity-100 transition">
+            <svg class="size-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M18 6 6 18M6 6l12 12"/></svg>
+            Failed
+          </span>
+        <% elsif is_empty %>
+          <span class="inline-flex items-center gap-1 text-[11px] text-amber-400/90 opacity-0 group-hover/message:opacity-100 transition">
+            <svg class="size-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 8v4M12 16h.01"/></svg>
+            Empty
+          </span>
+        <% else %>
+          <span class="inline-flex items-center gap-1 text-[11px] text-emerald-500/80 opacity-0 group-hover/message:opacity-100 transition">
+            <svg class="size-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M20 6 9 17l-5-5"/></svg>
+            Success
+          </span>
+        <% end %>
+      </div>
+
+      <div class="mt-2.5">
+        <% if streaming %>
+          <%# Assistant placeholder: content is "" until the first content_delta
+              arrives. The collapsible execution trace shows lightweight status
+              (Connecting → Thinking → Generating → Completed) and tool steps —
+              NEVER the model's private reasoning. The animated dots live inside
+              the trace summary and are retired once real text lands. %>
+          <div data-execution-trace
+               class="execution-trace"
+               data-controller="execution-trace">
+            <button type="button"
+                    class="execution-trace__summary"
+                    data-execution-trace-target="summary"
+                    data-action="execution-trace#toggle"
+                    aria-expanded="false">
+              <span data-thinking-indicator
+                    class="thinking-indicator"
+                    data-controller="thinking-indicator"
+                    data-thinking-indicator-target="root"
+                    data-dot-count="0"
+                    role="status"
+                    aria-live="polite"
+                    aria-atomic="true">
+                <span class="thinking-dots" aria-hidden="true"></span>
+                <span class="sr-only">Shams AI is thinking</span>
+              </span>
+              <span class="execution-trace__phase" data-execution-trace-target="phase">Shams AI is thinking…</span>
+              <svg class="execution-trace__chevron" data-execution-trace-target="chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                <path d="m6 9 6 6 6-6"/>
+              </svg>
+            </button>
+            <ol class="execution-trace__log" data-execution-trace-target="log" hidden></ol>
+          </div>
+          <div class="mt-2 text-zinc-100 whitespace-pre-wrap break-words text-[16.5px] leading-[1.8] font-[450] tracking-[0.006em]"
+               data-streaming-content="<%= message.id %>"><%= message.content.to_s %></div>
+        <% elsif stale %>
+          <%# A run that never finalized (job crashed, provider died, or the
+              worker was lost). Do not fake a live "thinking" state on refresh —
+              show an honest recovery hint keyed off the persisted run. %>
+          <div class="rounded-xl border border-amber-500/20 bg-amber-500/[0.04] px-3.5 py-2.5 text-[13.5px] text-amber-200/80"
+               data-stale-response-body>
+            This response didn't finish. Click Regenerate to try again.
+          </div>
+        <% elsif is_empty %>
+          <%# Provider returned nothing renderable — do not fake success. %>
+          <div class="rounded-xl border border-amber-500/20 bg-amber-500/[0.04] px-3.5 py-2.5 text-[13.5px] text-amber-200/80"
+               data-empty-response-body>
+            The model returned no response. Try rephrasing or click Regenerate.
+          </div>
+        <% else %>
+          <% if message.has_tool_calls? %>
+            <div class="mb-3 space-y-2">
+              <% message.tool_calls.each do |tool_call| %>
+                <details class="rounded-lg border border-white/[0.06] bg-white/[0.02] overflow-hidden">
+                  <summary class="px-3 py-2 text-[12px] text-zinc-400 cursor-pointer hover:bg-white/[0.04] list-none">
+                    <svg class="size-3.5 inline mr-1 -mt-0.5 text-emerald-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>
+                    </svg>
+                    Tool: <%= tool_call.dig("function", "name") || tool_call.dig(:function, :name) %>
+                  </summary>
+                  <pre class="px-3 py-2 text-[12px] text-zinc-500 overflow-x-auto"><%= JSON.pretty_generate(tool_call) rescue tool_call.to_s %></pre>
+                </details>
+              <% end %>
+            </div>
+          <% end %>
+
+          <div class="markdown-body break-words">
+            <%= render_markdown(message.content) %>
+          </div>
+        <% end %>
+      </div>
+
+      <div class="flex items-center gap-1 mt-3 opacity-0 group-hover/message:opacity-100 transition relative z-10">
+        <button class="grid size-8 place-items-center rounded-lg hover:bg-white/[0.06] text-zinc-600 hover:text-zinc-300 transition" title="Copy"
+                data-action="click->chat#copy">
+          <svg class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="9" y="9" width="13" height="13" rx="2"/>
+            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+          </svg>
+        </button>
+        <%= link_to regenerate_conversation_path(message.conversation), method: :post,
+            class: "grid size-8 place-items-center rounded-lg hover:bg-white/[0.06] text-zinc-600 hover:text-zinc-300 transition",
+            title: "Regenerate", data: { turbo_method: :post, turbo_confirm: "Regenerate this response?" } do %>
+          <svg class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M21 2v6h-6"/>
+            <path d="M3 12a9 9 0 0 1 15-6.7L21 8"/>
+          </svg>
+        <% end %>
+        <button class="grid size-8 place-items-center rounded-lg hover:bg-white/[0.06] text-zinc-600 hover:text-zinc-300 transition" title="Good response" data-action="click->chat#goodResponse">
+          <svg class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M7 10v12"/>
+            <path d="M15 5.88 14 10h5.83a2 2 0 0 1 1.92 2.56l-2.33 8A2 2 0 0 1 17.5 22H4a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2h2.76a2 2 0 0 0 1.79-1.1L12 2a3.13 3.13 0 0 1 3 3.88Z"/>
+          </svg>
+        </button>
+      </div>
     </div>
   </div>
 </div>

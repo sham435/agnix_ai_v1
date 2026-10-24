@@ -10,10 +10,38 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_01_01_000021) do
+ActiveRecord::Schema[8.1].define(version: 2026_10_23_024100) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
   enable_extension "vector"
+
+  create_table "active_storage_attachments", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
+    t.uuid "blob_id", null: false
+    t.datetime "created_at", null: false
+    t.string "name", null: false
+    t.uuid "record_id", null: false
+    t.string "record_type", null: false
+    t.index ["blob_id"], name: "index_active_storage_attachments_on_blob_id"
+    t.index ["record_type", "record_id", "name", "blob_id"], name: "index_active_storage_attachments_uniqueness", unique: true
+  end
+
+  create_table "active_storage_blobs", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
+    t.bigint "byte_size", null: false
+    t.string "checksum"
+    t.string "content_type"
+    t.datetime "created_at", null: false
+    t.string "filename", null: false
+    t.string "key", null: false
+    t.text "metadata"
+    t.string "service_name", null: false
+    t.index ["key"], name: "index_active_storage_blobs_on_key", unique: true
+  end
+
+  create_table "active_storage_variant_records", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
+    t.uuid "blob_id", null: false
+    t.string "variation_digest", null: false
+    t.index ["blob_id", "variation_digest"], name: "index_active_storage_variant_records_uniqueness", unique: true
+  end
 
   create_table "agent_runs", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
     t.uuid "conversation_id", null: false
@@ -57,6 +85,50 @@ ActiveRecord::Schema[8.1].define(version: 2026_01_01_000021) do
     t.index ["is_active"], name: "index_agents_on_is_active"
     t.index ["organization_id", "slug"], name: "index_agents_on_organization_id_and_slug", unique: true
     t.index ["organization_id"], name: "index_agents_on_organization_id"
+  end
+
+  create_table "asset_extractions", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
+    t.uuid "asset_id", null: false
+    t.text "content"
+    t.datetime "created_at", null: false
+    t.string "error_code"
+    t.jsonb "meta", default: {}, null: false
+    t.string "status", default: "pending", null: false
+    t.datetime "updated_at", null: false
+    t.index ["asset_id"], name: "index_asset_extractions_on_asset_id"
+    t.index ["status"], name: "index_asset_extractions_on_status"
+    t.unique_constraint ["asset_id"]
+  end
+
+  create_table "assets", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
+    t.integer "byte_size", null: false
+    t.string "checksum", null: false
+    t.string "content_type", null: false
+    t.datetime "created_at", null: false
+    t.string "filename", null: false
+    t.jsonb "metadata", default: {}, null: false
+    t.uuid "project_id"
+    t.string "status", default: "ready", null: false
+    t.datetime "updated_at", null: false
+    t.uuid "user_id", null: false
+    t.index ["project_id"], name: "index_assets_on_project_id"
+    t.index ["status"], name: "index_assets_on_status"
+    t.index ["user_id", "checksum"], name: "index_assets_on_user_id_and_checksum", unique: true
+    t.index ["user_id"], name: "index_assets_on_user_id"
+  end
+
+  create_table "attachment_drafts", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
+    t.uuid "asset_id", null: false
+    t.datetime "created_at", null: false
+    t.string "draft_token", null: false
+    t.datetime "expires_at", null: false
+    t.string "label"
+    t.datetime "updated_at", null: false
+    t.uuid "user_id", null: false
+    t.index ["draft_token"], name: "index_attachment_drafts_on_draft_token"
+    t.index ["expires_at"], name: "index_attachment_drafts_on_expires_at"
+    t.index ["user_id", "draft_token", "asset_id"], name: "index_attachment_drafts_unique", unique: true
+    t.index ["user_id"], name: "index_attachment_drafts_on_user_id"
   end
 
   create_table "auto_fix_attempts", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
@@ -108,6 +180,17 @@ ActiveRecord::Schema[8.1].define(version: 2026_01_01_000021) do
     t.index ["stripe_id"], name: "index_invoices_on_stripe_id", unique: true
   end
 
+  create_table "library_items", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
+    t.uuid "asset_id", null: false
+    t.datetime "created_at", null: false
+    t.string "label"
+    t.datetime "updated_at", null: false
+    t.uuid "user_id", null: false
+    t.index ["asset_id"], name: "index_library_items_on_asset_id"
+    t.index ["user_id", "asset_id"], name: "index_library_items_unique", unique: true
+    t.index ["user_id"], name: "index_library_items_on_user_id"
+  end
+
   create_table "memberships", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
     t.datetime "created_at", null: false
     t.uuid "organization_id", null: false
@@ -129,10 +212,20 @@ ActiveRecord::Schema[8.1].define(version: 2026_01_01_000021) do
     t.string "source_type"
     t.datetime "updated_at", null: false
     t.uuid "user_id", null: false
-    t.index ["agent_id"], name: "index_memories_on_agent_id"
+    t.index ["embedding"], name: "index_memories_on_embedding_hnsw", opclass: :vector_cosine_ops, using: :hnsw
     t.index ["source_type", "source_id"], name: "index_memories_on_source_type_and_source_id"
     t.index ["user_id", "agent_id"], name: "index_memories_on_user_id_and_agent_id"
     t.index ["user_id"], name: "index_memories_on_user_id"
+  end
+
+  create_table "message_attachments", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
+    t.uuid "asset_id", null: false
+    t.datetime "created_at", null: false
+    t.uuid "message_id", null: false
+    t.datetime "updated_at", null: false
+    t.index ["asset_id"], name: "index_message_attachments_on_asset_id"
+    t.index ["message_id", "asset_id"], name: "index_message_attachments_unique", unique: true
+    t.index ["message_id"], name: "index_message_attachments_on_message_id"
   end
 
   create_table "messages", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
@@ -149,7 +242,6 @@ ActiveRecord::Schema[8.1].define(version: 2026_01_01_000021) do
     t.jsonb "tool_calls", default: [], null: false
     t.datetime "updated_at", null: false
     t.index ["conversation_id", "created_at"], name: "index_messages_on_conversation_id_and_created_at"
-    t.index ["conversation_id"], name: "index_messages_on_conversation_id"
     t.index ["created_at"], name: "index_messages_on_created_at"
     t.index ["external_id"], name: "index_messages_on_external_id", where: "(external_id IS NOT NULL)"
     t.index ["role"], name: "index_messages_on_role"
@@ -190,7 +282,6 @@ ActiveRecord::Schema[8.1].define(version: 2026_01_01_000021) do
     t.string "title"
     t.datetime "updated_at", null: false
     t.string "url", null: false
-    t.index ["project_id"], name: "idx_project_links_on_project_id"
     t.index ["project_id"], name: "index_project_links_on_project_id"
   end
 
@@ -416,17 +507,28 @@ ActiveRecord::Schema[8.1].define(version: 2026_01_01_000021) do
     t.index ["whatsapp_phone"], name: "index_users_on_whatsapp_phone", unique: true, where: "(whatsapp_phone IS NOT NULL)"
   end
 
+  add_foreign_key "active_storage_attachments", "active_storage_blobs", column: "blob_id"
+  add_foreign_key "active_storage_variant_records", "active_storage_blobs", column: "blob_id"
   add_foreign_key "agent_runs", "conversations"
   add_foreign_key "agent_todos", "agent_runs"
   add_foreign_key "agents", "organizations"
+  add_foreign_key "asset_extractions", "assets"
+  add_foreign_key "assets", "projects"
+  add_foreign_key "assets", "users"
+  add_foreign_key "attachment_drafts", "assets"
+  add_foreign_key "attachment_drafts", "users"
   add_foreign_key "conversations", "agents"
   add_foreign_key "conversations", "projects"
   add_foreign_key "conversations", "users"
   add_foreign_key "invoices", "organizations"
+  add_foreign_key "library_items", "assets"
+  add_foreign_key "library_items", "users"
   add_foreign_key "memberships", "organizations"
   add_foreign_key "memberships", "users"
   add_foreign_key "memories", "agents"
   add_foreign_key "memories", "users"
+  add_foreign_key "message_attachments", "assets"
+  add_foreign_key "message_attachments", "messages"
   add_foreign_key "messages", "conversations"
   add_foreign_key "organizations", "users", column: "owner_id"
   add_foreign_key "project_files", "projects"
