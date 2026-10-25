@@ -38,7 +38,7 @@ Rails.application.configure do
   config.file_watcher = ActiveSupport::FileUpdateChecker
 
   # Run jobs inline so streaming works without a separate worker process.
-  config.active_job.queue_adapter = :inline
+  config.active_job.queue_adapter = :async
 
   # Dev mailer.
   config.action_mailer.delivery_method = :letter_opener
