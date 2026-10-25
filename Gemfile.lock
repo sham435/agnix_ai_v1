@@ -598,6 +598,7 @@ DEPENDENCIES
   factory_bot_rails (~> 6.4)
   faker (~> 3.5)
   faraday (~> 2.12)
+  fugit (~> 1.12)
   httparty (~> 0.22)
   image_processing (~> 1.14)
   importmap-rails (~> 2.0)

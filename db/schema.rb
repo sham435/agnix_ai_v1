@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_10_23_024100) do
+ActiveRecord::Schema[8.1].define(version: 2026_10_25_000000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
   enable_extension "vector"
@@ -322,6 +322,51 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_23_024100) do
     t.index ["status"], name: "index_runs_on_status"
   end
 
+  create_table "scheduled_task_runs", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
+    t.uuid "assistant_message_id"
+    t.uuid "conversation_id"
+    t.datetime "created_at", null: false
+    t.text "error"
+    t.datetime "finished_at", precision: nil
+    t.uuid "scheduled_task_id", null: false
+    t.datetime "started_at", precision: nil
+    t.string "status", default: "queued", null: false
+    t.integer "tokens", default: 0, null: false
+    t.datetime "updated_at", null: false
+    t.index ["assistant_message_id"], name: "index_scheduled_task_runs_on_assistant_message_id"
+    t.index ["conversation_id"], name: "index_scheduled_task_runs_on_conversation_id"
+    t.index ["scheduled_task_id"], name: "index_scheduled_task_runs_on_scheduled_task_id"
+    t.index ["status"], name: "index_scheduled_task_runs_on_status"
+  end
+
+  create_table "scheduled_tasks", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
+    t.uuid "agent_id", null: false
+    t.uuid "conversation_id"
+    t.datetime "created_at", null: false
+    t.string "cron"
+    t.datetime "expires_at", precision: nil
+    t.datetime "last_run_at", precision: nil
+    t.integer "max_runs"
+    t.jsonb "metadata", default: {}, null: false
+    t.string "name", null: false
+    t.datetime "next_run_at", precision: nil
+    t.uuid "organization_id", null: false
+    t.text "prompt", null: false
+    t.datetime "run_at", precision: nil
+    t.integer "run_count", default: 0, null: false
+    t.string "schedule_type", null: false
+    t.string "status", default: "active", null: false
+    t.string "timezone", null: false
+    t.datetime "updated_at", null: false
+    t.uuid "user_id", null: false
+    t.index ["agent_id"], name: "index_scheduled_tasks_on_agent_id"
+    t.index ["conversation_id"], name: "index_scheduled_tasks_on_conversation_id"
+    t.index ["next_run_at"], name: "index_scheduled_tasks_on_next_run_at"
+    t.index ["organization_id"], name: "index_scheduled_tasks_on_organization_id"
+    t.index ["status"], name: "index_scheduled_tasks_on_status"
+    t.index ["user_id"], name: "index_scheduled_tasks_on_user_id"
+  end
+
   create_table "solid_queue_blocked_executions", force: :cascade do |t|
     t.string "concurrency_key", null: false
     t.datetime "created_at", null: false
@@ -538,6 +583,13 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_23_024100) do
   add_foreign_key "projects", "users"
   add_foreign_key "runs", "agents"
   add_foreign_key "runs", "conversations"
+  add_foreign_key "scheduled_task_runs", "conversations"
+  add_foreign_key "scheduled_task_runs", "messages", column: "assistant_message_id"
+  add_foreign_key "scheduled_task_runs", "scheduled_tasks"
+  add_foreign_key "scheduled_tasks", "agents"
+  add_foreign_key "scheduled_tasks", "conversations"
+  add_foreign_key "scheduled_tasks", "organizations"
+  add_foreign_key "scheduled_tasks", "users"
   add_foreign_key "solid_queue_blocked_executions", "solid_queue_jobs", column: "job_id", on_delete: :cascade
   add_foreign_key "solid_queue_claimed_executions", "solid_queue_jobs", column: "job_id", on_delete: :cascade
   add_foreign_key "solid_queue_failed_executions", "solid_queue_jobs", column: "job_id", on_delete: :cascade

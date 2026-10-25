@@ -1,0 +1,102 @@
+<%# Shared create/edit form. Local: none — uses @scheduled_task. The schedule
+    section toggles between cron (recurring) and a datetime picker (one_time)
+    via the scheduled-form Stimulus controller; the model enforces exactly one
+    of cron/run_at regardless of what the UI shows.
+-%>
+<%= form_with model: @scheduled_task, url: (@scheduled_task.persisted? ? scheduled_task_path(@scheduled_task) : scheduled_tasks_path),
+      class: "mx-auto max-w-[720px] px-4 sm:px-6 py-8 space-y-6" do |f| %>
+  <% if @scheduled_task.errors.any? %>
+    <div class="rounded-xl border border-red-500/30 bg-red-500/5 p-4 text-[13px] text-red-300">
+      <p class="font-semibold mb-1">Please fix the following:</p>
+      <ul class="list-disc pl-5 space-y-0.5">
+        <% @scheduled_task.errors.full_messages.each do |msg| %>
+          <li><%= msg %></li>
+        <% end %>
+      </ul>
+    </div>
+  <% end %>
+
+  <div>
+    <%= f.label :name, "Task name", class: "block text-[13px] font-medium text-fg mb-1.5" %>
+    <%= f.text_field :name, required: true, placeholder: "Morning standup summary",
+          class: "w-full rounded-xl bg-white/[0.04] border border-white/10 px-4 py-2.5 text-[14px] text-fg placeholder:text-fg-subtle focus:border-accent focus:outline-none" %>
+  </div>
+
+  <div>
+    <%= f.label :agent_id, "Run with agent", class: "block text-[13px] font-medium text-fg mb-1.5" %>
+    <%= f.select :agent_id, options_for_select(scheduled_agent_options, @scheduled_task.agent_id),
+          { include_blank: "Choose an agent…" },
+          class: "w-full rounded-xl bg-white/[0.04] border border-white/10 px-4 py-2.5 text-[14px] text-fg focus:border-accent focus:outline-none" %>
+  </div>
+
+  <div>
+    <%= f.label :prompt, "Prompt to run", class: "block text-[13px] font-medium text-fg mb-1.5" %>
+    <%= f.text_area :prompt, rows: 4, required: true, placeholder: "What should the agent do on this schedule?",
+          class: "w-full rounded-xl bg-white/[0.04] border border-white/10 px-4 py-2.5 text-[14px] text-fg placeholder:text-fg-subtle focus:border-accent focus:outline-none" %>
+  </div>
+
+  <fieldset class="rounded-2xl border border-border bg-white/[0.02] p-5 space-y-4"
+            data-controller="scheduled-form">
+    <legend class="px-2 text-[13px] font-semibold text-fg">Schedule</legend>
+
+    <div class="flex gap-4">
+      <label class="flex items-center gap-2 text-[14px] text-fg cursor-pointer">
+        <%= f.radio_button :schedule_type, "recurring", class: "accent-emerald-500",
+              data: { scheduled_form_target: "scheduleType", action: "change->scheduled-form#refresh" } %>
+        Recurring
+      </label>
+      <label class="flex items-center gap-2 text-[14px] text-fg cursor-pointer">
+        <%= f.radio_button :schedule_type, "one_time", class: "accent-emerald-500",
+              data: { scheduled_form_target: "scheduleType", action: "change->scheduled-form#refresh" } %>
+        One-time
+      </label>
+    </div>
+
+    <%# Recurring: cron expression (hidden by JS when one-time is selected) %>
+    <div data-scheduled-form-target="recurring">
+      <%= f.label :cron, "Cron expression", class: "block text-[12px] font-medium text-fg-muted mb-1" %>
+      <%= f.text_field :cron, placeholder: "0 7 * * *",
+            value: @scheduled_task.cron,
+            data: { scheduled_form_cron: true, action: "input->scheduled-form#updatePreview" },
+            class: "w-full rounded-xl bg-white/[0.04] border border-white/10 px-4 py-2.5 text-[14px] font-mono text-fg placeholder:text-fg-subtle focus:border-accent focus:outline-none" %>
+      <div class="mt-1.5 flex flex-wrap gap-1.5 text-[12px] text-fg-subtle">
+        <% [["Daily 07:00", "0 7 * * *"], ["Weekdays 09:00", "0 9 * * 1-5"], ["Hourly", "0 * * * *"], ["Every 15m", "*/15 * * * *"], ["Weekly Mon 08:00", "0 8 * * 1"]].each do |label, expr| %>
+          <span class="rounded-md bg-hover px-2 py-0.5"><%= label %> · <span class="font-mono"><%= expr %></span></span>
+        <% end %>
+      </div>
+    </div>
+
+    <%# One-time: datetime picker (hidden by JS when recurring is selected) %>
+    <div data-scheduled-form-target="oneTime" hidden>
+      <%= f.label :run_at_wall, "Run at", class: "block text-[12px] font-medium text-fg-muted mb-1" %>
+      <%= f.datetime_field :run_at_wall, value: @scheduled_task.run_at_wall,
+            class: "w-full rounded-xl bg-white/[0.04] border border-white/10 px-4 py-2.5 text-[14px] text-fg focus:border-accent focus:outline-none" %>
+    </div>
+
+    <div>
+      <%= f.label :timezone, "Time zone", class: "block text-[12px] font-medium text-fg-muted mb-1" %>
+      <%= f.select :timezone, options_for_select(scheduled_timezone_options, @scheduled_task.timezone.presence || "UTC"),
+            {}, class: "w-full rounded-xl bg-white/[0.04] border border-white/10 px-4 py-2.5 text-[14px] text-fg focus:border-accent focus:outline-none" %>
+      <p data-scheduled-form-target="preview" class="mt-2 text-[12px] text-fg-subtle"></p>
+    </div>
+  </fieldset>
+
+  <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
+    <div>
+      <%= f.label :max_runs, "Max runs (optional)", class: "block text-[13px] font-medium text-fg mb-1.5" %>
+      <%= f.number_field :max_runs, min: 1, placeholder: "e.g. 10",
+            class: "w-full rounded-xl bg-white/[0.04] border border-white/10 px-4 py-2.5 text-[14px] text-fg focus:border-accent focus:outline-none" %>
+    </div>
+    <div>
+      <%= f.label :expires_at, "Expires after (optional)", class: "block text-[13px] font-medium text-fg mb-1.5" %>
+      <%= f.datetime_field :expires_at,
+            class: "w-full rounded-xl bg-white/[0.04] border border-white/10 px-4 py-2.5 text-[14px] text-fg focus:border-accent focus:outline-none" %>
+    </div>
+  </div>
+
+  <div class="flex items-center gap-3 pt-2">
+    <%= f.submit (@scheduled_task.persisted? ? "Save changes" : "Create task"),
+          class: "rounded-2xl bg-accent px-5 py-2.5 text-[14px] font-semibold text-accent-fg hover:brightness-110 cursor-pointer" %>
+    <%= link_to "Cancel", scheduled_tasks_path, class: "text-[14px] font-medium text-fg-muted hover:text-fg" %>
+  </div>
+<% end %>

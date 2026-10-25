@@ -58,13 +58,14 @@ RSpec.describe "Phase 1 app shell", :js, type: :system do
     expect(page).to have_css("#sidebar", wait: 10)
   end
 
-  it "renders the sidebar navigation, hiding not-yet-built phase slots" do
+  it "renders the sidebar navigation, surfacing built slots and hiding unbuilt ones" do
     within "#sidebar" do
       expect(page).to have_link("Chats")
       expect(page).to have_link("Agents")
       expect(page).to have_link("Memories")
       expect(page).to have_link("Integrations")
-      expect(page).not_to have_link("Scheduled")
+      # Phase 2 landed the /scheduled route, so the route-driven flag now shows it.
+      expect(page).to have_link("Scheduled", href: "/scheduled")
       expect(page).not_to have_link("Images")
       expect(page).not_to have_link("Explore")
     end

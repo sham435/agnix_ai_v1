@@ -1,0 +1,81 @@
+<%# One automation card. Local: `task` (a ScheduledTask). Reused by the index
+    collection render, the pause/resume turbo streams, and RunJob broadcasts —
+    so its DOM id (scheduled-task-<id>) is the single refresh target.
+-%>
+<% last_run = task.scheduled_task_runs.to_a.max_by(&:created_at) %>
+<div id="scheduled-task-<%= task.id %>"
+     class="rounded-2xl border border-border bg-white/[0.02] p-5 transition hover:border-white/10">
+  <div class="flex items-start justify-between gap-3">
+    <div class="min-w-0">
+      <div class="flex items-center gap-2 flex-wrap">
+        <h3 class="text-[15px] font-semibold text-fg truncate"><%= task.name %></h3>
+        <%= scheduled_status_chip(task) %>
+      </div>
+      <div class="mt-1.5 flex items-center gap-2 flex-wrap text-[13px] text-fg-muted">
+        <span class="inline-flex items-center gap-1.5 rounded-lg bg-hover px-2 py-0.5 text-[12px] font-medium text-fg">
+          <svg class="size-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3"/><path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83"/></svg>
+          <%= task.agent&.name || "No agent" %>
+        </span>
+        <span class="inline-flex items-center gap-1.5 text-[12px]">
+          <svg class="size-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+          <%= task.humanized_schedule %>
+        </span>
+      </div>
+    </div>
+
+    <% if task.conversation.present? %>
+      <%= link_to "View results", conversation_path(task.conversation),
+            class: "shrink-0 text-[13px] font-medium text-accent hover:underline" %>
+    <% end %>
+  </div>
+
+  <p class="mt-3 line-clamp-2 text-[13px] leading-relaxed text-fg-muted"><%= task.prompt %></p>
+
+  <div class="mt-3 grid grid-cols-2 gap-2 text-[12px] sm:grid-cols-4">
+    <div>
+      <div class="text-fg-subtle">Next run</div>
+      <div class="mt-0.5 text-fg"><%= scheduled_next_run_label(task) %></div>
+    </div>
+    <div>
+      <div class="text-fg-subtle">Last run</div>
+      <div class="mt-0.5 text-fg"><%= scheduled_last_run_label(task) %></div>
+    </div>
+    <div>
+      <div class="text-fg-subtle">Runs</div>
+      <div class="mt-0.5 text-fg"><%= task.run_count %><%= " / #{task.max_runs}" if task.max_runs.present? %></div>
+    </div>
+    <div>
+      <div class="text-fg-subtle">Status</div>
+      <div class="mt-0.5"><%= scheduled_run_chip(last_run) %></div>
+    </div>
+  </div>
+
+  <div class="mt-4 flex items-center gap-2 border-t border-border pt-3">
+    <% if task.active? %>
+      <%= button_to pause_scheduled_task_path(task), method: :post,
+            class: "inline-flex items-center gap-1.5 rounded-lg bg-hover px-3 py-1.5 text-[12px] font-medium text-fg hover:text-accent transition" do %>
+        <svg class="size-3.5" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z" transform="rotate(180 12 12)"/></svg>
+        Pause
+      <% end %>
+    <% elsif task.paused? %>
+      <%= button_to resume_scheduled_task_path(task), method: :post,
+            class: "inline-flex items-center gap-1.5 rounded-lg bg-accent/15 px-3 py-1.5 text-[12px] font-medium text-accent hover:bg-accent/25 transition" do %>
+        <svg class="size-3.5" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+        Resume
+      <% end %>
+    <% end %>
+
+    <%= link_to edit_scheduled_task_path(task),
+          class: "inline-flex items-center gap-1.5 rounded-lg bg-hover px-3 py-1.5 text-[12px] font-medium text-fg hover:text-accent transition" do %>
+      <svg class="size-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>
+      Edit
+    <% end %>
+
+    <%= button_to scheduled_task_path(task), method: :delete,
+          class: "ml-auto inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[12px] font-medium text-red-400 hover:bg-red-500/10 transition",
+          form: { data: { turbo_confirm: "Delete this scheduled task? This cannot be undone." } } do %>
+      <svg class="size-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/></svg>
+      Delete
+    <% end %>
+  </div>
+</div>

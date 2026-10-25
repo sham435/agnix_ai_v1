@@ -53,9 +53,12 @@
 
     <%# Nav %>
     <%
+      # Agents live on the organization-scoped index (GET /agents has no route —
+      # `resources :agents, except: [:index]`), so the nav must point there.
+      agents_href = current_organization ? organization_agents_path(current_organization) : conversations_path
       nav = [
         { label: "Chats",        href: conversations_path,           icon: "chat" },
-        { label: "Agents",       href: agents_path,                  icon: "agent" },
+        { label: "Agents",       href: agents_href,                  icon: "agent" },
         { label: "Memories",     href: memories_path,                icon: "memory" },
         { label: "Integrations", href: settings_integrations_path,   icon: "plug" },
       ]
@@ -81,6 +84,9 @@
             <svg class="size-[18px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><%= raw icon[item[:icon]] %></svg>
           </span>
           <span class="sidebar-label"><%= item[:label] %></span>
+          <% if item[:href] == "/scheduled" && (sc = current_user.active_scheduled_task_count).to_i.positive? %>
+            <span class="sidebar-label ml-auto grid min-w-5 place-items-center rounded-full bg-accent/20 px-1.5 py-0.5 text-[11px] font-semibold text-accent" title="<%= sc %> active scheduled task(s)"><%= sc %></span>
+          <% end %>
           <span class="sidebar-tip" aria-hidden="true"><%= item[:label] %></span>
         <% end %>
       <% end %>

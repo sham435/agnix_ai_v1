@@ -65,6 +65,15 @@ Rails.application.routes.draw do
     collection { post :upload }
   end
 
+  # Phase 2 — Scheduled Tasks (ChatGPT Automations). Additive; registered well
+  # above the catch-all so the *path route never shadows /scheduled in test/prod.
+  resources :scheduled_tasks, path: "scheduled", only: [ :index, :new, :create, :edit, :update, :destroy ] do
+    member do
+      post :pause
+      post :resume
+    end
+  end
+
   # Tool integrations.
   resources :tool_integrations, path: "integrations"
 

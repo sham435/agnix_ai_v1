@@ -62,6 +62,7 @@ gem "image_processing", "~> 1.14"             # Image variants
 
 # -- Background --
 # Solid Queue periodic jobs replace solid_cron (Rails 8.1 built-in)
+gem "fugit", "~> 1.12"             # Cron parsing for ScheduledTask next-run math (Phase 2); already locked transitively via solid_queue
 
 # -- Monitoring & Observability --
 gem "sentry-rails", "~> 5.22"

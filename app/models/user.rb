@@ -30,6 +30,7 @@ class User < ApplicationRecord
 
   has_many :assets, dependent: :destroy
   has_many :library_items, dependent: :destroy
+  has_many :scheduled_tasks, dependent: :destroy
 
   enum :role, { user: "user", admin: "admin" }, default: :user
 
@@ -69,6 +70,12 @@ class User < ApplicationRecord
 
   def active_organization
     @active_organization ||= organizations.first
+  end
+
+  # Count shown as the /scheduled sidebar badge (Phase 2). Kept in the model so
+  # the app-shell layout never issues its own query.
+  def active_scheduled_task_count
+    scheduled_tasks.active_scheduled.count
   end
 
   def avatar_url

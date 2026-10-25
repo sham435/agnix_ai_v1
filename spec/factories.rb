@@ -207,4 +207,35 @@ FactoryBot.define do
     association :message
     association :asset
   end
+
+  factory :scheduled_task do
+    association :user
+    association :agent
+    organization { agent.organization }
+    name { "Daily digest" }
+    prompt { "Summarize today's activity." }
+    schedule_type { "recurring" }
+    cron { "0 7 * * *" }
+    timezone { "Asia/Colombo" }
+    status { "active" }
+
+    trait :one_time do
+      schedule_type { "one_time" }
+      cron { nil }
+      run_at { 1.day.from_now.change(seconds: 0) }
+    end
+
+    trait :paused do
+      status { "paused" }
+    end
+
+    trait :with_conversation do
+      association :conversation
+    end
+  end
+
+  factory :scheduled_task_run do
+    association :scheduled_task
+    status { "queued" }
+  end
 end

@@ -31,6 +31,7 @@ class Agent < ApplicationRecord
   has_many :runs, dependent: :destroy, counter_cache: true
   has_many :memories, dependent: :nullify
   has_many :projects, dependent: :destroy
+  has_many :scheduled_tasks, dependent: :destroy
 
   enum :provider, { anthropic: "anthropic", openai: "openai", google: "google", opencode: "opencode", ollama: "ollama" }
 

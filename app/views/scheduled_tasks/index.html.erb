@@ -1,0 +1,48 @@
+<%# Phase 2e — /scheduled automations inbox. Rendered inside the app-shell layout
+    (the fixed sidebar + independently scrolling main column). Live updates via
+    Turbo Streams: RunJob + the pause/resume actions refresh individual cards by
+    their DOM id, so this page subscribes to the shared "scheduled_tasks" stream.
+-%>
+<%= turbo_stream_from "scheduled_tasks" %>
+
+<header class="sticky top-0 z-20 flex h-[64px] items-center justify-between gap-3 border-b border-white/[0.06] glass px-4">
+  <div class="flex items-center gap-2 min-w-0">
+    <button id="menuBtn" class="lg:hidden grid size-9 place-items-center rounded-xl bg-white/[0.04] hover:bg-white/[0.08] text-zinc-300" aria-label="Open navigation menu">
+      <svg class="size-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+    </button>
+    <h1 class="text-[16px] font-semibold text-fg truncate">Scheduled</h1>
+    <span class="text-[12px] text-fg-subtle">· <%= @active_count %> active</span>
+  </div>
+
+  <div class="flex items-center gap-2 shrink-0">
+    <%= link_to new_scheduled_task_path,
+          class: "inline-flex items-center gap-1.5 rounded-xl bg-accent px-3.5 py-2 text-[13px] font-semibold text-accent-fg hover:brightness-110 transition",
+          title: "Create scheduled task" do %>
+      <svg class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+      <span class="max-sm:hidden">New task</span>
+    <% end %>
+  </div>
+</header>
+
+<main class="flex-1 overflow-y-auto">
+  <div id="scheduled-tasks-list" class="mx-auto max-w-[900px] px-4 sm:px-6 py-8 space-y-4">
+    <% if @scheduled_tasks.any? %>
+      <%= render partial: "scheduled_tasks/task", collection: @scheduled_tasks, as: :task %>
+    <% else %>
+      <div class="rounded-2xl border border-dashed border-border bg-white/[0.02] px-6 py-16 text-center">
+        <div class="mx-auto mb-5 grid size-16 place-items-center rounded-2xl bg-hover text-fg-muted">
+          <svg class="size-8" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+        </div>
+        <h2 class="text-[18px] font-semibold text-fg">No scheduled tasks yet</h2>
+        <p class="mx-auto mt-2 max-w-md text-[14px] text-fg-muted">
+          Automate any prompt to run on a recurring cron schedule or at a specific time. Results land right in a chat conversation.
+        </p>
+        <%= link_to new_scheduled_task_path,
+              class: "mt-6 inline-flex items-center gap-2 rounded-2xl bg-accent px-4 py-2.5 text-[14px] font-semibold text-accent-fg hover:brightness-110 transition" do %>
+          <svg class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+          Create your first task
+        <% end %>
+      </div>
+    <% end %>
+  </div>
+</main>

@@ -1080,6 +1080,20 @@ export default class extends Controller {
     this._lastLineCount = 1
   }
 
+  // Composer "+" hook → create a scheduled task pre-filled with the current
+  // message text (server-side prefills the prompt from ?prompt=). The chat text
+  // stays put so a cancelled automation flow loses nothing.
+  scheduleTask(event) {
+    event?.preventDefault?.()
+    const content = this.hasInputTarget ? this.inputTarget.value.trim() : ""
+    const url = `/scheduled/new${content ? `?prompt=${encodeURIComponent(content)}` : ""}`
+    if (window.Turbo) {
+      window.Turbo.visit(url)
+    } else {
+      window.location.assign(url)
+    }
+  }
+
   hideHint(animate = true) {
     if (!this.hasHintTarget) return
     if (animate) {
