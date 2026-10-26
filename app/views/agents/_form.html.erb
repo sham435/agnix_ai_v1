@@ -44,14 +44,46 @@
 
   <div class="card space-y-6">
     <h2 class="text-[15px] font-medium text-white">Tools</h2>
+    <%# Sentinel keeps agent[tools][] present when nothing is checked, so
+        unchecking everything genuinely clears the built-in selection. The
+        blank entry is dropped by the controller's sanitizer. %>
+    <%= hidden_field_tag "agent[tools][]", "" %>
     <div class="grid grid-cols-2 sm:grid-cols-3 gap-2">
       <% Agents::ToolRegistry.all.each do |tool| %>
         <label class="flex items-center gap-2 rounded-xl bg-white/[0.04] px-3 py-2.5 hover:bg-white/[0.06] cursor-pointer transition">
-              <%= check_box_tag "agent[tools][]", tool[:name], agent.persisted? ? (agent.tools.include?(tool[:name]) || agent.tools.any? { |t| t.is_a?(Hash) && t["name"] == tool[:name] }) : true, class: "rounded border-zinc-600 bg-white/[0.04] text-orange-500 focus:ring-orange-500/20" %>
+              <%= check_box_tag "agent[tools][]", tool[:name], agent.persisted? ? (agent.tools.include?(tool[:name]) || agent.tools.any? { |t| t.is_a?(Hash) && t["name"] == tool[:name] }) : true, class: "rounded border-zinc-600 bg-white/[0.04] text-emerald-500 focus:ring-emerald-500/20" %>
           <span class="text-[13px] text-zinc-300"><%= tool[:name].titleize %></span>
         </label>
       <% end %>
     </div>
+
+    <% plugin_entries = Tools::Catalog.available_plugins(agent.organization) %>
+    <% if plugin_entries.any? %>
+      <div class="pt-1 border-t border-white/[0.06] space-y-3">
+        <div>
+          <h3 class="text-[12px] font-medium uppercase tracking-wider text-zinc-500">Plugin tools</h3>
+          <p class="text-[11px] text-zinc-600 mt-1">From your connected plugins. Selections store the plugin binding alongside the tool name.</p>
+        </div>
+        <%= hidden_field_tag "agent[plugin_tools][]", "" %>
+        <div class="grid grid-cols-2 sm:grid-cols-3 gap-2">
+          <% plugin_entries.each do |entry| %>
+            <% plugin = entry[:plugin] %>
+            <% plugin[:tools].each do |tool| %>
+              <% namespaced = Tools::Catalog.namespaced(plugin[:key], tool[:name]) %>
+              <% selected = agent.tools.any? { |t| (t.is_a?(Hash) ? t["name"] : t) == namespaced } %>
+              <label class="flex items-center gap-2 rounded-xl bg-white/[0.04] px-3 py-2.5 hover:bg-white/[0.06] cursor-pointer transition" title="<%= tool[:summary] %>">
+                <%= check_box_tag "agent[plugin_tools][]", namespaced, selected, class: "rounded border-zinc-600 bg-white/[0.04] text-emerald-500 focus:ring-emerald-500/20" %>
+                <span class="text-[13px] text-zinc-300"><%= tool[:name].titleize %></span>
+                <span class="text-[11px] text-zinc-600"><%= plugin[:name] %></span>
+              </label>
+            <% end %>
+          <% end %>
+        </div>
+      </div>
+    <% elsif current_organization&.tool_integrations&.any? %>
+      <p class="text-[11px] text-zinc-600">No connected plugin currently exposes agent tools. Enable one on the
+        <%= link_to "Plugins", tool_integrations_path, class: "text-emerald-400 hover:underline" %> page.</p>
+    <% end %>
   </div>
 
   <div class="flex items-center justify-end gap-3">

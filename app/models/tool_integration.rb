@@ -14,7 +14,7 @@
 #  updated_at      :datetime         not null
 #
 class ToolIntegration < ApplicationRecord
-  PROVIDERS = %w[stripe whatsapp google github postmark resend slack notion].freeze
+  PROVIDERS = %w[stripe whatsapp google github postmark resend slack notion webhook].freeze
 
   belongs_to :organization
 
@@ -22,6 +22,13 @@ class ToolIntegration < ApplicationRecord
 
   validates :name, :provider, presence: true
   validates :provider, uniqueness: { scope: :organization_id }
+
+  # Both jsonb columns are NOT NULL, and an encrypted attribute (nor a raw
+  # pg jsonb default, which deserializes to the STRING "{}" before any DB
+  # round trip) leaves an in-memory nil/"" when the params omit them — the
+  # credentials-less Custom Webhook connect would then crash with
+  # ActiveRecord::NotNullViolation. Coerce to real hashes pre-validation.
+  before_validation :ensure_json_defaults
 
   normalizes :provider, with: ->(p) { p.strip.downcase }
 
@@ -50,6 +57,13 @@ class ToolIntegration < ApplicationRecord
     update!(last_used_at: Time.current)
   end
 
+  # Marketplace on/off switch (Phase 4). The flip lives here so the toggle
+  # route stays a thin dispatcher; disabled rows leave the active scope and
+  # their tools stop surfacing to agents.
+  def toggle_active!
+    update!(is_active: !is_active?)
+  end
+
   # Provider-specific helpers.
   def stripe_client
     return nil unless provider == "stripe"
@@ -59,5 +73,15 @@ class ToolIntegration < ApplicationRecord
   def whatsapp_phone_number_id
     return nil unless provider == "whatsapp"
     config["phone_number_id"]
+  end
+
+  private
+
+  # nil (encrypted attr without input) or the STRING "{}" (raw pg jsonb
+  # default seen before any DB round trip) both crash the insert or later
+  # .merge calls. Anything not already a Hash becomes a real empty Hash.
+  def ensure_json_defaults
+    self.credentials = {} unless credentials.is_a?(Hash)
+    self.config = {} unless config.is_a?(Hash)
   end
 end

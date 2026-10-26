@@ -1,0 +1,32 @@
+<%# Phase 4b — Plugins marketplace. Catalog cards replace the bare provider
+    list; every action still rides the existing ToolIntegrations CRUD so the
+    billing/webhook paths that read these rows are untouched. Connect and
+    Details render into the layout's top-level "modal" turbo frame. %>
+<header class="sticky top-0 z-20 flex h-[64px] items-center justify-between gap-3 border-b border-border bg-sidebar/80 glass px-4">
+  <div class="flex items-center gap-2 min-w-0">
+    <button id="menuBtn" class="lg:hidden grid size-9 place-items-center rounded-xl bg-hover text-fg-muted transition hover:bg-border hover:text-fg" aria-label="Open navigation menu">
+      <svg class="size-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+    </button>
+    <h1 class="text-[16px] font-semibold text-fg truncate">Plugins</h1>
+    <span class="hidden text-[12px] text-fg-subtle sm:inline">· <%= @integration_by_provider.values.count(&:is_active?) %> active</span>
+  </div>
+  <%= link_to new_tool_integration_path, class: "btn-primary text-[13px]" do %>
+    <svg class="size-4 mr-1.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 5v14M5 12h14" stroke-linecap="round"/></svg>
+    Manual setup
+  <% end %>
+</header>
+
+<main class="flex-1 overflow-y-auto">
+  <div class="mx-auto max-w-[1100px] px-4 py-6 sm:px-6">
+    <p class="mb-5 text-[13px] leading-5 text-fg-muted">
+      Connect a provider once and your agents gain its tools. Credentials are encrypted per
+      organization at rest; pausing a plugin removes its tools from runs immediately.
+    </p>
+
+    <div class="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
+      <% @plugins.each do |plugin| %>
+        <%= render "tool_integrations/plugin_card", plugin: plugin, integration: @integration_by_provider[plugin[:key]] %>
+      <% end %>
+    </div>
+  </div>
+</main>

@@ -72,9 +72,91 @@ class ApplicationController < ActionController::Base
   end
 
   def permitted_agent_params
-    params.require(:agent).permit(
+    base = params.require(:agent).permit(
       :name, :slug, :description, :system_prompt, :model, :provider, :is_active,
-      tools: {}, config: {}
+      config: {}
     )
+
+    # `tools: {}` only passes a Hash and silently discards arrays, so the
+    # tool list is sanitized by hand. Agent.tools stores an array mixing the
+    # legacy plain-string form ("calculator") with plugin entries
+    # ({ "name" => "slack.post_message", "integration_id" => "..." }) —
+    # Agent#enabled_tools consumes both shapes. The form submits plugin tools
+    # separately (agent[plugin_tools][]) and they are merged in here, so no
+    # fragile paired Rack inputs have to reconstruct a hash client-side.
+    agent_params = params[:agent]
+    plain = agent_params.key?(:tools) ? sanitize_agent_tools(agent_params[:tools]) : nil
+    plugin = agent_params.key?(:plugin_tools) ? plugin_tool_entries(agent_params[:plugin_tools]) : nil
+    if plain || plugin
+      merged = [ plain, plugin ].compact.flatten.uniq
+      bound = merged.filter_map { |t| t["name"] if t.is_a?(Hash) }
+      # A name arriving both as a plain string and as a plugin entry keeps
+      # the hash form only — that is the one carrying the integration binding.
+      base[:tools] = merged.reject { |t| t.is_a?(String) && bound.include?(t) }
+    end
+    base
+  end
+
+  def sanitize_agent_tools(raw)
+    tool_entries(raw).filter_map do |entry|
+      case entry
+      when ActionController::Parameters
+        allowed = entry.permit(:name, :integration_id, :enabled)
+        name = allowed[:name].to_s.strip
+        next nil if name.blank? || !valid_tool_name?(name)
+
+        tool = { "name" => name }
+        tool["integration_id"] = allowed[:integration_id].to_s if allowed[:integration_id].present?
+        tool["enabled"] = ActiveModel::Type::Boolean.new.cast(allowed[:enabled]) unless allowed[:enabled].nil?
+        tool
+      when String
+        clean = entry.strip
+        clean.presence if valid_tool_name?(clean)
+      else
+        nil
+      end
+    end
+  end
+
+  # Dotted names belong to the plugin catalog or to nobody. Persisting an
+  # unknown "evil.do_this" would advertise a tool the runner must refuse at
+  # run time — keep stored configs honest instead.
+  def valid_tool_name?(name)
+    return true if name.blank?
+    return true unless name.include?(".")
+
+    Tools::Catalog.catalog_tool?(name)
+  end
+
+  # Plugin tool names from the marketplace picker ("slack.post_message"):
+  # only catalog-known names survive, each pinned to the organization's
+  # currently-active integration row for that provider.
+  def plugin_tool_entries(raw)
+    tool_entries(raw).filter_map do |entry|
+      name =
+        case entry
+        when ActionController::Parameters then entry.permit(:name)[:name].to_s.strip
+        when String then entry.strip
+        end
+      next nil if name.blank?
+      next nil unless Tools::Catalog.catalog_tool?(name)
+
+      tool = { "name" => name }
+      integration = current_organization
+        &.tool_integrations&.active&.find_by(provider: Tools::Catalog.provider_for(name))
+      tool["integration_id"] = integration.id if integration
+      tool
+    end
+  end
+
+  def tool_entries(raw)
+    case raw
+    when ActionController::Parameters
+      raw.permitted? ? raw.values : raw.permit!.values
+    when Hash
+      raw.values
+    else
+      Array(raw)
+    end
   end
 end

@@ -23,10 +23,12 @@ class AgentStreamJob < ApplicationJob
     Rails.logger.info "[AgentStreamJob] START conversation=#{conversation_id} user=#{user_id}#{" resume_run=#{resume_agent_run_id}" if resume_agent_run_id}#{" request_id=#{@request_id}" if @request_id}"
 
     # Broadcast the user's query first, on the same ordered pipeline as the
-    # reply, so the query always renders above its answer.
+    # reply, so the query always renders above its answer. The row is also
+    # handed to the runner: per-message tool selection rides in its metadata.
+    source_message = nil
     if message_id.present?
-      user_message = Message.find_by(id: message_id)
-      broadcast_user(conversation, user_message) if user_message&.user_message?
+      source_message = Message.find_by(id: message_id)
+      broadcast_user(conversation, source_message) if source_message&.user_message?
     end
 
     # Create (or reuse) the streaming placeholder immediately. It is persisted
@@ -61,7 +63,8 @@ class AgentStreamJob < ApplicationJob
       agent: agent,
       conversation: conversation,
       user: user,
-      streaming_message: streaming_msg
+      streaming_message: streaming_msg,
+      source_message: source_message
     )
 
     # Bound the whole run so a wedged provider call can never pin this worker

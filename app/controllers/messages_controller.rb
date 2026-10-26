@@ -14,6 +14,11 @@ class MessagesController < ApplicationController
     # round trip.
     client_request_id = message_params[:client_request_id].to_s.strip
     @message.metadata = @message.metadata.merge("client_request_id" => client_request_id) if client_request_id.present?
+    # Per-message tool selection from the composer's Tools dropdown: records
+    # which subset of the agent's tools this message should run with. Absent
+    # or empty means "agent config" — AgentRunner only ever narrows with it.
+    selected_tools = Array(message_params[:tools]).map(&:to_s).map(&:strip).reject(&:blank?).uniq
+    @message.metadata = @message.metadata.merge("tools" => selected_tools) if selected_tools.any?
 
     # Backend idempotency: a duplicate POST carrying the same correlation id
     # (double-click, an optimistic retry, a re-fired form) must never create a
@@ -90,7 +95,7 @@ class MessagesController < ApplicationController
   def message_params
     params.require(:message).permit(
       :content, :attachment_draft_token, :client_request_id,
-      attachment_asset_ids: []
+      attachment_asset_ids: [], tools: []
     )
   end
 end

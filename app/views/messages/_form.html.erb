@@ -6,10 +6,10 @@
     chat_input_controller.js uploads via POST /api/v1/assets, rendering a chip
     per attachment that carries message[attachment_asset_ids][]. %>
 <%= form_with model: [conversation, message],
-  class: "group relative rounded-[20px] border border-white/[0.08] bg-gradient-to-b from-white/[0.06] to-white/[0.02] p-1.5 shadow-[inset_0_1px_0_0_rgba(255,255,255,0.04),0_12px_48px_rgba(0,0,0,0.25)] backdrop-blur-xl transition border-zinc-700/50 focus-within:border-emerald-500/40 focus-within:shadow-[inset_0_1px_0_0_rgba(255,255,255,0.06),0_0_0_1px_rgba(255,138,0,0.15),0_12px_48px_rgba(0,0,0,0.3)]",
+  class: "group relative rounded-[20px] border border-border bg-panel/70 p-1.5 shadow-[0_12px_48px_rgba(0,0,0,0.25)] backdrop-blur-xl transition focus-within:border-emerald-500/50 focus-within:ring-2 focus-within:ring-emerald-500/20",
   data: { controller: "chat-input",
           action: "turbo:submit-end->chat-input#clear agent:generated->chat-input#clear" } do |f| %>
-  <div class="rounded-[16px] bg-[#0c0c0f] px-4 py-2.5">
+  <div class="rounded-[16px] bg-elevated px-4 py-2.5">
     <%# Attachment chips (upload progress / library reuse / errors) + the
         hidden inputs this form submits to the message. %>
     <div data-chat-input-target="chips" class="mb-2 flex flex-wrap gap-2"></div>
@@ -18,11 +18,11 @@
       <%= f.text_area :content,
         rows: 1,
         placeholder: "Message to #{conversation.agent.name}...",
-        class: "w-full resize-none bg-transparent placeholder-zinc-600 text-[16.5px] font-[450] leading-7 text-zinc-50 outline-none py-2 pr-10",
+        class: "w-full resize-none bg-transparent placeholder-fg-subtle text-[16.5px] font-[450] leading-7 text-fg outline-none py-2 pr-10",
         id: "message-input",
         data: { chat_input_target: "input" } %>
 
-      <span class="absolute right-11 bottom-3 text-[11px] text-zinc-600" data-generate-status></span>
+      <span class="absolute right-11 bottom-3 text-[11px] text-fg-subtle" data-generate-status></span>
 
       <button type="submit" data-chat-input-target="send" class="absolute right-0 bottom-2.5 size-8 grid place-items-center rounded-lg bg-gradient-to-b from-emerald-400 to-emerald-600 text-black hover:brightness-110 active:scale-95 transition disabled:opacity-40 disabled:pointer-events-none">
         <svg class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round">
@@ -33,7 +33,7 @@
 
     <div class="flex flex-wrap items-center justify-between gap-y-1 pt-1">
       <div class="flex items-center gap-1 min-w-0">
-        <button type="button" class="grid size-8 place-items-center rounded-lg hover:bg-white/[0.06] text-zinc-500 hover:text-zinc-200 transition"
+        <button type="button" class="grid size-8 place-items-center rounded-lg hover:bg-hover text-fg-subtle hover:text-fg transition"
           title="Attach file"
           data-action="chat-input#attach">
           <svg class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48"/></svg>
@@ -47,60 +47,94 @@
           class="hidden"
           data-chat-input-target="fileInput">
 
-        <button type="button" class="grid size-8 place-items-center rounded-lg hover:bg-white/[0.06] text-zinc-500 hover:text-zinc-200 transition"
+        <button type="button" class="grid size-8 place-items-center rounded-lg hover:bg-hover text-fg-subtle hover:text-fg transition"
           title="Add from Library"
           data-action="chat-input#library">
           <svg class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 19.5A2.5 2.5 0 016.5 17H20M4 19.5A2.5 2.5 0 006.5 22H20V2H6.5A2.5 2.5 0 004 4.5v15z"/></svg>
         </button>
 
-        <button type="button" class="grid size-8 place-items-center rounded-lg hover:bg-white/[0.06] text-zinc-500 hover:text-zinc-200 transition"
+        <button type="button" class="grid size-8 place-items-center rounded-lg hover:bg-hover text-fg-subtle hover:text-fg transition"
           title="Create scheduled task from this prompt"
           data-action="chat-input#scheduleTask">
           <svg class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
         </button>
 
+        <%# Per-message tool selection: native checkboxes ride with the form
+            (the composer submits via requestSubmit, no JS coupling needed).
+            Selection only narrows the agent's tools for this message — an
+            all-unchecked send means "agent default". Dotted plugin names are
+            listed only while their plugin stays connected + active. %>
+        <% tool_names = conversation.agent ? conversation.agent.enabled_tools.map { |t| t.is_a?(Hash) ? (t[:name] || t["name"]) : t }.compact.uniq : [] %>
+        <% plugin_avail = Tools::Catalog.available_tool_names(conversation.agent&.organization) %>
+        <% tool_options = tool_names.select { |n| !n.to_s.include?(".") || plugin_avail.include?(n) } %>
+        <% if tool_options.any? %>
+          <div class="relative" data-controller="dropdown">
+            <button type="button" class="grid size-8 place-items-center rounded-lg hover:bg-hover text-fg-subtle hover:text-fg transition"
+              title="Tools for this message"
+              data-dropdown-target="button"
+              data-action="click->dropdown#toggle">
+              <svg class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M14.7 6.3a1 1 0 000 1.4l1.6 1.6a1 1 0 001.4 0l3.77-3.77a6 6 0 01-7.94 7.94l-6.91 6.91a2.12 2.12 0 01-3-3l6.91-6.91a6 6 0 017.94-7.94l-3.76 3.76z"/></svg>
+            </button>
+            <div data-dropdown-target="menu"
+              class="hidden absolute bottom-[calc(100%+8px)] left-0 z-50 w-64 max-h-72 overflow-auto rounded-2xl border border-border bg-elevated shadow-2xl shadow-black/40 p-1.5">
+              <p class="px-2.5 pb-1.5 pt-1 text-[11px] font-medium uppercase tracking-wider text-fg-subtle">Tools — this message</p>
+              <% tool_options.each do |name| %>
+                <% tip = Tools::Catalog.catalog_tool?(name) ? Tools::Catalog.tool_by_namespaced_name(name)[:summary] : nil %>
+                <label class="flex items-center gap-2 rounded-lg px-2.5 py-1.5 hover:bg-hover cursor-pointer transition" title="<%= tip %>">
+                  <input type="checkbox" name="message[tools][]" value="<%= name %>"
+                    class="size-3.5 shrink-0 rounded border-zinc-600 bg-panel text-emerald-500 focus:ring-emerald-500/20">
+                  <span class="text-[12.5px] text-fg <%= "font-mono text-[12px]" if name.include?(".") %>"><%= name %></span>
+                </label>
+              <% end %>
+              <p class="px-2.5 pt-1.5 mt-1 border-t border-border text-[10.5px] leading-4 text-fg-subtle">
+                All unchecked = the agent's default tools.
+              </p>
+            </div>
+          </div>
+        <% end %>
+
         <%# Library panel — reuses an existing asset id; never re-uploads bytes.
             Search filters server-side (label / filename / content-type); each
             row can be previewed (extracted text head or image thumbnail). %>
         <div data-chat-input-target="libraryPanel"
-             class="hidden absolute bottom-[calc(100%+8px)] left-1 z-50 w-[22rem] max-w-[calc(100vw-2rem)] rounded-2xl border border-white/[0.09] bg-[#101014] shadow-2xl shadow-black/60 overflow-hidden">
-          <div class="px-3 py-2 text-[11px] font-medium text-zinc-500 border-b border-white/[0.06] flex items-center justify-between gap-2">
+             class="hidden absolute bottom-[calc(100%+8px)] left-1 z-50 w-[22rem] max-w-[calc(100vw-2rem)] rounded-2xl border border-border bg-elevated shadow-2xl shadow-black/40 overflow-hidden">
+          <div class="px-3 py-2 text-[11px] font-medium text-fg-muted border-b border-border flex items-center justify-between gap-2">
             <span>Library — reuse without re-uploading</span>
-            <button type="button" class="text-zinc-600 hover:text-zinc-300 transition" title="Close"
+            <button type="button" class="text-fg-subtle hover:text-fg transition" title="Close"
               data-action="chat-input#libraryClose">✕</button>
           </div>
           <div class="px-2.5 pt-2.5">
             <input type="search" autocomplete="off" placeholder="Search library…"
-              class="w-full rounded-lg bg-white/[0.04] border border-white/[0.07] px-2.5 py-1.5 text-[12.5px] text-zinc-200 placeholder-zinc-600 outline-none focus:border-emerald-500/40"
+              class="w-full rounded-lg bg-panel border border-border px-2.5 py-1.5 text-[12.5px] text-fg placeholder-fg-subtle outline-none focus:border-emerald-500/40"
               data-chat-input-target="librarySearch"
               data-action="input->chat-input#librarySearch">
           </div>
           <div data-chat-input-target="libraryItems" class="max-h-56 overflow-auto px-1 py-1.5"></div>
-          <div data-chat-input-target="libraryEmpty" class="hidden px-3 py-6 text-center text-[12px] text-zinc-600">
+          <div data-chat-input-target="libraryEmpty" class="hidden px-3 py-6 text-center text-[12px] text-fg-subtle">
             No files yet. Upload something first.
           </div>
           <%# Inline preview — populated when a row's preview button is clicked. %>
-          <div data-chat-input-target="libraryPreview" class="hidden border-t border-white/[0.06] max-h-52 overflow-auto">
-            <div class="flex items-center justify-between px-3 py-1.5 bg-white/[0.02]">
-              <span class="text-[11px] font-medium text-zinc-400 truncate" data-chat-input-target="libraryPreviewTitle"></span>
-              <button type="button" class="text-zinc-600 hover:text-zinc-300 text-[11px] transition"
+          <div data-chat-input-target="libraryPreview" class="hidden border-t border-border max-h-52 overflow-auto">
+            <div class="flex items-center justify-between px-3 py-1.5 bg-panel/60">
+              <span class="text-[11px] font-medium text-fg-muted truncate" data-chat-input-target="libraryPreviewTitle"></span>
+              <button type="button" class="text-fg-subtle hover:text-fg text-[11px] transition"
                 data-action="chat-input#libraryPreviewClose">Hide preview</button>
             </div>
             <div class="px-3 py-2.5" data-chat-input-target="libraryPreviewBody"></div>
           </div>
         </div>
 
-        <span class="text-[11px] text-zinc-700 mx-1.5">|</span>
-        <span class="inline-flex items-center gap-1.5 px-2 py-1.5 text-[12px] text-zinc-600">
+        <span class="text-[11px] text-fg-subtle mx-1.5">|</span>
+        <span class="inline-flex items-center gap-1.5 px-2 py-1.5 text-[12px] text-fg-muted">
           <svg class="size-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 7h16M4 12h10M4 17h7"/></svg>
           Markdown
         </span>
       </div>
 
       <div data-chat-input-target="hint"
-           class="hidden sm:block text-[11px] text-zinc-600 transition-opacity duration-300">
-        <kbd class="px-1 py-0.5 rounded bg-white/[0.06] border border-white/[0.08] text-zinc-400">Enter</kbd> to send ·
-        <kbd class="px-1 py-0.5 rounded bg-white/[0.06] border border-white/[0.08] text-zinc-400">Shift</kbd>+<kbd class="px-1 py-0.5 rounded bg-white/[0.06] border border-white/[0.08] text-zinc-400">Enter</kbd> new line
+           class="hidden sm:block text-[11px] text-fg-muted transition-opacity duration-300">
+        <kbd class="px-1 py-0.5 rounded bg-panel border border-border text-fg-muted">Enter</kbd> to send ·
+        <kbd class="px-1 py-0.5 rounded bg-panel border border-border text-fg-muted">Shift</kbd>+<kbd class="px-1 py-0.5 rounded bg-panel border border-border text-fg-muted">Enter</kbd> new line
       </div>
     </div>
   </div>

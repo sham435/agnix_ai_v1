@@ -1,0 +1,72 @@
+<%# Phase 4b — Plugin detail modal: what this plugin does and the plain
+    language list of tools it adds to agents, straight from the frozen
+    catalog so the UI can never drift from what the dispatcher executes. %>
+<%= turbo_frame_tag "modal" do %>
+  <div data-controller="images-modal"
+       class="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-8"
+       role="dialog" aria-modal="true" aria-label="<%= @plugin[:name] %> details">
+    <div class="absolute inset-0 bg-black/50 dark:bg-black/75" data-action="click->images-modal#close"></div>
+
+    <div class="relative flex max-h-full w-full max-w-lg flex-col overflow-hidden rounded-2xl border border-border bg-elevated shadow-2xl">
+      <div class="flex items-center justify-between gap-3 border-b border-border px-4 py-3">
+        <div class="flex min-w-0 items-center gap-3">
+          <div class="grid size-9 shrink-0 place-items-center rounded-xl bg-gradient-to-b from-emerald-400/15 to-emerald-600/15 text-[13px] font-bold text-emerald-600 dark:text-emerald-400">
+            <%= @plugin[:name].first(1) %>
+          </div>
+          <div class="min-w-0">
+            <h2 class="truncate text-[14px] font-semibold text-fg"><%= @plugin[:name] %></h2>
+            <p class="truncate text-[11.5px] text-fg-subtle"><%= @plugin[:category] %></p>
+          </div>
+        </div>
+        <button type="button" data-action="click->images-modal#close"
+                class="grid size-9 shrink-0 place-items-center rounded-xl bg-hover text-fg-muted transition hover:text-fg"
+                aria-label="Close">
+          <svg class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
+        </button>
+      </div>
+
+      <div class="min-h-0 flex-1 overflow-y-auto p-4">
+        <p class="text-[13px] leading-5 text-fg-muted"><%= @plugin[:description] %></p>
+
+        <div class="mt-3 flex flex-wrap items-center gap-2 text-[11.5px]">
+          <% if @integration %>
+            <span class="rounded-full bg-emerald-500/10 px-2.5 py-1 font-semibold text-emerald-600 dark:text-emerald-400">
+              Connected<%= " · paused" unless @integration.is_active? %>
+            </span>
+            <span class="text-fg-subtle"><%= @integration.last_used_at ? "Last used #{time_ago(@integration.last_used_at)}" : "Not used yet" %></span>
+          <% else %>
+            <span class="rounded-full bg-hover px-2.5 py-1 font-semibold text-fg-subtle">Not connected</span>
+          <% end %>
+          <%= link_to "Provider docs", @plugin[:docs_url], target: "_blank", rel: "noopener",
+                class: "text-fg-muted underline decoration-border underline-offset-2 transition hover:text-fg" %>
+        </div>
+
+        <h3 class="mb-2 mt-5 text-[12px] font-semibold uppercase tracking-wide text-fg-subtle">Agent tools</h3>
+        <% if @plugin[:tools].any? %>
+          <ul class="space-y-2">
+            <% @plugin[:tools].each do |tool| %>
+              <li class="rounded-xl border border-border bg-panel px-3 py-2.5">
+                <p class="font-mono text-[11.5px] text-emerald-600 dark:text-emerald-400"><%= Tools::Catalog.namespaced(@plugin[:key], tool[:name]) %></p>
+                <p class="mt-1 text-[12.5px] leading-5 text-fg"><%= tool[:summary] %></p>
+              </li>
+            <% end %>
+          </ul>
+        <% else %>
+          <p class="rounded-xl border border-border bg-panel px-3 py-2.5 text-[12.5px] leading-5 text-fg-muted">
+            No agent tools yet — this plugin stores connection settings only. Tool support needs
+            OAuth token persistence the app does not have, so nothing is faked here.
+          </p>
+        <% end %>
+
+        <div class="flex justify-end gap-3 pt-4">
+          <button type="button" class="btn-secondary" data-action="click->images-modal#close">Close</button>
+          <% if @integration %>
+            <%= link_to "Manage", connect_tool_integrations_path(@plugin[:key]), class: "btn-primary", data: { turbo_frame: "modal" } %>
+          <% elsif @plugin[:tools].any? %>
+            <%= link_to "Connect", connect_tool_integrations_path(@plugin[:key]), class: "btn-primary", data: { turbo_frame: "modal" } %>
+          <% end %>
+        </div>
+      </div>
+    </div>
+  </div>
+<% end %>

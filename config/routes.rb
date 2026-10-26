@@ -84,8 +84,20 @@ Rails.application.routes.draw do
     end
   end
 
-  # Tool integrations.
-  resources :tool_integrations, path: "integrations"
+  # Tool integrations. Phase 4 (Plugins Manager) adds the marketplace routes
+  # additively: the custom collection paths (connect/<key>, plugin/<key>) are
+  # matched before member show, and catalog keys are never uuid-shaped, so
+  # /integrations/:id keeps resolving exactly as before. toggle flips
+  # is_active without leaving the grid.
+  resources :tool_integrations, path: "integrations" do
+    collection do
+      get "connect/:key", action: :connect, as: :connect
+      get "plugin/:key", action: :plugin, as: :plugin
+    end
+    member do
+      post :toggle
+    end
+  end
 
   # Webhooks.
   namespace :webhooks do

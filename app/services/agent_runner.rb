@@ -7,13 +7,17 @@ class AgentRunner
   # models emit many tiny deltas; we forward a status heartbeat, not the text.
   THINKING_THROTTLE_MS = 250
 
-  attr_reader :agent, :conversation, :user
+  attr_reader :agent, :conversation, :user, :source_message
 
-  def initialize(agent:, conversation:, user:, streaming_message: nil)
+  def initialize(agent:, conversation:, user:, streaming_message: nil, source_message: nil)
     @agent = agent
     @conversation = conversation
     @user = user
     @streaming_message = streaming_message
+    # The persisted user Message that triggered this run (when known). Its
+    # metadata may carry a per-message tool selection which narrows — never
+    # widens — the agent's configured tools.
+    @source_message = source_message
   end
 
   def run(user_message, stream: true, &block)
@@ -34,7 +38,24 @@ class AgentRunner
     # Registry-level capability gating: a tool backed by a capability whose
     # state is not enabled (e.g. web_search unconfigured) never surfaces to
     # the model — honest definitions, no dead stubs.
-    names = names.select { |name| capability_allows_tool?(name) }
+    # Phase 4 plugin tools (namespaced "<provider>.<tool>") follow the same
+    # honesty rule: they surface only while the catalog knows the tool AND the
+    # organization has a connected + active integration for that provider.
+    # Unknown dotted names are dropped outright — nothing executes them.
+    plugin_names = Tools::Catalog.available_tool_names(agent.organization)
+    names = names.select do |name|
+      if Tools::Catalog.catalog_tool?(name)
+        plugin_names.include?(name)
+      elsif name.to_s.include?(".")
+        false
+      else
+        capability_allows_tool?(name)
+      end
+    end
+
+    # Per-message tool selection (composer Tools dropdown) narrows the agent's
+    # configured list for this run only. No selection -> agent config default.
+    names = per_message_tool_filter(names)
 
     # OS modes always execute on this machine: guarantee the execution tools
     # are available even when the agent's configured tool list is chat-only.
@@ -58,6 +79,52 @@ class AgentRunner
   def capability_allows_tool?(name)
     capability_key = Agents::ToolRegistry.capability_key_for(name)
     capability_key.nil? || Capabilities::Registry.available?(capability_key)
+  end
+
+  # Per-message tool selection intersects the agent's gated tool list — it can
+  # only narrow, never widen. Entries tolerate both shapes the client may have
+  # sent (plain names, or {"name" => ...} hashes). An empty/absent selection
+  # leaves the agent config untouched.
+  def per_message_tool_filter(names)
+    meta = source_message&.metadata
+    selected = meta.is_a?(Hash) ? Array(meta["tools"]) : []
+    return names if selected.empty?
+
+    wanted = selected.map { |t| t.is_a?(Hash) ? (t[:name] || t["name"]) : t }.compact.map(&:to_s)
+    names.select { |name| wanted.include?(name.to_s) }
+  end
+
+  # Every tool invocation goes through this branch: dotted names belong to the
+  # Phase 4 plugin pipeline (Tools::Dispatcher validates arguments, resolves an
+  # org-scoped active integration, touches usage); plain names keep using the
+  # native registry exactly as before.
+  def dispatch_tool_call(tool_name, args)
+    unless tool_name.to_s.include?(".")
+      return Agents::ToolRegistry.execute(tool_name, args, tool_context)
+    end
+
+    Tools::Dispatcher.call(
+      tool_name,
+      arguments: args,
+      organization: agent.organization,
+      integration_id: integration_id_for(tool_name),
+      context: tool_context
+    )
+  end
+
+  def tool_context
+    { user_id: user.id, user: user, agent_id: agent.id, conversation_id: conversation.id }
+  end
+
+  # The agent config pins a plugin tool to the integration row chosen when it
+  # was connected; nil lets the dispatcher resolve the org's active row.
+  def integration_id_for(tool_name)
+    entry = agent.enabled_tools.find do |t|
+      t.is_a?(Hash) && (t[:name] || t["name"]).to_s == tool_name.to_s
+    end
+    return nil unless entry.is_a?(Hash)
+
+    entry[:integration_id] || entry["integration_id"]
   end
 
   # Read-only chat tools for attachment-carrying conversations, each further
@@ -518,7 +585,11 @@ class AgentRunner
   end
 
   def build_tool_schemas
-    Agents::ToolRegistry.schemas(tool_definitions)
+    # Split the gated list: native registry schemas plus Phase 4 catalog
+    # schemas for namespaced plugin tools (the registry drops those).
+    # Array#partition hands back [matching, non-matching].
+    catalog_names, registry_names = tool_definitions.partition { |name| Tools::Catalog.catalog_tool?(name) }
+    Agents::ToolRegistry.schemas(registry_names) + Tools::Catalog.schemas(catalog_names)
   end
 
   def process_tool_calls(tool_calls, previous_results)
@@ -540,12 +611,7 @@ class AgentRunner
         tool_call_id = tool_call["id"] || tool_call[:id] || SecureRandom.hex(16)
 
         started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
-        result = Agents::ToolRegistry.execute(tool_name, args, {
-          user_id: user.id,
-          user: user,
-          agent_id: agent.id,
-          conversation_id: conversation.id
-        })
+        result = dispatch_tool_call(tool_name, args)
         elapsed_ms = ((Process.clock_gettime(Process::CLOCK_MONOTONIC) - started) * 1000).round
 
         Rails.logger.info(
