@@ -30,6 +30,7 @@ import SidebarController from "controllers/sidebar_controller"
 import ShortcutsController from "controllers/shortcuts_controller"
 import SearchPaletteController from "controllers/search_palette_controller"
 import ScheduledFormController from "controllers/scheduled_form_controller"
+import ImagesModalController from "controllers/images_modal_controller"
 
 window.Stimulus = Application.start()
 window.Stimulus.register("chat", ChatController)
@@ -50,3 +51,4 @@ window.Stimulus.register("sidebar", SidebarController)
 window.Stimulus.register("shortcuts", ShortcutsController)
 window.Stimulus.register("search-palette", SearchPaletteController)
 window.Stimulus.register("scheduled-form", ScheduledFormController)
+window.Stimulus.register("images-modal", ImagesModalController)

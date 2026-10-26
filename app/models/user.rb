@@ -31,6 +31,9 @@ class User < ApplicationRecord
   has_many :assets, dependent: :destroy
   has_many :library_items, dependent: :destroy
   has_many :scheduled_tasks, dependent: :destroy
+  # Generation rows only reference assets (bytes stay in the assets tree), so
+  # they can be bulk-deleted with the user.
+  has_many :image_generations, dependent: :delete_all
 
   enum :role, { user: "user", admin: "admin" }, default: :user
 
@@ -76,6 +79,12 @@ class User < ApplicationRecord
   # the app-shell layout never issues its own query.
   def active_scheduled_task_count
     scheduled_tasks.active_scheduled.count
+  end
+
+  # Count shown as the /images sidebar badge (Phase 3): successful generations
+  # from the past week. Same rule as above — the layout never queries directly.
+  def recent_image_generation_count
+    image_generations.succeeded.where(created_at: 7.days.ago..).count
   end
 
   def avatar_url

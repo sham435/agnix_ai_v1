@@ -74,6 +74,16 @@ Rails.application.routes.draw do
     end
   end
 
+  # Phase 3 — Image Generation gallery (/images). Additive, and — same rule as
+  # /scheduled — registered well above the catch-all so /images is never
+  # shadowed. show renders inside the top-level "modal" turbo frame.
+  resources :images, only: [ :index, :show, :create, :destroy ] do
+    member do
+      post :regenerate
+      get  :download
+    end
+  end
+
   # Tool integrations.
   resources :tool_integrations, path: "integrations"
 

@@ -66,7 +66,8 @@ RSpec.describe "Phase 1 app shell", :js, type: :system do
       expect(page).to have_link("Integrations")
       # Phase 2 landed the /scheduled route, so the route-driven flag now shows it.
       expect(page).to have_link("Scheduled", href: "/scheduled")
-      expect(page).not_to have_link("Images")
+      # Phase 3 landed the /images gallery route, so that slot is now built too.
+      expect(page).to have_link("Images", href: "/images")
       expect(page).not_to have_link("Explore")
     end
   end

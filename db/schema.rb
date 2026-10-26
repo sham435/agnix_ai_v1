@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_10_25_000000) do
+ActiveRecord::Schema[8.1].define(version: 2026_10_25_120000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
   enable_extension "vector"
@@ -162,6 +162,28 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_25_000000) do
     t.index ["user_id"], name: "index_conversations_on_user_id"
   end
 
+  create_table "image_generations", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
+    t.uuid "asset_id"
+    t.datetime "created_at", null: false
+    t.text "error"
+    t.jsonb "metadata", default: "{}", null: false
+    t.string "model", default: "gpt-image-1", null: false
+    t.integer "n", default: 1, null: false
+    t.uuid "organization_id"
+    t.text "prompt", null: false
+    t.string "provider", default: "openai", null: false
+    t.string "quality", default: "auto", null: false
+    t.string "size", default: "1024x1024", null: false
+    t.string "status", default: "queued", null: false
+    t.datetime "updated_at", null: false
+    t.uuid "user_id", null: false
+    t.index ["asset_id"], name: "index_image_generations_on_asset_id"
+    t.index ["created_at"], name: "index_image_generations_on_created_at"
+    t.index ["organization_id"], name: "index_image_generations_on_organization_id"
+    t.index ["status"], name: "index_image_generations_on_status"
+    t.index ["user_id"], name: "index_image_generations_on_user_id"
+  end
+
   create_table "invoices", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
     t.integer "amount"
     t.datetime "created_at", null: false
@@ -206,7 +228,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_25_000000) do
     t.uuid "agent_id"
     t.text "content", null: false
     t.datetime "created_at", null: false
-    t.vector "embedding"
+    t.vector "embedding", limit: 1536
     t.jsonb "metadata", default: {}, null: false
     t.uuid "source_id"
     t.string "source_type"
@@ -565,6 +587,9 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_25_000000) do
   add_foreign_key "conversations", "agents"
   add_foreign_key "conversations", "projects"
   add_foreign_key "conversations", "users"
+  add_foreign_key "image_generations", "assets"
+  add_foreign_key "image_generations", "organizations"
+  add_foreign_key "image_generations", "users"
   add_foreign_key "invoices", "organizations"
   add_foreign_key "library_items", "assets"
   add_foreign_key "library_items", "users"

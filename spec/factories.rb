@@ -238,4 +238,48 @@ FactoryBot.define do
     association :scheduled_task
     status { "queued" }
   end
+
+  factory :image_generation do
+    association :user
+    prompt { "A serene mountain lake at dawn, oil painting" }
+    provider { "openai" }
+    model { "gpt-image-1" }
+    size { "1024x1024" }
+    quality { "auto" }
+    n { 1 }
+    status { "queued" }
+    metadata { {} }
+
+    trait :running do
+      status { "running" }
+    end
+
+    trait :failed do
+      status { "failed" }
+      error { "The image provider rejected the request." }
+    end
+
+    # A ready PNG asset attached through the real Active Storage pipeline,
+    # owned by the SAME user as the generation — exactly the shape
+    # Images::GenerateJob produces (readable_by? must hold).
+    trait :succeeded do
+      status { "succeeded" }
+      asset { build(:image_asset, user: user) }
+    end
+  end
+
+  factory :image_asset, class: "Asset" do
+    association :user
+    filename { "generated-test.png" }
+    content_type { "image/png" }
+    byte_size { 70 }
+    checksum { Digest::SHA256.hexdigest("fake-png-bytes") }
+    status { "ready" }
+    metadata { { "category" => "image", "ext" => "png" } }
+
+    after(:build) do |asset|
+      asset.file.attach(io: StringIO.new("fake-png-bytes"), filename: asset.filename,
+                        content_type: "image/png")
+    end
+  end
 end

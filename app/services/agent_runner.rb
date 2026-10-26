@@ -1,14 +1,11 @@
 class AgentRunner
   MAX_ITERATIONS = 10
   MAX_TOOL_CALLS_PER_TURN = 5
-
-  FALLBACK_MODELS = %w[
-    deepseek-v4-flash-free
-    big-pickle
-    nemotron-3-super-free
-    minimax-m3-free
-    mimo-v2.5-free
-  ].freeze
+  OS_MODES = %w[auto_plan auto_build manual_plan manual_build].freeze
+  CHAT_ATTACHMENT_TOOLS = %w[read_asset list_assets].freeze
+  # Minimum spacing between repeated "thinking" status events (ms). Reasoning
+  # models emit many tiny deltas; we forward a status heartbeat, not the text.
+  THINKING_THROTTLE_MS = 250
 
   attr_reader :agent, :conversation, :user
 
@@ -32,16 +29,72 @@ class AgentRunner
   end
 
   def tool_definitions
-    agent.enabled_tools.map { |t| t.is_a?(Hash) ? t[:name] || t["name"] : t }.compact
+    names = agent.enabled_tools.map { |t| t.is_a?(Hash) ? t[:name] || t["name"] : t }.compact
+
+    # Registry-level capability gating: a tool backed by a capability whose
+    # state is not enabled (e.g. web_search unconfigured) never surfaces to
+    # the model — honest definitions, no dead stubs.
+    names = names.select { |name| capability_allows_tool?(name) }
+
+    # OS modes always execute on this machine: guarantee the execution tools
+    # are available even when the agent's configured tool list is chat-only.
+    if conversation.mode.in?(OS_MODES)
+      os_names = %w[run_command code_executor write_file read_file calculator memory_search time]
+      names = (names | os_names | attachment_tools | image_tools)
+    else
+      # Plain chat: conversations carrying user attachments get the read-only
+      # asset tools so the agent can actually read uploaded files (uploads,
+      # library) instead of claiming it cannot. No attachments -> no extra
+      # tools -> the streaming path stays as-is.
+      names = (names | attachment_tools | image_tools)
+    end
+    names
   end
 
   private
 
-  # ── OS Plan / Execute flow ──────────────────────────────────────────
+  # A tool surfaces only when its backing capability is enabled; tools with
+  # no capability mapping (OS tools) always surface.
+  def capability_allows_tool?(name)
+    capability_key = Agents::ToolRegistry.capability_key_for(name)
+    capability_key.nil? || Capabilities::Registry.available?(capability_key)
+  end
+
+  # Read-only chat tools for attachment-carrying conversations, each further
+  # gated by its own capability state (file_extraction, library).
+  def attachment_tools
+    return [] unless conversation.messages.joins(:message_attachments).exists?
+
+    CHAT_ATTACHMENT_TOOLS.select do |name|
+      capability_key = Agents::ToolRegistry.get(name)&.dig(:capability_key)
+      capability_key && Capabilities::Registry.available?(capability_key)
+    end
+  end
+
+  # Phase 3: the generate_image tool rides the same capability gate as the
+  # Tools panel — surfaced only while image_generation is enabled (OpenAI key
+  # configured). Unconfigured installs never see the schema; the in-flight
+  # per-conversation refusal lives in the tool handler itself.
+  def image_tools
+    Capabilities::Registry.available?("image_generation") ? [ "generate_image" ] : []
+  end
+
+  # Re-find records by id: in dev the code reloader can swap model classes
+  # mid-process, and a stale instance is then rejected by association
+  # assignment ("Agent expected, got Agent"). A fresh find always binds to
+  # the current constant and survives reload churn. Test and production
+  # environments do not reload constants (no stale-instance problem), and
+  # re-finding there would discard test doubles, so this is dev-only.
+  def refresh_live_references!
+    return unless Rails.env.development?
+
+    @agent = Agent.find(@agent.id) if @agent
+    @conversation = Conversation.find(@conversation.id) if @conversation
+  end
 
   def run_with_os(user_message, stream, &block)
     agent_run = AgentRun.create!(
-      conversation: conversation,
+      conversation_id: conversation.id,
       mode: conversation.mode,
       status: "planning"
     )
@@ -85,36 +138,42 @@ class AgentRunner
 
   def generate_plan(user_message, agent_run)
     prompt = <<~PROMPT
-      You are Agnix Agent OS. Given the user request, return ONLY a JSON array of strings.
-      Each string is one atomic, verifiable step. Keep steps small.
-      If the request is purely conversational (greeting, question, chit-chat), return an empty array [].
-      Do NOT include markdown, backticks, or explanation — just the array.
-
-      Example: ["Search knowledge base for Rails deployment", "Write deployment checklist file"]
+      You are Shams Agent OS. Convert the user request into a JSON array of atomic,
+      executable, verifiable steps. Do NOT include markdown or backticks — reply with
+      only the array.
+      Rules:
+      - Steps must be doable with the tools: run_command (bash), write_file,
+        read_file, code_executor (python/ruby), memory_search.
+      - For building an app or project: one step to create the directory structure,
+        one step per major file (write_file), then install any dependencies, then a
+        final step that runs the build/tests and reports results.
+      - 3 to 12 steps, each short and imperative.
+      - Pure conversational request (greeting, question, chit-chat) => [].
+      Example: ["Create the project directory structure", "Write the main Python module",
+        "Write the data models and helpers", "Install dependencies",
+        "Run the test suite and report results"]
       Example: []
 
       User request: #{user_message}
     PROMPT
 
     raw = chat_for_plan(prompt)
-    JSON.parse(raw)
+    plan = JSON.parse(raw.to_s[/\[.*\]/m] || raw.to_s)
+    plan.is_a?(Array) ? plan.map(&:to_s).reject(&:blank?).first(12) : []
   rescue JSON::ParserError
     []
   end
 
   def chat_for_plan(prompt)
-    client = Llm::Client.new(
-      provider: "opencode",
-      model: FALLBACK_MODELS.first,
-      api_key: api_key,
-      temperature: 0.3,
-      max_tokens: 1024
-    )
-    resp = client.chat(messages: [{ role: "user", content: prompt }])
+    resp = agent.llm_client.chat(messages: [ { role: "user", content: prompt } ])
     resp[:content].to_s
+  rescue => e
+    Rails.logger.warn "Plan generation failed: #{e.class} #{e.message}"
+    ""
   end
 
   def execute_plan(agent_run, stream, &block)
+    refresh_live_references!
     agent_run.update!(status: "executing")
 
     agent_run.todos.order(:position).each_with_index do |todo, idx|
@@ -139,13 +198,35 @@ class AgentRunner
       end
     end
 
-    agent_run.update!(status: "completed")
+    if agent_run.reload.status == "interrupted"
+      agent_run.append_reasoning("Finalizing", "Run interrupted before completion; output verification skipped")
+    else
+      # Verify the plan's file targets on disk: done steps whose promised
+      # outputs are missing downgrade the run to failed (no false success).
+      agent_run.verify_outputs!
+    end
     agent_run.append_reasoning("Finalizing", "Creating summary response")
     broadcast_turbo("plan-complete", agent_run)
 
-    step_outputs = agent_run.todos.order(:position).map { |t| t.result.to_s.strip }.reject(&:blank?)
-    if step_outputs.any? && conversation.messages.where(role: "assistant").where("content LIKE ?", "[Step summary]%").none?
-      summary = step_outputs.first.truncate(2000)
+    todos = agent_run.todos.reload.order(:position)
+    done = todos.select { |t| t.status == "done" }
+    failed = todos.select { |t| t.status == "failed" }
+    return if done.empty? && failed.empty?
+
+    lines = done.each_with_index.flat_map do |todo, idx|
+      entry = "#{idx + 1}. #{todo.title}"
+      output = todo.result.to_s.strip
+      output.present? ? entry + "\n" + output.truncate(400) : entry
+    end
+    failed.each do |todo|
+      lines << "FAILED: #{todo.title} — #{todo.result.to_s.strip.truncate(300)}"
+    end
+
+    body = lines.join("\n")
+    summary = "Build executed: #{done.size} step(s) completed, #{failed.size} failed.\n\n#{body}"
+    summary = summary.truncate(4000)
+
+    if summary.present? && conversation.messages.where(role: "assistant").where("content LIKE ?", "Build executed:%").none?
       conversation.messages.create!(role: "assistant", content: summary)
     end
   end
@@ -153,7 +234,28 @@ class AgentRunner
   def execute_step(step_instruction, stream, &block)
     step_msg = conversation.messages.create!(role: "user", content: "[Step] #{step_instruction}")
     result = execute_tool_loop(step_instruction, stream: stream, &block)
-    { ok: result[:error].blank?, output: result[:content] || result[:error] }
+    actions = result[:actions].to_i
+
+    # Evidence gating: a plan step is "done" only when the tool loop actually
+    # executed at least one tool action AND neither errored nor hit the
+    # iteration limit. Text-only replies (even apologies) used to complete
+    # steps — the school-run bug that marked "write models.py" done with no
+    # file ever written.
+    ok = result[:error].blank? && !result[:incomplete] && actions.positive?
+    output = if ok
+      result[:content]
+    else
+      reason = if result[:error].present?
+        "Step error: #{result[:error]}"
+      elsif result[:incomplete]
+        "Step did not finish within the iteration limit (#{actions} action(s) executed)."
+      else
+        "No tool action was executed for this step."
+      end
+      [ reason, result[:content].presence ].compact.join("\n")
+    end
+
+    { ok: ok, output: output, actions: actions }
   end
 
   def broadcast_turbo(action, agent_run, todo = nil)
@@ -178,12 +280,12 @@ class AgentRunner
     Rails.logger.warn "broadcast_turbo error: #{e.message}"
   end
 
-  # ── Existing tool-call loop (unchanged logic) ───────────────────────
-
   def execute_tool_loop(user_message, stream: true, &block)
+    refresh_live_references!
+    @generating_announced = false
     run_record = Run.create!(
-      agent: agent,
-      conversation: conversation,
+      agent_id: agent.id,
+      conversation_id: conversation.id,
       input: { query: user_message },
       status: "running",
       started_at: Time.current
@@ -199,25 +301,35 @@ class AgentRunner
         messages = build_messages(tool_call_results)
         tool_schemas = build_tool_schemas
 
-        response = chat_with_fallback(messages, tool_schemas, stream: stream, &block)
+        response = chat_with_agent_model(messages, tool_schemas, stream: stream, &block)
 
         total_tokens += response[:tokens] || 0
 
         if response[:tool_calls].blank?
-          content = response[:content].presence || "I'm sorry, I couldn't generate a response."
+          # Provider returned no tool calls: this is the assistant's final
+          # text answer. When the body is blank we do NOT fake an apology —
+          # the message stays empty and carries metadata["empty_response"]
+          # so the view can render a distinct "no response" state and the
+          # context filter can drop it from history.
+          raw = response[:content].to_s
+          content = raw.strip
+          final_meta = (@streaming_message&.metadata || {}).dup
+          final_meta.delete("streaming")
+          final_meta["empty_response"] = true if content.empty?
 
           if @streaming_message
-            @streaming_message.update!(content: content, tokens: response[:tokens] || 0)
+            @streaming_message.update!(content: content, tokens: response[:tokens] || 0, metadata: final_meta)
             assistant_msg = @streaming_message
           else
             assistant_msg = conversation.messages.create!(
               role: "assistant",
               content: content,
-              tokens: response[:tokens] || 0
+              tokens: response[:tokens] || 0,
+              metadata: final_meta
             )
           end
 
-          create_memory(user_message, content)
+          create_memory(user_message, content) if content.present?
 
           run_record.finish!(output: content, tokens_used: total_tokens)
 
@@ -225,6 +337,7 @@ class AgentRunner
             content: content,
             tool_calls: [],
             tokens: total_tokens,
+            actions: tool_call_results.length,
             messages: conversation.messages.to_a
           }
         end
@@ -242,60 +355,84 @@ class AgentRunner
 
       fallback_content = "I was unable to complete your request within the allowed iterations."
       if @streaming_message
-        @streaming_message.update!(content: fallback_content, tokens: estimate_tokens(fallback_content))
+        streamed = @streaming_message.metadata.merge("error" => "max_iterations")
+        streamed.delete("streaming")
+        @streaming_message.update!(content: fallback_content, tokens: estimate_tokens(fallback_content), metadata: streamed)
       else
-        conversation.messages.create!(role: "assistant", content: fallback_content, tokens: estimate_tokens(fallback_content))
+        conversation.messages.create!(role: "assistant", content: fallback_content, tokens: estimate_tokens(fallback_content), metadata: { "error" => "max_iterations" })
       end
       run_record.finish!(output: fallback_content, tokens_used: total_tokens)
-      { content: fallback_content, tool_calls: [], tokens: total_tokens }
+      { content: fallback_content, tool_calls: [], tokens: total_tokens,
+        actions: tool_call_results.length, incomplete: true }
 
     rescue => e
       run_record.fail!(e)
       Rails.logger.error "Agent run failed: #{e.class} - #{e.message}"
-      Rails.logger.error e.backtrace.first(10).join("\n")
+      Rails.logger.error e.backtrace.first(10).join("\n") if e.backtrace
+      # Tell the browser to stop the indicator and show a failed state BEFORE
+      # the placeholder is replaced — provider errors must never leave a
+      # perpetual "thinking" spinner or masquerade as a normal answer.
+      yield({ type: "status", phase: "failed", error: e.message }) if block_given?
       error_msg = "I encountered an error while processing your request."
       if @streaming_message
-        @streaming_message.update!(content: error_msg, tokens: estimate_tokens(error_msg))
+        streamed = @streaming_message.metadata.merge("error" => e.message)
+        streamed.delete("streaming")
+        @streaming_message.update!(content: error_msg, tokens: estimate_tokens(error_msg), metadata: streamed)
       else
-        conversation.messages.create!(role: "assistant", content: error_msg, tokens: estimate_tokens(error_msg))
+        conversation.messages.create!(role: "assistant", content: error_msg, tokens: estimate_tokens(error_msg), metadata: { "error" => e.message })
       end
-      { content: error_msg, error: e.message, tool_calls: [], tokens: total_tokens }
+      { content: error_msg, error: e.message, tool_calls: [], tokens: total_tokens,
+        actions: tool_call_results.length }
     end
   end
 
-  def chat_with_fallback(messages, tools, stream:, &block)
-    last_error = nil
+  def chat_with_agent_model(messages, tools, stream:, &block)
+    client = build_client_for_agent
+    started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
 
-    FALLBACK_MODELS.each do |model|
-      begin
-        client = Llm::Client.new(
-          provider: "opencode",
-          model: model,
-          api_key: api_key,
-          temperature: agent.config.fetch("temperature", 0.7).to_f,
-          max_tokens: agent.config.fetch("max_tokens", 4096).to_i
-        )
+    if stream && block
+      @thinking_announced = false
+      @last_status_ms = nil
+      # Emit a one-shot "connecting" heartbeat before we open the stream so the
+      # execution trace can show Connecting → Thinking → Generating → Completed
+      # even during the provider handshake latency.
+      unless @connecting_announced
+        @connecting_announced = true
+        yield({ type: "status", phase: "connecting" })
+      end
+      final_result = client.stream_chat(messages: messages, tools: tools) do |piece, _full, _tcs, kind|
+        now_ms = (Process.clock_gettime(Process::CLOCK_MONOTONIC) * 1000).round
+        if kind == "reasoning"
+          # Never forward the model's private chain-of-thought. Emit a single
+          # "thinking" status, then at most one per THINKING_THROTTLE_MS, so the
+          # UI shows live progress without leaking reasoning text.
+          next if @thinking_announced && @last_status_ms && (now_ms - @last_status_ms) < THINKING_THROTTLE_MS
 
-        if stream && block && tools.empty?
-          final_result = client.stream_chat(messages: messages, tools: tools) do |chunk, full_content, current_tools|
-            yield({ type: "chunk", content: chunk, full: full_content }) if block
-          end
-          return final_result
-        else
-          return client.chat(messages: messages, tools: tools)
+          @thinking_announced = true
+          @last_status_ms = now_ms
+          yield({ type: "status", phase: "thinking" })
+        elsif piece && !piece.empty?
+          yield({ type: "status", phase: "generating" }) unless @generating_announced
+          @generating_announced = true
+          yield({ type: "content_delta", text: piece })
         end
-      rescue => e
-        Rails.logger.warn "Model #{model} failed: #{e.class} #{e.message[0..200]}"
-        last_error = e
-        next
       end
+      elapsed_ms = ((Process.clock_gettime(Process::CLOCK_MONOTONIC) - started) * 1000).round
+      Rails.logger.info "[LLM] provider=#{agent.provider} model=#{agent.model} latency_ms=#{elapsed_ms} tokens=#{final_result[:tokens]} stream=true"
+      final_result
+    else
+      result = client.chat(messages: messages, tools: tools)
+      elapsed_ms = ((Process.clock_gettime(Process::CLOCK_MONOTONIC) - started) * 1000).round
+      Rails.logger.info "[LLM] provider=#{agent.provider} model=#{agent.model} latency_ms=#{elapsed_ms} tokens=#{result[:tokens]} stream=false"
+      result
     end
-
-    raise last_error || StandardError.new("All models failed")
+  rescue => e
+    Rails.logger.error "LLM call failed: #{e.class} #{e.message}"
+    raise
   end
 
-  def api_key
-    ENV.fetch("OPENCODE_API_KEY", "")
+  def build_client_for_agent
+    agent.llm_client
   end
 
   def build_messages(tool_call_results)
@@ -320,47 +457,28 @@ class AgentRunner
   def build_system_prompt
     base = agent.system_prompt.presence || "You are a helpful assistant."
 
-    critical = <<~CTX
-      Critical Context for this app:
+    # App-internal implementation constraints are only relevant when the agent
+    # is operating on the app itself (OS/auto-build modes). Injecting them into
+    # every chat hijacks normal conversations into meta-talk about the app's
+    # internals instead of answering the user.
+    critical = if conversation.mode.present?
+      <<~CTX
+        Constraints:
+        - Auth: session[:user_id]. Action Cable: cookies.signed[:user_id]. No remember_token.
+        - Controller creates user Message. Do NOT duplicate. When streaming_message provided, update via update!.
+        - Streaming placeholder is created with content: "" and metadata.streaming=true; drop the flag on finalize (never persist ".").
+        - Provider: #{agent.provider}, Model: #{agent.model}. Use agent.llm_client for all calls.
+        - Tools present -> use non-streaming chat.
+        - agent.enabled_tools: strings or hashes. Handle both. Tool IDs top-level.
+        - generate_plan returns [] for conversational -> short-circuit to execute_tool_loop.
+        - execute_plan skips todos where status == "done".
+        - Rails 8.1.3, Solid Queue, PostgreSQL. Run uses finish!(output:, tokens_used:).
+        - Streaming updates target [data-streaming-content="<messageId>"].
+        - AgentRun status broadcasts Turbo Stream replace of #run-status-<id>.
 
-      1. Authentication
-         - Auth is via session[:user_id] (server-side, wiped on restart). Action Cable uses cookies.signed[:user_id].
-         - Do NOT reference remember_token — it is no longer used for auth.
-
-      2. Message creation
-         - The controller already creates the user Message. Do NOT create duplicate user messages.
-         - When streaming_message is provided, update it in place via update! instead of creating a new Message.
-         - Create streaming Message early with content: "." to pass validations, then stream chunks by message_id.
-
-      3. OpenCode proxy
-         - ENV["OPENCODE_API_KEY"] is NOT set. Use the hardcoded fallback key in AgentRunner#api_key.
-         - Base URL is opencode.ai/zen OpenAI-compatible proxy.
-         - Fallback models in order: deepseek-v4-flash-free, big-pickle, nemotron-3-super-free, minimax-m3-free, mimo-v2.5-free.
-         - When tools are present, use non-streaming chat. Streaming drops tool call metadata in deltas.
-
-      4. Tools
-         - agent.enabled_tools can be strings or hashes with name/enabled keys. Handle both.
-         - Tool call IDs must be top-level, not nested in metadata.
-
-      5. Agent OS loop
-         - generate_plan returns [] for conversational prompts. In that case run_with_os must short-circuit to execute_tool_loop.
-         - execute_plan must skip todos where status == "done" to support resume.
-         - After plan execution, if step outputs exist and no assistant message was created, create a final safety net message.
-
-      6. Rails specifics
-         - Rails 8.1.3, Solid Queue, PostgreSQL, Stimulus 3.2, Turbo 8.0, Importmap.
-         - config.active_job.queue_adapter = :inline in dev and test.
-         - Run model uses finish!(output:, tokens_used:) not complete!.
-         - pgvector type is registered in config/initializers/pgvector.rb. Embeddings serialize as "[0.1,0.2]".
-         - Turbo.StreamActions.redirect is registered in app/javascript/application.js.
-
-      7. UI contracts
-         - Streaming updates target [data-streaming-content="<messageId>"].
-         - AgentRun status changes broadcast Turbo Stream replace of #run-status-<id> via after_update_commit.
-         - Reasoning steps are stored in reasoning_steps JSONB and broadcast to #reasoning-<id>.
-
-      Follow these constraints strictly. Do not invent routes or helpers. Do not create duplicate messages.
-    CTX
+        Follow strictly. Do not invent routes/helpers. No duplicate messages.
+      CTX
+    end
 
     tools = if agent.enabled_tools.present?
       tool_names = agent.enabled_tools.map { |t| t.is_a?(Hash) ? t[:name] || t["name"] : t }.compact
@@ -379,12 +497,24 @@ class AgentRunner
     mode_ctx = if conversation.mode.present?
       active_run = conversation.agent_runs.active.last
       status_info = active_run ? " (status: #{active_run.status})" : ""
-      "\nCurrent OS mode: #{conversation.mode}#{status_info}"
+      <<~CTX
+
+        Current OS mode: #{conversation.mode}#{status_info}
+
+        Execution rules:
+        - You act ON THIS MACHINE through real tools: run_command (bash),
+          write_file, read_file, code_executor (python/ruby).
+        - For every plan step, call tools first; never claim an action you did
+          not run. Verify results (ls, cat, run tests) before saying done.
+        - A failing command means: read the error, fix it, run again.
+        - Emit ONE tool call at a time and wait for its result.
+        - Finally, summarize exactly what was created and how to run it.
+      CTX
     else
       ""
     end
 
-    [base, critical, tools, project_ctx, mode_ctx].join("\n\n").strip
+    [ base, critical, tools, project_ctx, mode_ctx ].join("\n\n").strip
   end
 
   def build_tool_schemas
@@ -409,11 +539,18 @@ class AgentRunner
         end
         tool_call_id = tool_call["id"] || tool_call[:id] || SecureRandom.hex(16)
 
+        started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
         result = Agents::ToolRegistry.execute(tool_name, args, {
           user_id: user.id,
+          user: user,
           agent_id: agent.id,
           conversation_id: conversation.id
         })
+        elapsed_ms = ((Process.clock_gettime(Process::CLOCK_MONOTONIC) - started) * 1000).round
+
+        Rails.logger.info(
+          "[ToolCall] tool=#{tool_name} conv=#{conversation.id} user=#{user.id} latency_ms=#{elapsed_ms} error=#{false}"
+        )
 
         results << {
           tool_call_id: tool_call_id,
@@ -422,15 +559,17 @@ class AgentRunner
           result: result
         }
       rescue JSON::ParserError
+        Rails.logger.warn "[ToolCall] tool=#{tool_name} conv=#{conversation.id} error=invalid_json"
         results << {
-          tool_call_id: tool_call["id"] || tool_call[:id],
+          tool_call_id: tool_call["id"] || tool_call[:id] || SecureRandom.hex(16),
           tool_name: tool_name,
           arguments: { _raw: arguments.to_s },
           result: { error: "Invalid JSON in tool arguments: #{arguments.to_s[0..100]}" }
         }
       rescue => e
+        Rails.logger.error "[ToolCall] tool=#{tool_name} conv=#{conversation.id} error=#{e.class} latency_ms=#{elapsed_ms rescue 0}"
         results << {
-          tool_call_id: tool_call["id"] || tool_call[:id],
+          tool_call_id: tool_call["id"] || tool_call[:id] || SecureRandom.hex(16),
           tool_name: tool_name,
           arguments: arguments,
           result: { error: e.message }
