@@ -84,6 +84,12 @@ Rails.application.routes.draw do
     end
   end
 
+  # Phase 5 — Explore Agents catalog (/explore). Additive, above the
+  # catch-all like /scheduled and /images. GET index is read-only; POST start
+  # instantiates a template inside the current org and opens a conversation.
+  get "explore", to: "explore#index", as: :explore
+  post "explore/start", to: "explore#start", as: :explore_start
+
   # Tool integrations. Phase 4 (Plugins Manager) adds the marketplace routes
   # additively: the custom collection paths (connect/<key>, plugin/<key>) are
   # matched before member show, and catalog keys are never uuid-shaped, so

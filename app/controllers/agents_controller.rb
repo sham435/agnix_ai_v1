@@ -1,7 +1,7 @@
 class AgentsController < ApplicationController
   before_action :authenticate_user!
   before_action :require_organization!
-  before_action :set_agent, only: [:show, :edit, :update, :destroy]
+  before_action :set_agent, only: [ :show, :edit, :update, :destroy ]
 
   def index
     @agents = current_organization.agents.order(created_at: :desc)
@@ -9,6 +9,14 @@ class AgentsController < ApplicationController
 
   def new
     @agent = current_organization.agents.new
+    # Explore's "Customize": prefill the form from a curated template
+    # (Phase 5). Unknown/absent ?template= leaves the blank form untouched.
+    if (template = Agents::Templates.find(params[:template]))
+      @agent.assign_attributes(
+        template.slice(:name, :slug, :description, :system_prompt, :provider, :model)
+          .merge(tools: template[:tools].dup, config: template[:config].deep_dup)
+      )
+    end
   end
 
   def create

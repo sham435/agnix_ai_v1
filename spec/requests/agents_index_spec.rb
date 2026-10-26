@@ -32,6 +32,15 @@ RSpec.describe "Agents index (sidebar destination)", type: :request do
     expect(response.body).to include(agent.name)
     expect(response.body).to include("Active")
   end
+
+  it "keeps the legacy Open/Edit card actions when no start_path is passed" do
+    get organization_agents_path(organization)
+
+    expect(response.body).to include(agent_path(agent))
+    expect(response.body).to include(edit_agent_path(agent))
+    expect(response.body).not_to include("Start chat")
+    expect(response.body).not_to include("/explore/start")
+  end
 end
 
 # rubocop:enable RSpec/MultipleExpectations

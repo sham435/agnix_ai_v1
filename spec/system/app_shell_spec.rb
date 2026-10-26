@@ -58,7 +58,7 @@ RSpec.describe "Phase 1 app shell", :js, type: :system do
     expect(page).to have_css("#sidebar", wait: 10)
   end
 
-  it "renders the sidebar navigation, surfacing built slots and hiding unbuilt ones" do
+  it "renders the sidebar navigation with every built slot" do
     within "#sidebar" do
       expect(page).to have_link("Chats")
       expect(page).to have_link("Agents")
@@ -68,7 +68,8 @@ RSpec.describe "Phase 1 app shell", :js, type: :system do
       expect(page).to have_link("Scheduled", href: "/scheduled")
       # Phase 3 landed the /images gallery route, so that slot is now built too.
       expect(page).to have_link("Images", href: "/images")
-      expect(page).not_to have_link("Explore")
+      # Phase 5 landed the /explore catalog, lighting the last reserved slot.
+      expect(page).to have_link("Explore", href: "/explore")
     end
   end
 

@@ -28,44 +28,13 @@ class ConversationsController < ApplicationController
     @agent = Agent.find_by(id: params[:agent_id], organization: current_organization)
     return redirect_to conversations_path, alert: "Agent not found." unless @agent
 
-    @conversation = current_user.conversations.create!(
+    # Single startup path shared with Explore (Phase 5): conversation row,
+    # optional first exchange, streaming placeholder, and the job hand-off.
+    @conversation = Conversations::StartChat.call(
+      user: current_user,
       agent: @agent,
-      title: params[:content].to_s.truncate(50, omission: "...")
+      content: params[:content]
     )
-
-    # Create the first user message if content was provided.
-    if params[:content].present?
-      message = @conversation.messages.create!(
-        role: "user",
-        content: params[:content]
-      )
-
-      # The dashboard composer has no #messages-list, so it cannot render the
-      # optimistic assistant container that the in-conversation composer uses.
-      # To avoid the "sent but nothing appears until the job wakes" gap,
-      # provision the streaming assistant placeholder NOW and hand its
-      # request_id to the job. When Turbo redirects to the show page it renders
-      # this row immediately (acknowledgment + progressive thinking dots), and
-      # the job reuses the exact row rather than creating a second placeholder.
-      request_id = SecureRandom.uuid
-      @conversation.messages.create!(
-        role: "assistant",
-        content: "",
-        metadata: {
-          "streaming" => true,
-          "stream_started_at" => Time.current.utc.iso8601,
-          "request_id" => request_id
-        }
-      )
-
-      # Queue agent response.
-      AgentStreamJob.perform_later(
-        conversation_id: @conversation.id,
-        user_id: current_user.id,
-        message_content: message.content,
-        request_id: request_id
-      )
-    end
 
     respond_to do |format|
       format.turbo_stream
