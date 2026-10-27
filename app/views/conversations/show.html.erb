@@ -11,7 +11,7 @@
       <span class="text-[14px] font-medium text-white truncate"><%= @conversation.agent.name %></span>
       <%= form_with model: @conversation.agent, url: agent_path(@conversation.agent), method: :patch, class: "inline-flex", data: { turbo: true } do |f| %>
         <%= hidden_field_tag :return_to, conversation_path(@conversation) %>
-        <%= f.select :model, Agent::MODELS.values.flatten.map { |m| [m, m] }, { selected: @conversation.agent.model }, class: "text-[12px] text-zinc-500 bg-transparent border-0 outline-none cursor-pointer appearance-none pr-4 focus:text-zinc-200", onchange: "this.form.requestSubmit()" %>
+        <%= f.select :model, Agent::MODELS.values.flatten.map { |m| [m, m] }, { selected: @conversation.agent.model }, class: "text-[12px] text-zinc-500 bg-transparent border-0 outline-none cursor-pointer appearance-none pr-4 focus:text-zinc-200", data: { controller: "auto-submit", action: "change->auto-submit#submit" } %>
       <% end %>
     </div>
   </div>
