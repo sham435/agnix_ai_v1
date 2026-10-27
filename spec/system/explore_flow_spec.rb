@@ -37,27 +37,41 @@ RSpec.describe "Explore agents catalog", :js, type: :system do
     login_as user
     visit explore_path
 
+    # The chips are plain GET links, so every click replaces the whole
+    # document. Capybara's default 2s window can expire before Cuprite has
+    # re-resolved the new document node, and the query then raises
+    # Capybara::Cuprite::ObsoleteNode (wrapping Ferrum::NodeNotFoundError)
+    # instead of just reporting "not found yet". The explicit wait keeps the
+    # retry loop alive across the full page load.
     click_on "Creative"
-    expect(page).to have_css("#agent-card-image-artist")
+    expect(page).to have_css("#agent-card-image-artist", wait: 10)
     expect(page).not_to have_css("#agent-card-code-writer")
-    expect(page).to have_field("q")
+    expect(page).to have_field("q", wait: 10)
 
     click_on "All"
-    expect(page).to have_css("[id^='agent-card-']", count: Agents::Templates.available.size)
+    # The path check reads from the driver (not the DOM), so it can succeed
+    # before the new document is attached - the count matcher still needs its
+    # own longer wait for the same reason as above.
+    expect(page).to have_current_path(explore_path)
+    expect(page).to have_css("[id^='agent-card-']",
+                             count: Agents::Templates.available.size,
+                             wait: 10)
   end
 
   it "searches the grid from the search field" do
     login_as user
     visit explore_path
 
+    # Submitting the search form is a full navigation too (see the note in the
+    # category-chips example), so the result matchers wait past the page load.
     fill_in "q", with: "translator"
     find("#q").send_keys :return
-    expect(page).to have_css("#agent-card-arabic-english-translator")
+    expect(page).to have_css("#agent-card-arabic-english-translator", wait: 10)
     expect(page).not_to have_css("#agent-card-research-assistant")
 
     fill_in "q", with: "nothing-matches-this"
     find("#q").send_keys :return
-    expect(page).to have_content("No template matches that search")
+    expect(page).to have_content("No template matches that search", wait: 10)
   end
 
   it "starts a chat from a template and reuses that agent afterwards" do
