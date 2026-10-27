@@ -37,7 +37,16 @@
             <dt class="text-zinc-500">Model</dt>
             <dd class="text-white font-medium">
               <%= form_with model: @agent, url: agent_path(@agent), method: :patch, data: { turbo: true }, class: "inline-flex" do |f| %>
-                <%= f.select :model, Agent::MODELS.values.flatten.map { |m| [m, m] }, { selected: @agent.model }, class: "text-white font-medium bg-transparent border-0 outline-none cursor-pointer appearance-none pr-4", onchange: "this.form.requestSubmit()" %>
+                <%# This select submits immediately and the page cannot change
+                    provider, so it offers only this agent's provider catalog
+                    plus its saved value - never another provider's models.
+                    The change handler is a Stimulus action, not an inline
+                    `onchange=` attribute: the script-src nonce in this app's CSP
+                    cancels 'unsafe-inline' for event handler attributes, so the
+                    inline version never ran outside development's report-only mode. %>
+                <%= f.select :model, @agent.model_select_options, { selected: @agent.model },
+                      class: "text-white font-medium bg-transparent border-0 outline-none cursor-pointer appearance-none pr-4",
+                      data: { controller: "auto-submit", action: "change->auto-submit#submit" } %>
               <% end %>
             </dd>
           </div>

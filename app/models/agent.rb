@@ -61,6 +61,26 @@ class Agent < ApplicationRecord
     tools.reject { |t| t.is_a?(Hash) && t["enabled"] == false }
   end
 
+  # Models a provider actually serves. Falls back to the first catalog list for
+  # a blank/unknown provider so a Model select is never rendered empty.
+  def self.models_for(provider)
+    MODELS[provider.to_s.to_sym] || MODELS.values.first
+  end
+
+  # [label, value] pairs for the Model select: this provider's catalog, plus
+  # this record's saved model when the catalog does not list it. Rows like
+  # `ollama/local` (a tag on the user's own server) or an openrouter.ai id
+  # (`openai/inclusionai/ling-3.0-flash-fin:free`) work fine but are not in
+  # MODELS; silently dropping the saved value would rewrite a working agent the
+  # moment someone opened its form and pressed Save.
+  def model_select_options
+    catalog = self.class.models_for(provider)
+    extras = model.present? && !catalog.include?(model) ? [ model ] : []
+    (catalog + extras).map do |m|
+      [ m == model && !catalog.include?(m) ? "#{m} (saved here)" : m, m ]
+    end
+  end
+
   def llm_client
     Llm::Client.new(
       provider: provider,
