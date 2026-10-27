@@ -1,0 +1,63 @@
+<%= render "layouts/chat_layout" do %>
+  <header class="sticky top-0 z-20 flex h-[64px] items-center justify-between gap-3 border-b border-border-subtle bg-sidebar/80 glass px-4">
+    <%= link_to organization_agent_runs_path(@agent.organization, @agent), class: "flex items-center gap-2 text-fg-muted hover:text-fg transition" do %>
+      <svg class="size-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m15 18-6-6 6-6"/></svg>
+      <span class="text-[14px]">All Runs</span>
+    <% end %>
+    <div class="flex items-center gap-2">
+      <%= status_badge(@run.status) %>
+    </div>
+    <div></div>
+  </header>
+
+  <main class="flex-1 overflow-y-auto p-6">
+    <div class="mx-auto max-w-[700px] space-y-6">
+      <!-- Metadata -->
+      <div class="card">
+        <h2 class="text-[15px] font-medium text-fg mb-3">Run Details</h2>
+        <dl class="grid grid-cols-2 sm:grid-cols-4 gap-4 text-[13px]">
+          <div>
+            <dt class="text-fg-subtle">Status</dt>
+            <dd class="text-fg font-medium capitalize mt-1"><%= @run.status %></dd>
+          </div>
+          <div>
+            <dt class="text-fg-subtle">Tokens</dt>
+            <dd class="text-fg font-medium mt-1"><%= number_with_delimiter(@run.tokens_used) %></dd>
+          </div>
+          <div>
+            <dt class="text-fg-subtle">Started</dt>
+            <dd class="text-fg font-medium mt-1"><%= @run.started_at ? @run.started_at.strftime("%b %d, %H:%M") : "—" %></dd>
+          </div>
+          <div>
+            <dt class="text-fg-subtle">Finished</dt>
+            <dd class="text-fg font-medium mt-1"><%= @run.finished_at ? @run.finished_at.strftime("%b %d, %H:%M") : "—" %></dd>
+          </div>
+        </dl>
+      </div>
+
+      <!-- Input -->
+      <div class="card">
+        <h2 class="text-[15px] font-medium text-fg mb-3">Input</h2>
+        <pre class="rounded-lg bg-hover border border-border-subtle p-4 text-[13px] text-fg font-mono whitespace-pre-wrap overflow-x-auto"><%= JSON.pretty_generate(@run.input) rescue @run.input %></pre>
+      </div>
+
+      <!-- Output -->
+      <% if @run.output.present? %>
+        <div class="card">
+          <h2 class="text-[15px] font-medium text-fg mb-3">Output</h2>
+          <pre class="rounded-lg bg-hover border border-border-subtle p-4 text-[13px] text-fg font-mono whitespace-pre-wrap overflow-x-auto"><%= JSON.pretty_generate(@run.output) rescue @run.output %></pre>
+        </div>
+      <% end %>
+
+      <!-- Error -->
+      <% if @run.error_message.present? %>
+        <div class="card border-red-500/20">
+          <h2 class="text-[15px] font-medium text-red-600 dark:text-red-400 mb-3">Error</h2>
+          <pre class="rounded-lg bg-red-500/[0.05] border border-red-500/10 p-4 text-[13px] text-red-700 dark:text-red-300 font-mono whitespace-pre-wrap"><%= @run.error_message %></pre>
+        </div>
+      <% end %>
+    </div>
+  </main>
+
+  <%= render "shared/sidebar_js" %>
+<% end %>

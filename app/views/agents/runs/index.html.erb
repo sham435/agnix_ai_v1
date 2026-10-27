@@ -1,0 +1,42 @@
+<%= render "layouts/chat_layout" do %>
+  <header class="sticky top-0 z-20 flex h-[64px] items-center justify-between gap-3 border-b border-border-subtle bg-sidebar/80 glass px-4">
+    <%= link_to organization_agent_path(@agent.organization, @agent), class: "flex items-center gap-2 text-fg-muted hover:text-fg transition" do %>
+      <svg class="size-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m15 18-6-6 6-6"/></svg>
+    <% end %>
+    <div class="flex items-center gap-2">
+      <span class="size-6 rounded-lg bg-accent/10 grid place-items-center text-accent-text">
+        <svg class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 1v4M12 19v4"/></svg>
+      </span>
+      <span class="text-[14px] font-medium text-fg"><%= @agent.name %> Runs</span>
+    </div>
+    <div></div>
+  </header>
+
+  <main class="flex-1 overflow-y-auto p-6">
+    <div class="mx-auto max-w-[700px]">
+      <% if @runs.any? %>
+        <div class="space-y-2">
+          <% @runs.each do |run| %>
+            <%= link_to organization_agent_run_path(@agent.organization, @agent, run), class: "flex items-center justify-between rounded-2xl bg-panel border border-border-subtle px-4 py-3 hover:bg-hover transition" do %>
+              <div class="flex items-center gap-3 min-w-0">
+                <%= status_badge(run.status) %>
+                <span class="text-[13px] text-fg truncate"><%= run.input.dig("query") || "Run #{run.id.to_s[0,8]}" %></span>
+              </div>
+              <div class="flex items-center gap-4 text-[12px] text-fg-subtle shrink-0 ml-3">
+                <span><%= number_with_delimiter(run.tokens_used) %> tokens</span>
+                <span><%= time_ago(run.created_at) %></span>
+              </div>
+            <% end %>
+          <% end %>
+        </div>
+      <% else %>
+        <div class="text-center py-20">
+          <h2 class="text-lg font-semibold text-fg mb-2">No runs yet</h2>
+          <p class="text-fg-subtle">Runs appear here after the agent processes a request.</p>
+        </div>
+      <% end %>
+    </div>
+  </main>
+
+  <%= render "shared/sidebar_js" %>
+<% end %>

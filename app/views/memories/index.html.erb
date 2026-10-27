@@ -1,0 +1,53 @@
+<%= render "layouts/chat_layout" do %>
+  <header class="sticky top-0 z-20 flex h-[64px] items-center justify-between gap-3 border-b border-border-subtle bg-sidebar/80 glass px-4">
+    <div class="flex items-center gap-2">
+      <button id="menuBtn" class="lg:hidden grid size-9 place-items-center rounded-xl bg-panel hover:bg-hover text-fg">
+        <svg class="size-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+      </button>
+      <h1 class="text-[16px] font-semibold text-fg">Memories</h1>
+    </div>
+    <form action="<%= memories_path %>" method="get" class="flex items-center gap-2">
+      <input type="text" name="q" value="<%= @q %>" placeholder="Search memories..." class="input-field w-[220px]">
+      <button type="submit" class="btn-secondary text-[13px]">Search</button>
+    </form>
+  </header>
+
+  <main class="flex-1 overflow-y-auto p-6">
+    <div class="mx-auto max-w-[800px]">
+      <!-- Upload -->
+      <div class="card mb-6">
+        <h2 class="text-[15px] font-medium text-fg mb-3">Add Context</h2>
+        <%= form_with url: upload_memories_path, multipart: true, class: "flex gap-3", data: { turbo: false } do |f| %>
+          <%= f.text_area :content, rows: 2, placeholder: "Paste knowledge, notes, or facts to remember...", class: "input-field flex-1 resize-none" %>
+          <%= f.file_field :file, accept: ".txt,.md" %>
+          <%= f.submit "Save", class: "btn-primary h-fit" %>
+        <% end %>
+      </div>
+
+      <% if @memories.any? %>
+        <div class="space-y-2">
+          <% @memories.each do |memory| %>
+            <%= link_to memory_path(memory), class: "block rounded-2xl bg-panel border border-border-subtle px-4 py-3 hover:bg-hover transition" do %>
+              <div class="flex items-start justify-between gap-4">
+                <p class="text-[13px] text-fg leading-relaxed"><%= truncate(strip_tags(memory.content), length: 200) %></p>
+                <div class="text-right shrink-0">
+                  <% if memory.has_embedding? %>
+                    <span class="badge badge-active">embedded</span>
+                  <% end %>
+                  <div class="text-[11px] text-fg-subtle mt-1"><%= time_ago(memory.created_at) %></div>
+                </div>
+              </div>
+            <% end %>
+          <% end %>
+        </div>
+      <% else %>
+        <div class="text-center py-20">
+          <h2 class="text-lg font-semibold text-fg mb-2"><%= @q.present? ? "No matches" : "No memories yet" %></h2>
+          <p class="text-fg-subtle"><%= @q.present? ? "Try a different search." : "Add notes above to give your agents long-term context." %></p>
+        </div>
+      <% end %>
+    </div>
+  </main>
+
+  <%= render "shared/sidebar_js" %>
+<% end %>

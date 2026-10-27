@@ -34,6 +34,6 @@ class Agents::TestPlaygroundController < ApplicationController
   private
 
   def set_agent
-    @agent = current_organization.agents.find(params[:agent_id])
+    @agent = current_organization.agents.find(params[:id] || params[:agent_id])
   end
 end

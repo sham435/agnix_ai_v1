@@ -24,6 +24,8 @@ Rails.application.routes.draw do
     patch :profile, to: "profiles#update"
     get   :billing, to: "billing#index"
     get   :integrations, to: "integrations#index"
+    # Per-organization model provider keys (Settings::IntegrationsController#save_key).
+    post  :integrations_keys, to: "integrations#save_key", as: :integrations_keys
     get   :api_keys, to: "api_keys#index"
     patch :theme, to: "preferences#update_theme"
   end

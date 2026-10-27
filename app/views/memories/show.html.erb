@@ -1,0 +1,44 @@
+<%= render "layouts/chat_layout" do %>
+  <header class="sticky top-0 z-20 flex h-[64px] items-center justify-between gap-3 border-b border-border-subtle bg-sidebar/80 glass px-4">
+    <%= link_to memories_path, class: "flex items-center gap-2 text-fg-muted hover:text-fg transition" do %>
+      <svg class="size-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m15 18-6-6 6-6"/></svg>
+      <span class="text-[14px]">All Memories</span>
+    <% end %>
+    <div class="flex items-center gap-2">
+      <%= status_badge(@memory.has_embedding? ? "active" : "inactive") %>
+    </div>
+    <%= button_to "Delete", memory_path(@memory), method: :delete, class: "text-fg-subtle hover:text-red-600 dark:hover:text-red-400 transition text-[13px]", data: { turbo: false } %>
+  </header>
+
+  <main class="flex-1 overflow-y-auto p-6">
+    <div class="mx-auto max-w-[700px] space-y-6">
+      <div class="card">
+        <h2 class="text-[15px] font-medium text-fg mb-3">Memory</h2>
+        <div class="rounded-lg bg-hover border border-border-subtle p-4 text-[14px] text-fg whitespace-pre-wrap leading-relaxed"><%= @memory.content %></div>
+      </div>
+      <div class="card">
+        <h2 class="text-[15px] font-medium text-fg mb-3">Metadata</h2>
+        <dl class="grid grid-cols-2 gap-4 text-[13px]">
+          <div>
+            <dt class="text-fg-subtle">Source</dt>
+            <dd class="text-fg font-medium capitalize mt-1"><%= @memory.source_type.presence || "manual" %></dd>
+          </div>
+          <div>
+            <dt class="text-fg-subtle">Created</dt>
+            <dd class="text-fg font-medium mt-1"><%= @memory.created_at.strftime("%b %d, %Y %H:%M") %></dd>
+          </div>
+          <div>
+            <dt class="text-fg-subtle">Associated Agent</dt>
+            <dd class="text-fg font-medium mt-1"><%= @memory.agent&.name || "All agents" %></dd>
+          </div>
+          <div>
+            <dt class="text-fg-subtle">Dimension</dt>
+            <dd class="text-fg font-medium mt-1"><%= @memory.embedding&.size || "—" %></dd>
+          </div>
+        </dl>
+      </div>
+    </div>
+  </main>
+
+  <%= render "shared/sidebar_js" %>
+<% end %>

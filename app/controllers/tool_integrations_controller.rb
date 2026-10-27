@@ -75,7 +75,10 @@ class ToolIntegrationsController < ApplicationController
   def toggle
     @integration.toggle_active!
     plugin = Tools::Catalog.find(@integration.provider)
-    notice = @integration.is_active? ? "Plugin enabled." : "Plugin disabled."
+    # Rows toggled from Settings › Integrations are model provider credentials,
+    # not catalog plugins — say what was actually switched.
+    subject = plugin ? "#{plugin[:name]} plugin" : @integration.name
+    notice = "#{subject} #{@integration.is_active? ? "enabled" : "disabled"}."
 
     respond_to do |format|
       if plugin
