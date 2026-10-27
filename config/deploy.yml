@@ -1,17 +1,17 @@
 # Kamal 2 deployment configuration.
 # See: https://kamal-deploy.org/docs/
 
-service: agnix
-image: agnix
+service: shams
+image: shams
 
 servers:
   web:
     hosts:
       - <%= ENV["SERVER_IP"] || "your-server-ip" %>
     labels:
-      traefik.http.routers.agnix.rule: Host(`agnix.example.com`)
-      traefik.http.routers.agnix.entrypoints: websecure
-      traefik.http.routers.agnix.tls.certresolver: letsencrypt
+      traefik.http.routers.shams.rule: Host(`shams.example.com`)
+      traefik.http.routers.shams.entrypoints: websecure
+      traefik.http.routers.shams.tls.certresolver: letsencrypt
     options:
       publish:
         - "443:443"
@@ -74,7 +74,7 @@ traefik:
     entrypoints.web.http.redirections.entrypoint.to: websecure
     entrypoints.web.http.redirections.entrypoint.scheme: https
     entrypoints.websecure.http.tls.certresolver: letsencrypt
-    certificatesresolvers.letsencrypt.acme.email: "admin@agnix.example.com"
+    certificatesresolvers.letsencrypt.acme.email: "admin@shams.example.com"
     certificatesresolvers.letsencrypt.acme.storage: "/letsencrypt/acme.json"
     certificatesresolvers.letsencrypt.acme.httpchallenge: true
     certificatesresolvers.letsencrypt.acme.httpchallenge.entrypoint: web
@@ -85,8 +85,8 @@ accessories:
     host: <%= ENV["SERVER_IP"] %>
     env:
       clear:
-        POSTGRES_USER: agnix
-        POSTGRES_DB: agnix_production
+        POSTGRES_USER: shams
+        POSTGRES_DB: shams_production
       secret:
         - POSTGRES_PASSWORD
     directories:

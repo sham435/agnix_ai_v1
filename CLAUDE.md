@@ -1,4 +1,4 @@
-# Agnix - Shams AgentOS • Claude Code Guide
+# Shams - Shams AgentOS • Claude Code Guide
 
 ## System Rules & Constraints
 - Ruby 3.4+, Rails 8.1.3+, PostgreSQL 16+, Redis 7+
@@ -27,7 +27,7 @@
 
 ## Project Structure
 ```
-agnix/
+shams/
 ├── app/
 │   ├── channels/         # Action Cable channels
 │   ├── components/       # ViewComponent classes
@@ -54,4 +54,4 @@ agnix/
 - `.claude/rules/ui.md` - UI/View constraints
 
 ## Demo Credentials
-- Email: shams@agnix.ai / Password: password123
+- Email: shams@shams.ai / Password: password123

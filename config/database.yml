@@ -9,27 +9,27 @@ default: &default
 
 development:
   <<: *default
-  database: agnix_development
+  database: shams_development
 
 test:
   <<: *default
-  database: agnix_test
+  database: shams_test
 
 production:
   <<: *default
-  database: agnix_production
+  database: shams_production
   pool: 25
   url: <%= ENV["DATABASE_URL"] %>
 
 queue_development:
   <<: *default
-  database: agnix_development_queue
+  database: shams_development_queue
 
 queue_test:
   <<: *default
-  database: agnix_test_queue
+  database: shams_test_queue
 
 queue_production:
   <<: *default
-  database: agnix_production_queue
+  database: shams_production_queue
   url: <%= ENV["QUEUE_DATABASE_URL"] %>
