@@ -299,13 +299,14 @@ module Tools
       {
         key: "google",
         name: "Google",
-        description: "Google workspace connection settings. Agent tools for Gmail require OAuth token " \
-                     "storage this app does not have yet, so no tools are offered today.",
+        description: "Gemini model provider key: agents on provider google call Google's OpenAI-compatible " \
+                     "endpoint with it. This card still ships no agent tools - Gmail needs OAuth token " \
+                     "storage this app does not have.",
         category: "Productivity",
         icon: "cloud",
-        docs_url: "https://developers.google.com/identity/protocols/oauth2",
+        docs_url: "https://ai.google.dev/gemini-api/docs",
         credential_fields: [
-          { key: "api_key", label: "API key", type: "password", required: false, hint: "Cloud project API key (no agent tools yet)" }
+          { key: "api_key", label: "API key", type: "password", required: false, hint: "Gemini API key - used by google-provider agents" }
         ],
         # Honest by design: Gmail send needs an OAuth access/refresh token pair, and this app's
         # OmniAuth callbacks never persist tokens — only user identity. Declaring send_gmail here

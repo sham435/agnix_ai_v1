@@ -11,7 +11,7 @@ A production-ready, full-stack AI Agentic Agent Platform built with Rails 8.1+.
 ## Features
 
 - **Modular Agent System** - Create, configure, and manage AI agents with custom prompts and tools
-- **Pluggable LLM Providers** - Anthropic Claude, OpenAI, Ollama (local)
+- **Pluggable LLM Providers** - Anthropic Claude, OpenAI, Google Gemini, Ollama (local)
 - **Streaming Responses** - Real-time streaming via Action Cable + Turbo Streams
 - **Function Calling** - Tool use registry with JSON Schema validation
 - **RAG with pgvector** - Vector search for semantic memory retrieval
@@ -204,8 +204,16 @@ ALLOWED_ORIGINS=https://shams.example.com
 # LLM (fallback if not in credentials)
 ANTHROPIC_API_KEY=sk-ant-xxxxx
 OPENAI_API_KEY=sk-proj-xxxxx
+GOOGLE_API_KEY=AIzaXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+# Gemini speaks an OpenAI-compatible API; this is the default, change only to proxy it.
+GOOGLE_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai/v1
 OLLAMA_HOST=http://localhost:11434
 ```
+
+Any of these keys can be replaced per organization without a redeploy: paste it
+on **Settings > Integrations** ("Model provider keys") and it is stored
+encrypted on that organization's `ToolIntegration` row, which `Agent#api_key`
+checks before credentials and ENV.
 
 ## Development
 
