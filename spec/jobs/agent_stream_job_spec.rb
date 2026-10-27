@@ -18,6 +18,7 @@ RSpec.describe AgentStreamJob, type: :job do
     allow(runner).to receive(:run)
     allow(Turbo::StreamsChannel).to receive(:broadcast_append_to)
     allow(Turbo::StreamsChannel).to receive(:broadcast_replace_to)
+    allow(Turbo::StreamsChannel).to receive(:broadcast_remove_to)
     allow(ActionCable.server).to receive(:broadcast)
     allow(AgentAutoFixer).to receive(:new).and_return(instance_double(AgentAutoFixer, call: nil))
 
@@ -284,5 +285,75 @@ RSpec.describe AgentStreamJob, type: :job do
     expect(payloads.map { |p| p[:type] }).to include("failed")
     placeholder = conversation.messages.reload.where(role: "assistant").order(:created_at).last
     expect(placeholder.streaming?).to be(false)
+  end
+
+  # ── superseded reply (Conversations::RegenerateChat contract) ─────────
+  #
+  # Regenerate no longer destroys the previous answer before enqueueing: it
+  # hands the row to the job and only a genuine replacement may retire it. These
+  # examples are the whole reason a failed re-run keeps the user's answer.
+  describe "replaces_message_id" do
+    let(:superseded) { conversation.messages.create!(role: "assistant", content: "the answer to keep") }
+
+    # Write a finalized reply into the placeholder the way AgentRunner does.
+    def stub_finalized_run(content, metadata_extra = {})
+      allow(runner).to receive(:run) do |_content, **_opts|
+        row = conversation.messages.reload.where(role: "assistant").order(:created_at).last
+        row.update!(content: content, tokens: 3, metadata: row.metadata.merge(metadata_extra).except("streaming"))
+      end
+    end
+
+    def perform_replacing
+      described_class.perform_now(
+        conversation_id: conversation.id, user_id: user.id,
+        message_content: "Hi", replaces_message_id: superseded.id
+      )
+    end
+
+    it "retires the superseded reply once a real answer lands" do
+      stub_finalized_run("the new answer")
+      superseded # the row about to be replaced must exist before the run starts
+      before = conversation.messages.where(role: "assistant").count
+
+      perform_replacing
+
+      # one placeholder in, the superseded row out: the thread keeps its size
+      expect(conversation.messages.where(role: "assistant").count).to eq(before)
+      expect(conversation.messages.reload.find_by(id: superseded.id)).to be_nil
+      expect(Turbo::StreamsChannel).to have_received(:broadcast_remove_to).with(
+        conversation, target: "assistant-message-#{superseded.id}"
+      )
+      kept = conversation.messages.reload.where(role: "assistant").order(:created_at).last
+      expect(kept.content).to eq("the new answer")
+    end
+
+    it "keeps the previous answer when the re-run raises" do
+      allow(runner).to receive(:run).and_raise(Llm::OpenaiAdapter::LlmError, "provider down")
+
+      perform_replacing
+
+      expect(conversation.messages.reload.find_by(id: superseded.id)&.content)
+        .to eq("the answer to keep")
+    end
+
+    it "keeps the previous answer when the re-run finalizes with an error marker" do
+      stub_finalized_run("I encountered an error while processing your request.", "error" => "boom")
+
+      perform_replacing
+
+      expect(conversation.messages.reload.find_by(id: superseded.id)&.content)
+        .to eq("the answer to keep")
+    end
+
+    it "keeps the previous answer when the re-run produces an empty body" do
+      # AgentRunner's own contract: a blank finalization carries
+      # metadata["empty_response"], never a fabricated dot.
+      stub_finalized_run("", "empty_response" => true)
+
+      perform_replacing
+
+      expect(conversation.messages.reload.find_by(id: superseded.id)&.content)
+        .to eq("the answer to keep")
+    end
   end
 end

@@ -11,8 +11,13 @@ class AgentStreamJob < ApplicationJob
   # instead of spinning forever.
   RUN_TIMEOUT_SECONDS = 15 * 60
 
-  def perform(conversation_id:, user_id:, message_content: nil, channel: :web, phone_number: nil, resume_agent_run_id: nil, message_id: nil, request_id: nil)
+  def perform(conversation_id:, user_id:, message_content: nil, channel: :web, phone_number: nil, resume_agent_run_id: nil, message_id: nil, request_id: nil, replaces_message_id: nil)
     @request_id = request_id.presence
+    # Set by Conversations::RegenerateChat: the assistant row this run replaces.
+    # It survives until this run produces a real answer (see
+    # #retire_superseded_message), so a failed or timed-out re-run can never
+    # leave the thread with its previous reply deleted.
+    @replaces_message_id = replaces_message_id.presence
     # Latch flipped exactly once a terminal frame (completed/failed) has gone
     # out, so the `ensure` safety net never double-announces.
     @terminal_broadcasted = false
@@ -86,6 +91,7 @@ class AgentStreamJob < ApplicationJob
 
     # Replace streaming message with final rendered version (no cursor).
     broadcast_replace(conversation, streaming_msg.reload, streaming: false)
+    retire_superseded_message(conversation, streaming_msg)
     mark_terminal
     ActionCable.server.broadcast("conversation:#{conversation.id}",
       terminal_payload(conversation, streaming_msg.id, type: "completed"))
@@ -164,6 +170,32 @@ class AgentStreamJob < ApplicationJob
     fresh.update!(metadata: meta)
   rescue StandardError, NameError => e
     Rails.logger.error "[AgentStreamJob] PLACEHOLDER-FINALIZE-ERROR #{e.class}: #{e.message}"
+  end
+
+  # Delete the reply this run replaced — but only once the new answer is real
+  # (finalized, non-empty, no metadata["error"]). Conversations::RegenerateChat
+  # deliberately leaves the old row in place while the re-run is in flight, so a
+  # provider failure, a stall or a timeout costs the user nothing: the thread
+  # keeps the answer they already had. Only a genuine replacement retires it,
+  # and the removal is broadcast so the live DOM matches the database.
+  def retire_superseded_message(conversation, message)
+    return unless @replaces_message_id
+
+    fresh = message.reload
+    return if fresh.streaming?
+    return if fresh.content.to_s.strip.empty?
+    return if fresh.metadata.is_a?(Hash) && fresh.metadata["error"].present?
+
+    superseded = Message.where(role: "assistant").find_by(id: @replaces_message_id)
+    return unless superseded
+
+    superseded.destroy!
+    Turbo::StreamsChannel.broadcast_remove_to(
+      conversation, target: "assistant-message-#{superseded.id}"
+    )
+  rescue StandardError, NameError => e
+    # Bookkeeping must never turn a finished answer into an error bubble.
+    Rails.logger.error "[AgentStreamJob] SUPERSEDED-RETIRE-ERROR #{e.class}: #{e.message}"
   end
 
   # Emit a terminal `failed` frame (and finalize the row) when a run exited

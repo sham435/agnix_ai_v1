@@ -60,24 +60,16 @@ class ConversationsController < ApplicationController
     redirect_to conversations_path, notice: "Conversation archived."
   end
 
-  # Regenerate the last assistant response.
+  # Regenerate the last assistant response. All the decisions (what to replace,
+  # whether a run is already in flight, the placeholder claim) live in
+  # Conversations::RegenerateChat so this stays a thin flash/redirect shell.
   def regenerate
     redirect_to @conversation and return if request.get?
 
-    last_assistant = @conversation.messages.where(role: "assistant").last
-    return redirect_to @conversation, alert: "Nothing to regenerate." unless last_assistant
+    outcome = Conversations::RegenerateChat.call(conversation: @conversation, user: current_user)
+    flash_key = outcome.status == :queued ? :notice : :alert
 
-    last_assistant.destroy!
-    last_user = @conversation.messages.where(role: "user").last
-    return redirect_to @conversation, alert: "No user message to regenerate from." unless last_user
-
-    AgentStreamJob.perform_later(
-      conversation_id: @conversation.id,
-      user_id: current_user.id,
-      message_content: last_user.content
-    )
-
-    redirect_to @conversation, notice: "Regenerating response..."
+    redirect_to @conversation, flash_key => outcome.message
   end
 
   def stop

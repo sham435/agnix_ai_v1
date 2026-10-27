@@ -38,17 +38,14 @@ class StreamingChannel < ApplicationCable::Channel
     conversation = current_user.conversations.find_by(id: conversation_id)
     return unless conversation
 
-    last_assistant = conversation.messages.where(role: "assistant").last
-    return unless last_assistant
-
-    last_assistant.destroy!
-    last_user = conversation.messages.where(role: "user").last
-    return unless last_user
-
-    AgentStreamJob.perform_later(
-      conversation_id: conversation.id,
-      user_id: current_user.id,
-      message_content: last_user.content
+    # One path with the HTTP buttons: nothing is destroyed here, and a
+    # conversation with a live run is refused instead of stacking a second
+    # concurrent AgentStreamJob on it.
+    outcome = Conversations::RegenerateChat.call(conversation: conversation, user: current_user)
+    ActionCable.server.broadcast(
+      "streaming:#{current_user.id}",
+      { type: "regenerate_outcome", status: outcome.status.to_s, message: outcome.message,
+        conversation_id: conversation.id }
     )
   end
 end
