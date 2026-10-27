@@ -113,6 +113,46 @@ RSpec.describe "Provider-scoped model selects", type: :request do
     end
   end
 
+  describe "GET /conversations/:id" do
+    it "scopes the chat header's model switcher to the conversation agent's provider" do
+      # The header patches the agent, so it offers the same list as the agent page.
+      # Until now it rendered Agent::MODELS.values.flatten, which let one stray
+      # click in the middle of a chat pair a Gemini agent with a claude id.
+      agent = create(:agent, organization: organization, provider: "google", model: "gemini-2.5-flash")
+      conversation = create(:conversation, user: user, agent: agent)
+
+      get conversation_path(conversation)
+      body = response.body
+
+      expect(response).to have_http_status(:ok)
+      expect(model_option_values(body)).to eq(Agent::MODELS[:google])
+      expect(model_option_values(body)).not_to include("claude-sonnet-4-6", "gpt-4o", "llama3.1")
+
+      # Still a Stimulus action: an inline handler attribute is dead under this
+      # app's nonce-bearing script-src, so the switch would have looked saved and
+      # not been.
+      switcher = Nokogiri::HTML(body).at_css("select#agent_model")
+      expect(switcher["onchange"]).to be_nil
+      expect(switcher["data-controller"]).to eq("auto-submit")
+      expect(switcher["data-action"]).to eq("change->auto-submit#submit")
+    end
+
+    it "keeps the model a conversation agent is actually running when the catalog lacks it" do
+      # ollama/local is a tag on the user's own server: not in Agent::MODELS, but
+      # dropping it from the header list would invite a switch that silently
+      # rewrites the working model on the next save.
+      agent = create(:agent, organization: organization, provider: "ollama", model: "local")
+      conversation = create(:conversation, user: user, agent: agent)
+
+      get conversation_path(conversation)
+      body = response.body
+
+      expect(model_option_values(body)).to eq(Agent::MODELS[:ollama] + [ "local" ])
+      expect(body).to include("local (saved here)")
+      expect(Nokogiri::HTML(body).at_css('#agent_model option[value="local"]')["selected"]).not_to be_nil
+    end
+  end
+
   describe "POST /agents" do
     # This app verifies authenticity tokens before controller callbacks, so an
     # unsafe request without api_headers dies at 422 before AgentsController#new.
