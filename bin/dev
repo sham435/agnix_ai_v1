@@ -1,5 +1,15 @@
 #!/usr/bin/env sh
 
+# foreman reads .env with Ruby's locale-derived default encoding. Under a shell
+# with no UTF-8 locale (cron, CI, some editors' terminals) a single non-ASCII
+# character in .env - e.g. the em-dash in the "Bonsai local servers" comment -
+# aborts the whole boot with "invalid byte sequence in US-ASCII". Only fill in a
+# UTF-8 locale when the caller did not already provide one.
+case "${LC_ALL:-${LANG:-}}" in
+  *UTF-8*|*UTF8*|*utf-8*|*utf8*) ;;
+  *) export LANG=en_US.UTF-8 ;;
+esac
+
 if ! gem list foreman -i --silent; then
   echo "Installing foreman..."
   gem install foreman

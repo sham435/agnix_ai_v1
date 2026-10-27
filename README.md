@@ -79,7 +79,7 @@ A production-ready, full-stack AI Agentic Agent Platform built with Rails 8.1+.
 
 ```bash
 # 1. Install dependencies
-cd agnix
+cd shams
 bundle install
 
 # 2. Setup database (PostgreSQL with pgvector)
@@ -98,11 +98,16 @@ bin/rails credentials:edit
 
 # 6. Start the app
 bin/dev
-# Starts: Rails server + Tailwind watcher + Solid Queue
+# Starts: Rails server (:3001) + Tailwind watcher + Solid Queue
+
+# 7. (Optional) local Bonsai model server, in a second terminal
+# Only needed for the bonsai-* providers; kept out of Procfile.dev because
+# foreman stops the whole stack when any process exits.
+../../run-bonsai.sh        # Bonsai 2 27B on :8080  (add "1bit" for :8910)
 ```
 
-Visit `http://localhost:3000` and login with:
-- Email: `shams@agnix.ai`
+Visit `http://localhost:3001` and login with:
+- Email: `shams@shams.ai`
 - Password: `password123`
 
 ## Configuration
@@ -148,7 +153,7 @@ sentry:
 
 ```bash
 # Database
-DATABASE_URL=postgresql://user:pass@localhost/agnix_production
+DATABASE_URL=postgresql://user:pass@localhost/shams_production
 
 # Rails
 RAILS_ENV=production
@@ -161,8 +166,8 @@ SOLID_QUEUE_WORKERS=2
 SOLID_QUEUE_AGENT_WORKERS=1
 
 # App
-APP_HOST=agnix.example.com
-ALLOWED_ORIGINS=https://agnix.example.com
+APP_HOST=shams.example.com
+ALLOWED_ORIGINS=https://shams.example.com
 
 # LLM (fallback if not in credentials)
 ANTHROPIC_API_KEY=sk-ant-xxxxx
@@ -194,15 +199,15 @@ bin/rails console             # Rails console
 
 ```bash
 # Build
-docker build -t agnix .
+docker build -t shams .
 
 # Run with docker-compose (local dev with Postgres + Redis)
 docker-compose up -d
 
 # Run app
 docker run -p 3000:3000 \
-  -e DATABASE_URL=postgresql://postgres:postgres@host.docker.internal/agnix_development \
-  agnix
+  -e DATABASE_URL=postgresql://postgres:postgres@host.docker.internal/shams_development \
+  shams
 ```
 
 ### Deployment with Kamal 2
@@ -227,7 +232,7 @@ kamal status
 ## Project Structure
 
 ```
-agnix/
+shams/
 ├── app/
 │   ├── channels/          # Action Cable channels
 │   │   └── application_cable/
