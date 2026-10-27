@@ -105,7 +105,7 @@ class AgentStreamJob < ApplicationJob
       Turbo::StreamsChannel.broadcast_append_to(
         conversation,
         target: "messages-list",
-        html: %(<div class="text-red-400 text-sm p-3 rounded-lg border border-red-500/20 bg-red-500/5">Agent error: #{ERB::Util.html_escape(e.message)}</div>)
+        html: %(<div class="text-red-600 dark:text-red-400 text-sm p-3 rounded-lg border border-red-500/20 bg-red-500/5">Agent error: #{ERB::Util.html_escape(e.message)}</div>)
       )
 
       failed = { type: "failed", code: "provider_error", message: e.message, conversation_id: conversation.id }

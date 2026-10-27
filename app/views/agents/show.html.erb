@@ -1,18 +1,18 @@
 <%= render "layouts/chat_layout" do %>
   <!-- Header -->
-  <header class="sticky top-0 z-20 flex h-[64px] items-center justify-between gap-3 border-b border-white/[0.06] bg-[#080809]/80 glass px-4">
-    <%= link_to agents_path, class: "flex items-center gap-2 text-zinc-400 hover:text-zinc-200 transition" do %>
+  <header class="sticky top-0 z-20 flex h-[64px] items-center justify-between gap-3 border-b border-border-subtle bg-sidebar/80 glass px-4">
+    <%= link_to agents_path, class: "flex items-center gap-2 text-fg-muted hover:text-fg transition" do %>
       <svg class="size-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m15 18-6-6 6-6"/></svg>
     <% end %>
     <div class="flex items-center gap-2">
-      <span class="size-6 rounded-lg bg-orange-500/10 grid place-items-center text-orange-400">
+      <span class="size-6 rounded-lg bg-accent/10 grid place-items-center text-accent-text">
         <svg class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 1v4M12 19v4"/></svg>
       </span>
-      <span class="text-[14px] font-medium text-white"><%= @agent.name %></span>
+      <span class="text-[14px] font-medium text-fg"><%= @agent.name %></span>
       <%= status_badge(@agent.is_active ? "active" : "inactive") %>
     </div>
     <div class="flex items-center gap-2">
-      <%= link_to organization_agent_test_path(@agent.organization, @agent), class: "btn-secondary text-[13px]" do %>
+      <%= link_to test_organization_agent_path(@agent.organization, @agent), class: "btn-secondary text-[13px]" do %>
         <svg class="size-4 mr-1.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></svg>
         Test
       <% end %>
@@ -27,15 +27,15 @@
     <div class="mx-auto max-w-[900px] space-y-6">
       <!-- Info -->
       <div class="card">
-        <h2 class="text-[15px] font-medium text-white mb-3">Configuration</h2>
+        <h2 class="text-[15px] font-medium text-fg mb-3">Configuration</h2>
         <dl class="grid grid-cols-2 sm:grid-cols-4 gap-4 text-[13px]">
           <div>
-            <dt class="text-zinc-500">Provider</dt>
-            <dd class="text-white font-medium"><%= @agent.provider.titleize %></dd>
+            <dt class="text-fg-subtle">Provider</dt>
+            <dd class="text-fg font-medium"><%= @agent.provider.titleize %></dd>
           </div>
           <div>
-            <dt class="text-zinc-500">Model</dt>
-            <dd class="text-white font-medium">
+            <dt class="text-fg-subtle">Model</dt>
+            <dd class="text-fg font-medium">
               <%= form_with model: @agent, url: agent_path(@agent), method: :patch, data: { turbo: true }, class: "inline-flex" do |f| %>
                 <%# This select submits immediately and the page cannot change
                     provider, so it offers only this agent's provider catalog
@@ -45,35 +45,37 @@
                     cancels 'unsafe-inline' for event handler attributes, so the
                     inline version never ran outside development's report-only mode. %>
                 <%= f.select :model, @agent.model_select_options, { selected: @agent.model },
-                      class: "text-white font-medium bg-transparent border-0 outline-none cursor-pointer appearance-none pr-4",
+                      class: "text-fg font-medium bg-transparent border-0 outline-none cursor-pointer appearance-none pr-4",
                       data: { controller: "auto-submit", action: "change->auto-submit#submit" } %>
               <% end %>
             </dd>
           </div>
           <div>
-            <dt class="text-zinc-500">Temperature</dt>
-            <dd class="text-white font-medium"><%= @agent.config.fetch("temperature", 0.7) %></dd>
+            <dt class="text-fg-subtle">Temperature</dt>
+            <dd class="text-fg font-medium"><%= @agent.config.fetch("temperature", 0.7) %></dd>
           </div>
           <div>
-            <dt class="text-zinc-500">Max Tokens</dt>
-            <dd class="text-white font-medium"><%= number_with_delimiter(@agent.config.fetch("max_tokens", 4096)) %></dd>
+            <dt class="text-fg-subtle">Max Tokens</dt>
+            <dd class="text-fg font-medium"><%= number_with_delimiter(@agent.config.fetch("max_tokens", 4096)) %></dd>
           </div>
         </dl>
       </div>
 
       <!-- System Prompt -->
       <div class="card">
-        <h2 class="text-[15px] font-medium text-white mb-3">System Prompt</h2>
-        <pre class="rounded-lg bg-white/[0.02] border border-white/[0.04] p-4 text-[13px] text-zinc-300 font-mono whitespace-pre-wrap"><%= @agent.system_prompt %></pre>
+        <h2 class="text-[15px] font-medium text-fg mb-3">System Prompt</h2>
+        <pre class="rounded-lg bg-hover border border-border-subtle p-4 text-[13px] text-fg font-mono whitespace-pre-wrap"><%= @agent.system_prompt %></pre>
       </div>
 
       <!-- Tools -->
       <div class="card">
-        <h2 class="text-[15px] font-medium text-white mb-3">Tools</h2>
+        <h2 class="text-[15px] font-medium text-fg mb-3">Tools</h2>
         <div class="flex flex-wrap gap-2">
           <% @agent.enabled_tools.each do |tool| %>
-            <span class="rounded-lg bg-orange-500/10 text-orange-400 px-3 py-1.5 text-[13px] font-medium">
-              <%= tool[:name] || tool["name"] %>
+            <%# enabled_tools keeps whatever was persisted: bare name Strings
+                for native tools, Hashes for configured ones — never assume a Hash. %>
+            <span class="rounded-lg bg-accent/10 text-accent-text px-3 py-1.5 text-[13px] font-medium">
+              <%= tool.is_a?(Hash) ? (tool["name"] || tool[:name]) : tool %>
             </span>
           <% end %>
         </div>
@@ -82,15 +84,15 @@
       <!-- Recent Runs -->
       <% if @runs&.any? %>
         <div class="card">
-          <h2 class="text-[15px] font-medium text-white mb-3">Recent Runs</h2>
+          <h2 class="text-[15px] font-medium text-fg mb-3">Recent Runs</h2>
           <div class="space-y-2">
             <% @runs.each do |run| %>
-              <div class="flex items-center justify-between rounded-lg bg-white/[0.02] px-3 py-2 text-[13px]">
+              <div class="flex items-center justify-between rounded-lg bg-hover px-3 py-2 text-[13px]">
                 <div class="flex items-center gap-3">
                   <%= status_badge(run.status) %>
-                  <span class="text-zinc-300 truncate max-w-[300px]"><%= run.input.dig("query") || "No query" %></span>
+                  <span class="text-fg truncate max-w-[300px]"><%= run.input.dig("query") || "No query" %></span>
                 </div>
-                <div class="flex items-center gap-4 text-zinc-500">
+                <div class="flex items-center gap-4 text-fg-subtle">
                   <span><%= number_with_delimiter(run.tokens_used) %> tokens</span>
                   <span><%= time_ago(run.created_at) %></span>
                 </div>

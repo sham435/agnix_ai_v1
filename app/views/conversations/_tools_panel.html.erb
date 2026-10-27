@@ -16,9 +16,9 @@
   integrations = registry.select { |c| integration_keys.include?(c[:key].to_s) }
 
   state_style = {
-    "enabled" => "text-emerald-400 bg-emerald-500/10 border-emerald-500/20",
-    "needs_authorization" => "text-amber-400 bg-amber-500/10 border-amber-500/20",
-    "disabled" => "text-zinc-500 bg-zinc-500/10 border-zinc-500/20"
+    "enabled" => "text-accent-text bg-accent/10 border-accent/20",
+    "needs_authorization" => "text-amber-600 dark:text-amber-400 bg-amber-500/10 border-amber-500/20",
+    "disabled" => "text-fg-subtle bg-panel border-border"
   }
   state_label = {
     "enabled" => "Ready",
@@ -35,7 +35,7 @@
 %>
 
 <div class="p-4 sm:p-5">
-  <h3 class="text-[11px] font-semibold uppercase tracking-wider text-zinc-500 mb-2">Native tools</h3>
+  <h3 class="text-[11px] font-semibold uppercase tracking-wider text-fg-subtle mb-2">Native tools</h3>
   <ul class="grid grid-cols-1 sm:grid-cols-2 gap-2">
     <% native.each do |cap| %>
       <li>
@@ -55,20 +55,20 @@
                         when "sketch"      then "Draw an SVG sketch of a new-visitor onboarding flow."
                         end
         %>
-        <div class="rounded-xl border border-white/[0.06] bg-white/[0.02] p-3 flex items-start gap-3">
+        <div class="rounded-xl border border-border bg-panel/60 p-3 flex items-start gap-3">
           <div class="flex-1 min-w-0">
             <div class="flex items-center gap-2 min-w-0 flex-wrap">
-              <span class="text-[13px] font-medium text-white truncate"><%= cap[:label] %></span>
+              <span class="text-[13px] font-medium text-fg truncate"><%= cap[:label] %></span>
               <span class="text-[10px] px-1.5 py-0.5 rounded-md border <%= state_style[cap[:state].to_s] %>"><%= state_label[cap[:state].to_s] %></span>
             </div>
-            <p class="text-[12px] text-zinc-500 mt-1 leading-snug"><%= cap[:description] %></p>
+            <p class="text-[12px] text-fg-muted mt-1 leading-snug"><%= cap[:description] %></p>
             <% if cap[:reason].present? && cap[:state].to_s != "enabled" %>
-              <p class="text-[11px] text-amber-400/80 mt-1"><%= cap[:reason] %></p>
+              <p class="text-[11px] text-amber-600 dark:text-amber-400 mt-1"><%= cap[:reason] %></p>
             <% end %>
             <% if actionable && prompt_text %>
               <%= link_to "Try it",
                   conversations_path(prompt: prompt_text),
-                  class: "inline-block mt-2 text-[12px] text-emerald-400 hover:text-emerald-300",
+                  class: "inline-block mt-2 text-[12px] text-accent-text hover:underline",
                   data: { action: "click->tools-panel#pick", turbo_action: "advance" } %>
             <% end %>
           </div>
@@ -77,27 +77,27 @@
     <% end %>
   </ul>
 
-  <h3 class="text-[11px] font-semibold uppercase tracking-wider text-zinc-500 mt-5 mb-2">Integrations</h3>
+  <h3 class="text-[11px] font-semibold uppercase tracking-wider text-fg-subtle mt-5 mb-2">Integrations</h3>
   <ul class="grid grid-cols-1 sm:grid-cols-2 gap-2">
     <% integrations.each do |cap| %>
       <li>
-        <div class="rounded-xl border border-white/[0.06] bg-white/[0.02] p-3">
+        <div class="rounded-xl border border-border bg-panel/60 p-3">
           <div class="flex items-center gap-2 flex-wrap min-w-0">
-            <span class="text-[13px] font-medium text-white truncate"><%= cap[:label] %></span>
+            <span class="text-[13px] font-medium text-fg truncate"><%= cap[:label] %></span>
             <span class="text-[10px] px-1.5 py-0.5 rounded-md border <%= state_style[cap[:state].to_s] %>"><%= state_label[cap[:state].to_s] %></span>
           </div>
-          <p class="text-[12px] text-zinc-500 mt-1 leading-snug"><%= cap[:description] %></p>
+          <p class="text-[12px] text-fg-muted mt-1 leading-snug"><%= cap[:description] %></p>
           <% if cap[:reason].present? %>
-            <p class="text-[11px] text-amber-400/80 mt-1"><%= cap[:reason] %></p>
+            <p class="text-[11px] text-amber-600 dark:text-amber-400 mt-1"><%= cap[:reason] %></p>
           <% end %>
           <div class="mt-2 flex items-center gap-3">
             <%= link_to "Connect",
                 settings_integrations_path,
-                class: "text-[12px] text-emerald-400 hover:text-emerald-300" %>
+                class: "text-[12px] text-accent-text hover:underline" %>
             <% if (url = integration_urls[cap[:key].to_s]) %>
               <%= link_to "#{cap[:label]} site",
                   url,
-                  class: "text-[12px] text-zinc-400 hover:text-zinc-200",
+                  class: "text-[12px] text-fg-muted hover:text-fg",
                   target: "_blank",
                   rel: "noopener noreferrer" %>
             <% end %>

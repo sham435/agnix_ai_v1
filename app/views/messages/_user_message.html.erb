@@ -1,14 +1,58 @@
-<div class="flex gap-4 group/message">
-  <div class="size-8 rounded-full bg-gradient-to-br from-orange-400 to-orange-600 grid place-items-center text-xs font-bold text-black shrink-0 mt-1">
-    U
-  </div>
-  <div class="flex-1 min-w-0">
-    <div class="flex items-baseline gap-2">
-      <span class="text-[13px] font-medium text-white">You</span>
-      <span class="text-[11px] text-zinc-600"><%= message.created_at.strftime("%H:%M") %></span>
+<div class="flex gap-3.5 group/message"
+     data-user-message="<%= message.id %>"
+     data-message-role="user"
+     <% cid = message.metadata.is_a?(Hash) ? message.metadata["client_request_id"] : nil %>
+     <% if cid.present? %>data-client-request-id="<%= cid %>"<% end %>>
+  <div class="flex-1 min-w-0 flex flex-col items-end">
+    <div class="flex items-center gap-2">
+      <span class="text-[13.5px] font-semibold text-fg">You</span>
+      <span class="size-1 rounded-full bg-border"></span>
+      <span class="text-[12px] text-fg-muted"><%= message.created_at.strftime("%H:%M") %></span>
     </div>
-    <div class="mt-1 text-[15px] leading-7 text-zinc-200 whitespace-pre-wrap">
+
+    <%# Attached assets — images render inline, other files as download chips.
+        Session-cookie auth makes /download work in the <img> tag. %>
+    <% attachments = message.message_attachments.with_render_assets %>
+    <% if attachments.any? %>
+      <div class="mt-2 mb-0.5 flex flex-wrap justify-end gap-2 max-w-[85%]">
+        <% attachments.each do |ma| %>
+          <% asset = ma.asset
+             next unless asset %>
+          <% if asset.image? && asset.file.attached? %>
+            <a href="<%= download_api_v1_asset_path(asset) %>" target="_blank" rel="noopener"
+               class="block overflow-hidden rounded-xl border border-border shadow-lg shadow-black/10 hover:border-accent/40 transition"
+               title="<%= asset.filename %>">
+              <img src="<%= download_api_v1_asset_path(asset) %>"
+                   alt="<%= asset.filename %>"
+                   class="max-h-56 max-w-64 object-cover bg-panel" loading="lazy">
+            </a>
+          <% else %>
+            <a href="<%= download_api_v1_asset_path(asset) %>"
+               class="flex items-center gap-2 rounded-lg border border-border bg-elevated px-3 py-2 hover:border-accent/40 transition min-w-0">
+              <span class="shrink-0 text-[13px]"><%= asset.category == "spreadsheet" ? "📊" : "📄" %></span>
+              <span class="min-w-0">
+                <span class="block truncate text-[12.5px] text-fg max-w-56"><%= asset.filename %></span>
+                <span class="block text-[10.5px] text-fg-muted">
+                  <%= number_to_human_size(asset.byte_size) %>
+                  <% extraction = asset.extraction %>
+                  <% if extraction&.completed? %>
+                    · <span class="text-accent-text">Extracted</span><%= " · #{extraction.meta["pages"]} pages" if extraction.meta.is_a?(Hash) && extraction.meta["pages"] %>
+                  <% elsif extraction&.failed? %>
+                    · <span class="text-amber-600 dark:text-amber-400">Couldn't read</span>
+                  <% end %>
+                </span>
+              </span>
+            </a>
+          <% end %>
+        <% end %>
+      </div>
+    <% end %>
+
+    <div class="mt-2 max-w-[85%] rounded-2xl rounded-tr-md bg-elevated border border-border px-4 py-3 text-[16.5px] leading-[1.8] font-[450] tracking-[0.006em] text-fg">
       <%= simple_format message.content, class: "" %>
     </div>
+  </div>
+  <div class="size-8 rounded-full bg-gradient-to-br from-emerald-400 to-emerald-600 grid place-items-center text-[11px] font-bold text-black shrink-0 mt-1 shadow-lg shadow-emerald-950/40">
+    <%= (message.conversation.user&.name || "U").to_s.first.upcase %>
   </div>
 </div>

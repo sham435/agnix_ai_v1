@@ -1,6 +1,6 @@
 <aside class="w-[280px] h-full bg-sidebar border-r border-border flex flex-col">
   <!-- Logo -->
-  <div class="flex items-center gap-3 px-4 h-[64px] border-b border-white/[0.04]">
+  <div class="flex items-center gap-3 px-4 h-[64px] border-b border-border-subtle">
     <div class="relative size-9 grid place-items-center">
       <svg viewBox="0 0 100 100" class="size-9 drop-shadow-[0_0_20px_rgba(255,138,0,0.35)]">
         <defs>
@@ -17,10 +17,10 @@
     </div>
     <div>
       <div class="flex items-baseline gap-2">
-        <span class="font-semibold text-white tracking-tight">Shams</span>
-        <span class="font-arabic text-orange-400/90 text-sm">شمس</span>
+        <span class="font-semibold text-fg tracking-tight">Shams</span>
+        <span class="font-arabic text-accent-text/90 text-sm">شمس</span>
       </div>
-      <div class="text-[11px] text-zinc-500">AgentOS</div>
+      <div class="text-[11px] text-fg-subtle">AgentOS</div>
     </div>
   </div>
 
@@ -36,7 +36,7 @@
   <!-- Conversations -->
   <nav class="flex-1 overflow-y-auto px-2 space-y-0.5">
     <% conversations.each do |conv| %>
-      <%= link_to conversation_path(conv), class: "flex items-center gap-2 rounded-lg px-3 py-2 text-[13px] text-zinc-400 hover:bg-white/[0.03] hover:text-zinc-200 truncate" do %>
+      <%= link_to conversation_path(conv), class: "flex items-center gap-2 rounded-lg px-3 py-2 text-[13px] text-fg-muted hover:bg-hover hover:text-fg truncate" do %>
         <svg class="size-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
         <span class="truncate"><%= conv.title || "Untitled" %></span>
       <% end %>
@@ -44,14 +44,14 @@
   </nav>
 
   <!-- User -->
-  <div class="p-3 border-t border-white/[0.04]">
-    <div class="flex items-center gap-3 rounded-2xl bg-white/[0.03] p-2.5">
-      <div class="size-9 rounded-full bg-gradient-to-br from-orange-400 to-orange-600 grid place-items-center text-sm font-bold text-black">
+  <div class="p-3 border-t border-border-subtle">
+    <div class="flex items-center gap-3 rounded-2xl bg-hover p-2.5">
+      <div class="size-9 rounded-full bg-gradient-to-br from-emerald-400 to-emerald-600 grid place-items-center text-sm font-bold text-black">
         <%= user.name.to_s.first.upcase %>
       </div>
       <div class="min-w-0 flex-1">
-        <div class="text-[13px] font-medium text-white truncate"><%= user.name %></div>
-        <div class="text-[11px] text-zinc-500 truncate"><%= user.email %></div>
+        <div class="text-[13px] font-medium text-fg truncate"><%= user.name %></div>
+        <div class="text-[11px] text-fg-subtle truncate"><%= user.email %></div>
       </div>
     </div>
   </div>

@@ -1,4 +1,4 @@
-<div class="flex min-h-screen items-center justify-center bg-gradient-to-b from-[#0a0a0c] to-[#050507] px-4">
+<div class="flex min-h-screen items-center justify-center bg-gradient-to-b from-canvas to-panel px-4">
   <div class="w-full max-w-md">
     <!-- Logo -->
     <div class="text-center mb-8">
@@ -15,15 +15,15 @@
           </g>
         </svg>
       </div>
-      <h1 class="text-2xl font-semibold text-white">Shams <span class="font-arabic text-orange-400">شمس</span></h1>
-      <p class="text-zinc-500 text-sm mt-1">Sign in to AgentOS</p>
+      <h1 class="text-2xl font-semibold text-fg">Shams <span class="font-arabic text-accent-text">شمس</span></h1>
+      <p class="text-fg-subtle text-sm mt-1">Sign in to AgentOS</p>
     </div>
 
     <!-- Login Form -->
     <div class="card">
       <%= form_with url: login_path, method: :post, class: "space-y-4" do |f| %>
         <div>
-          <label class="block text-[13px] font-medium text-zinc-300 mb-1">Email</label>
+          <label class="block text-[13px] font-medium text-fg mb-1">Email</label>
           <%= f.email_field :email,
             value: params[:email],
             placeholder: "you@example.com",
@@ -33,7 +33,7 @@
         </div>
 
         <div>
-          <label class="block text-[13px] font-medium text-zinc-300 mb-1">Password</label>
+          <label class="block text-[13px] font-medium text-fg mb-1">Password</label>
           <%= f.password_field :password,
             placeholder: "••••••••",
             class: "input-field",
@@ -46,8 +46,8 @@
       <!-- OAuth -->
       <div class="mt-6">
         <div class="relative">
-          <div class="absolute inset-0 flex items-center"><div class="w-full border-t border-white/[0.06]"></div></div>
-          <div class="relative flex justify-center text-[12px]"><span class="px-2 text-zinc-600 bg-panel">or continue with</span></div>
+          <div class="absolute inset-0 flex items-center"><div class="w-full border-t border-border-subtle"></div></div>
+          <div class="relative flex justify-center text-[12px]"><span class="px-2 text-fg-subtle bg-panel">or continue with</span></div>
         </div>
 
         <div class="mt-4 grid grid-cols-2 gap-3">
@@ -63,7 +63,7 @@
       </div>
     </div>
 
-    <p class="text-center text-[13px] text-zinc-600 mt-6">
+    <p class="text-center text-[13px] text-fg-subtle mt-6">
       Don't have an account? Contact your organization admin.
     </p>
   </div>

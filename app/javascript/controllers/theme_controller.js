@@ -27,14 +27,15 @@ export default class extends Controller {
     this.sync()
   }
 
-  // localStorage (per-device) -> server hint -> OS preference.
+  // localStorage (per-device) -> explicit server preference -> null (stay dark).
+  // No OS hint: the chat app is refined-dark by default and only an explicit
+  // user choice selects the light theme (mirrors the head script exactly).
   resolveStored() {
     let stored = null
     try { stored = localStorage.getItem(STORAGE_KEY) } catch (_e) { /* private mode */ }
     if (VALID.includes(stored)) return stored
     const server = document.documentElement.getAttribute("data-server-theme")
     if (VALID.includes(server)) return server
-    if (window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches) return "light"
     return null
   }
 
@@ -77,7 +78,7 @@ export default class extends Controller {
 
   updateMetaThemeColor(theme) {
     const meta = document.querySelector('meta[name="theme-color"]')
-    if (meta) meta.setAttribute("content", theme === "light" ? "#ffffff" : "#050505")
+    if (meta) meta.setAttribute("content", theme === "light" ? "#ffffff" : "#0b0d10")
   }
 
   async saveToServer(theme) {

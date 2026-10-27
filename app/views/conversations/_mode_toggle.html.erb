@@ -1,5 +1,5 @@
 <div id="mode_toggle" class="flex items-center gap-2 min-w-0" role="group" aria-label="Conversation mode">
-  <div class="flex items-center bg-white/[0.04] rounded-full p-1 border border-white/[0.06] min-w-0 max-w-full overflow-x-auto">
+  <div class="flex items-center bg-panel rounded-full p-1 border border-border min-w-0 max-w-full overflow-x-auto">
     <% modes = [
       ["", "Chat", "Standard question-and-answer — no plan or build step"],
       ["manual_plan", "Manual Plan", "Agent proposes a plan and waits for your approval before executing"],
@@ -13,7 +13,7 @@
           conversation_path(@conversation, conversation: { mode: key }),
           method: :patch,
           form: { data: { turbo_stream: true } },
-          class: "px-3 py-1.5 text-[13px] rounded-full transition whitespace-nowrap #{active ? 'bg-emerald-500/20 text-emerald-300' : 'text-zinc-400 hover:text-zinc-200'}",
+          class: "px-3 py-1.5 text-[13px] rounded-full transition whitespace-nowrap #{active ? 'bg-accent/20 text-accent-text' : 'text-fg-muted hover:text-fg'}",
           "aria-pressed": active.to_s,
           "data-mode": key,
           title: hint %>
@@ -22,7 +22,7 @@
 
   <%= button_to stop_conversation_path(@conversation),
       method: :post,
-      class: "size-9 shrink-0 grid place-items-center rounded-full bg-red-500/20 hover:bg-red-500/30 text-red-400 transition",
+      class: "size-9 shrink-0 grid place-items-center rounded-full bg-red-500/15 hover:bg-red-500/25 text-red-600 dark:text-red-400 transition",
       title: "Interrupt current run",
       form: { data: { turbo_stream: true } } do %>
     <svg class="size-4" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="1"/></svg>

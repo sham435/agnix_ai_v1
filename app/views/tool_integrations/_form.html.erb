@@ -1,10 +1,10 @@
 <%= render "layouts/chat_layout" do %>
-  <header class="sticky top-0 z-20 flex h-[64px] items-center justify-between gap-3 border-b border-white/[0.06] bg-[#080809]/80 glass px-4">
-    <%= link_to tool_integrations_path, class: "flex items-center gap-2 text-zinc-400 hover:text-zinc-200 transition" do %>
+  <header class="sticky top-0 z-20 flex h-[64px] items-center justify-between gap-3 border-b border-border-subtle bg-sidebar/80 glass px-4">
+    <%= link_to tool_integrations_path, class: "flex items-center gap-2 text-fg-muted hover:text-fg transition" do %>
       <svg class="size-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m15 18-6-6 6-6"/></svg>
       <span class="text-[14px]">Back</span>
     <% end %>
-    <h1 class="text-[16px] font-semibold text-white"><%= integration.persisted? ? "Edit Integration" : "New Integration" %></h1>
+    <h1 class="text-[16px] font-semibold text-fg"><%= integration.persisted? ? "Edit Integration" : "New Integration" %></h1>
     <div></div>
   </header>
 
@@ -13,30 +13,30 @@
       <div class="card">
         <%= form_with model: integration, class: "space-y-4" do |f| %>
           <% if integration.errors.any? %>
-            <div class="rounded-lg bg-red-500/10 border border-red-500/20 p-3 text-[13px] text-red-300">
+            <div class="rounded-lg bg-red-500/10 border border-red-500/20 p-3 text-[13px] text-red-700 dark:text-red-300">
               <%= integration.errors.full_messages.to_sentence %>
             </div>
           <% end %>
           <div class="grid grid-cols-2 gap-4">
             <div>
-              <label class="block text-[13px] font-medium text-zinc-300 mb-1">Name</label>
+              <label class="block text-[13px] font-medium text-fg mb-1">Name</label>
               <%= f.text_field :name, placeholder: "My Stripe", class: "input-field", required: true %>
             </div>
             <div>
-              <label class="block text-[13px] font-medium text-zinc-300 mb-1">Provider</label>
+              <label class="block text-[13px] font-medium text-fg mb-1">Provider</label>
               <%= f.select :provider, @available_providers.map { |p| [p.titleize, p] }, {}, class: "input-field" %>
             </div>
           </div>
           <div>
-            <label class="block text-[13px] font-medium text-zinc-300 mb-1">API Key</label>
+            <label class="block text-[13px] font-medium text-fg mb-1">API Key</label>
             <%= password_field_tag "tool_integration[credentials][api_key]", integration.credentials.is_a?(Hash) ? integration.credentials["api_key"] : nil, placeholder: "sk-...", class: "input-field font-mono" %>
           </div>
           <div>
-            <label class="block text-[13px] font-medium text-zinc-300 mb-1">Webhook Secret</label>
+            <label class="block text-[13px] font-medium text-fg mb-1">Webhook Secret</label>
             <%= password_field_tag "tool_integration[credentials][webhook_secret]", integration.credentials.is_a?(Hash) ? integration.credentials["webhook_secret"] : nil, placeholder: "whsec_...", class: "input-field font-mono" %>
           </div>
-          <label class="flex items-center gap-2 text-[13px] text-zinc-300">
-            <%= f.check_box :is_active, class: "rounded border-zinc-600 bg-white/[0.04] text-emerald-500" %>
+          <label class="flex items-center gap-2 text-[13px] text-fg">
+            <%= f.check_box :is_active, class: "rounded border-border bg-hover text-accent-text" %>
             Enabled
           </label>
           <div class="flex items-center justify-end gap-3 pt-2">

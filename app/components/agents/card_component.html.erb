@@ -1,27 +1,27 @@
-<div id="agent-card-<%= agent.slug %>" class="group rounded-2xl border border-white/[0.06] bg-gradient-to-b from-white/[0.04] to-transparent p-4 hover:border-emerald-500/30 transition">
+<div id="agent-card-<%= agent.slug %>" class="group rounded-2xl border border-border-subtle bg-panel p-4 hover:border-accent/40 transition">
   <div class="flex items-start justify-between">
     <div class="flex items-center gap-3">
-      <div class="size-10 rounded-xl bg-emerald-500/10 text-emerald-400 grid place-items-center">
+      <div class="size-10 rounded-xl bg-accent/10 text-accent-text grid place-items-center">
         <svg class="size-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
           <%= raw icon_path %>
         </svg>
       </div>
       <div>
-        <h3 class="font-medium text-white"><%= agent.name %></h3>
-        <p class="text-[13px] text-zinc-500"><%= agent.provider.titleize %> • <%= agent.model %></p>
+        <h3 class="font-medium text-fg"><%= agent.name %></h3>
+        <p class="text-[13px] text-fg-subtle"><%= agent.provider.titleize %> • <%= agent.model %></p>
       </div>
     </div>
     <%= helpers.status_badge(agent.is_active ? "active" : "inactive") %>
   </div>
 
   <% if agent.description.present? %>
-    <p class="mt-3 text-[13px] text-zinc-400 line-clamp-2"><%= agent.description %></p>
+    <p class="mt-3 text-[13px] text-fg-muted line-clamp-2"><%= agent.description %></p>
   <% end %>
 
   <% if agent.tools.any? %>
     <div class="flex flex-wrap gap-1 mt-3">
       <% agent.enabled_tools.each do |tool| %>
-        <span class="text-[11px] px-2 py-0.5 rounded-full bg-white/[0.06] text-zinc-400">
+        <span class="text-[11px] px-2 py-0.5 rounded-full bg-hover text-fg-muted">
           <%= tool.is_a?(Hash) ? (tool["name"] || tool[:name]) : tool %>
         </span>
       <% end %>
@@ -31,23 +31,23 @@
   <% if explore_mode? %>
     <%# Phase 5 Explore launcher: Start chat POSTs through InstantiateTemplate
         + StartChat; Customize pre-fills the agent form with this template. %>
-    <div class="flex items-center gap-2 mt-4 pt-3 border-t border-white/[0.04]">
+    <div class="flex items-center gap-2 mt-4 pt-3 border-t border-border-subtle">
       <%= button_to "Start chat", start_path, method: :post,
-            class: "rounded-xl bg-emerald-500/15 px-3 py-1.5 text-[13px] font-medium text-emerald-400 transition hover:bg-emerald-500/25" %>
+            class: "rounded-xl bg-accent/10 px-3 py-1.5 text-[13px] font-medium text-accent-text transition hover:bg-accent/20" %>
       <% if customize_path %>
         <%= link_to "Customize", customize_path,
-              class: "text-[13px] text-zinc-500 hover:text-zinc-300" %>
+              class: "text-[13px] text-fg-subtle hover:text-fg" %>
       <% end %>
       <% if installed? %>
-        <span class="ml-auto text-[11px] text-emerald-400/70" title="This template is already one of your agents">In your workspace</span>
+        <span class="ml-auto text-[11px] text-accent-text" title="This template is already one of your agents">In your workspace</span>
       <% end %>
     </div>
   <% elsif show_actions %>
-    <div class="flex items-center gap-2 mt-4 pt-3 border-t border-white/[0.04]">
-      <%= link_to agent_path(agent), class: "text-[13px] text-emerald-400 hover:text-emerald-300" do %>
+    <div class="flex items-center gap-2 mt-4 pt-3 border-t border-border-subtle">
+      <%= link_to agent_path(agent), class: "text-[13px] text-accent-text hover:underline" do %>
         Open
       <% end %>
-      <%= link_to edit_agent_path(agent), class: "text-[13px] text-zinc-500 hover:text-zinc-300" do %>
+      <%= link_to edit_agent_path(agent), class: "text-[13px] text-fg-subtle hover:text-fg" do %>
         Edit
       <% end %>
     </div>

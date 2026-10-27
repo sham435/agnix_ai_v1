@@ -33,7 +33,7 @@
       <div class="sidebar-label min-w-0">
         <div class="flex items-baseline gap-2">
           <span class="font-semibold text-fg tracking-tight">Shams</span>
-          <span class="font-arabic text-accent text-sm font-medium">شمس</span>
+          <span class="font-arabic text-accent-text text-sm font-medium">شمس</span>
         </div>
         <div class="text-[11px] -mt-0.5 text-fg-subtle font-medium tracking-wide">AgentOS · Rails <%= Rails::VERSION::STRING[0, 4] %></div>
       </div>
@@ -85,10 +85,10 @@
           </span>
           <span class="sidebar-label"><%= item[:label] %></span>
           <% if item[:href] == "/scheduled" && (sc = current_user.active_scheduled_task_count).to_i.positive? %>
-            <span class="sidebar-label ml-auto grid min-w-5 place-items-center rounded-full bg-accent/20 px-1.5 py-0.5 text-[11px] font-semibold text-accent" title="<%= sc %> active scheduled task(s)"><%= sc %></span>
+            <span class="sidebar-label ml-auto grid min-w-5 place-items-center rounded-full bg-accent/20 px-1.5 py-0.5 text-[11px] font-semibold text-accent-text" title="<%= sc %> active scheduled task(s)"><%= sc %></span>
           <% end %>
           <% if item[:href] == "/images" && (ic = current_user.recent_image_generation_count).to_i.positive? %>
-            <span class="sidebar-label ml-auto grid min-w-5 place-items-center rounded-full bg-accent/20 px-1.5 py-0.5 text-[11px] font-semibold text-accent" title="<%= ic %> recent image(s) this week"><%= ic %></span>
+            <span class="sidebar-label ml-auto grid min-w-5 place-items-center rounded-full bg-accent/20 px-1.5 py-0.5 text-[11px] font-semibold text-accent-text" title="<%= ic %> recent image(s) this week"><%= ic %></span>
           <% end %>
           <span class="sidebar-tip" aria-hidden="true"><%= item[:label] %></span>
         <% end %>

@@ -6,17 +6,17 @@
 module ScheduledTasksHelper
   STATUS_CHIP_CLASSES = {
     "active"    => "bg-accent/15 text-accent border-accent/30",
-    "paused"    => "bg-amber-500/15 text-amber-500 border-amber-500/30",
-    "completed" => "bg-sky-500/15 text-sky-500 border-sky-500/30",
-    "failed"    => "bg-red-500/15 text-red-500 border-red-500/30",
+    "paused"    => "bg-amber-500/15 text-amber-700 dark:text-amber-500 border-amber-500/30",
+    "completed" => "bg-sky-500/15 text-sky-700 dark:text-sky-500 border-sky-500/30",
+    "failed"    => "bg-red-500/15 text-red-700 dark:text-red-500 border-red-500/30",
     "cancelled" => "bg-zinc-500/15 text-fg-muted border-zinc-500/30"
   }.freeze
 
   RUN_CHIP_CLASSES = {
     "queued"    => "bg-zinc-500/15 text-fg-muted",
     "running"   => "bg-accent/15 text-accent",
-    "succeeded" => "bg-emerald-500/15 text-emerald-500",
-    "failed"    => "bg-red-500/15 text-red-500"
+    "succeeded" => "bg-accent/15 text-accent-text",
+    "failed"    => "bg-red-500/15 text-red-700 dark:text-red-500"
   }.freeze
 
   def scheduled_status_chip(task)

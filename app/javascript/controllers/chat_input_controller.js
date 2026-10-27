@@ -394,7 +394,7 @@ export default class extends Controller {
       <div class="flex gap-3.5">
         <div class="shrink-0 mt-1">
           <div class="size-8 rounded-xl bg-gradient-to-br from-emerald-500/25 to-emerald-700/15 border border-emerald-500/25 grid place-items-center shadow-lg shadow-emerald-950/30">
-            <svg class="size-4 text-emerald-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3"/><path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83"/></svg>
+            <svg class="size-4 text-accent-text" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3"/><path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83"/></svg>
           </div>
         </div>
         <div class="flex-1 min-w-0">
@@ -411,7 +411,7 @@ export default class extends Controller {
               </button>
               <ol class="execution-trace__log" data-execution-trace-target="log" hidden></ol>
             </div>
-            <div class="mt-2 text-zinc-100 whitespace-pre-wrap break-words text-[16.5px] leading-[1.8] font-[450] tracking-[0.006em]"
+            <div class="mt-2 text-fg whitespace-pre-wrap break-words text-[16.5px] leading-[1.8] font-[450] tracking-[0.006em]"
                  data-streaming-content="pending-${clientRequestId}"></div>
           </div>
         </div>
@@ -486,19 +486,19 @@ export default class extends Controller {
     const nameRing = (document.querySelector("meta[name='current-user-initial']")?.content || "U").slice(0, 1).toUpperCase()
     const chipsHtml = attachmentNames.length
       ? `<div class="mt-2 mb-0.5 flex flex-wrap justify-end gap-2 max-w-[85%]">
-           ${attachmentNames.map((n) => `<span class="inline-flex items-center gap-1.5 rounded-lg border border-white/[0.06] bg-white/[0.03] px-2 py-1 text-[11.5px] text-zinc-300">${escapeHtml(n)}</span>`).join("")}
+           ${attachmentNames.map((n) => `<span class="inline-flex items-center gap-1.5 rounded-lg border border-border bg-panel px-2 py-1 text-[11.5px] text-fg-muted">${escapeHtml(n)}</span>`).join("")}
          </div>`
       : ""
 
     bubble.innerHTML = `
       <div class="flex-1 min-w-0 flex flex-col items-end">
         <div class="flex items-center gap-2">
-          <span class="text-[13px] font-semibold text-zinc-300">You</span>
-          <span class="size-1 rounded-full bg-zinc-700"></span>
-          <span class="text-[11px] text-zinc-500" data-optimistic-time>just now</span>
+          <span class="text-[13px] font-semibold text-fg">You</span>
+          <span class="size-1 rounded-full bg-border"></span>
+          <span class="text-[11px] text-fg-muted" data-optimistic-time>just now</span>
         </div>
         ${chipsHtml}
-        <div class="mt-2 max-w-[85%] rounded-2xl rounded-tr-md bg-gradient-to-b from-zinc-800/90 to-zinc-800/60 border border-zinc-700/40 px-4 py-3 text-[15px] leading-[1.75] text-zinc-100 shadow-lg shadow-black/20 whitespace-pre-wrap break-words" data-optimistic-body></div>
+        <div class="mt-2 max-w-[85%] rounded-2xl rounded-tr-md bg-elevated border border-border px-4 py-3 text-[15px] leading-[1.75] text-fg whitespace-pre-wrap break-words" data-optimistic-body></div>
       </div>
       <div class="size-8 rounded-full bg-gradient-to-br from-emerald-400 to-emerald-600 grid place-items-center text-[11px] font-bold text-black shrink-0 mt-1 shadow-lg shadow-emerald-950/40">${escapeHtml(nameRing)}</div>
     `
@@ -673,14 +673,14 @@ export default class extends Controller {
   async loadLibrary() {
     if (!this.hasLibraryItemsTarget) return
     this.libraryItemsTarget.textContent = ""
-    this.libraryItemsTarget.innerHTML = '<div class="px-3 py-4 text-[12px] text-zinc-500">Loading…</div>'
+    this.libraryItemsTarget.innerHTML = '<div class="px-3 py-4 text-[12px] text-fg-muted">Loading…</div>'
     try {
       const q = this._libraryQuery ? `?q=${encodeURIComponent(this._libraryQuery)}` : ""
       const res = await fetch(`/api/v1/library${q}`, { headers: { Accept: "application/json" } })
       const items = res.ok ? (await res.json()).items || [] : []
       this.renderLibrary(items)
     } catch (_e) {
-      this.libraryItemsTarget.innerHTML = '<div class="px-3 py-4 text-[12px] text-red-400">Couldn\'t load library — try again.</div>'
+      this.libraryItemsTarget.innerHTML = '<div class="px-3 py-4 text-[12px] text-red-600 dark:text-red-400">Couldn\'t load library — try again.</div>'
     }
   }
 
@@ -713,16 +713,16 @@ export default class extends Controller {
       const st = item.extraction_status
       const badge = `<span data-lib-status-for="${escapeHtml(item.asset_id)}" class="${libStatusClass(st)}">${libStatusText(st)}</span>`
       return `
-      <div class="flex items-center gap-2 px-2 py-2 rounded-lg hover:bg-white/[0.05] border-b border-white/[0.04] transition">
-        <span data-library-icon="${escapeHtml(item.category || "")}" class="text-zinc-400 text-[13px] shrink-0">${libraryIcon(item.category)}</span>
+      <div class="flex items-center gap-2 px-2 py-2 rounded-lg hover:bg-hover border-b border-border transition">
+        <span data-library-icon="${escapeHtml(item.category || "")}" class="text-fg-muted text-[13px] shrink-0">${libraryIcon(item.category)}</span>
         <span class="min-w-0 flex-1">
-          <span class="block truncate text-[13px] text-zinc-200">${escapeHtml(item.label || "file")}</span>
-          <span class="block text-[10.5px] text-zinc-600">${formatBytes(item.byte_size || 0)} · ${badge}</span>
+          <span class="block truncate text-[13px] text-fg">${escapeHtml(item.label || "file")}</span>
+          <span class="block text-[10.5px] text-fg-subtle">${formatBytes(item.byte_size || 0)} · ${badge}</span>
         </span>
         <button type="button" title="Preview" aria-label="Preview"
           data-preview-id="${escapeHtml(item.asset_id)}"
           data-preview-label="${escapeHtml(item.label || "file")}"
-          class="grid size-7 place-items-center rounded-md text-zinc-500 hover:text-zinc-100 hover:bg-white/[0.07] transition shrink-0">
+          class="grid size-7 place-items-center rounded-md text-fg-subtle hover:text-fg hover:bg-hover transition shrink-0">
           <svg class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7S1 12 1 12z"/><circle cx="12" cy="12" r="3"/></svg>
         </button>
         <button type="button"
@@ -730,7 +730,7 @@ export default class extends Controller {
           data-label="${escapeHtml(item.label || "")}"
           data-size="${item.byte_size || 0}"
           data-category="${escapeHtml(item.category || "")}"
-          class="px-2.5 py-1 rounded-md text-[11.5px] font-medium bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25 border border-emerald-500/25 transition shrink-0">
+          class="px-2.5 py-1 rounded-md text-[11.5px] font-medium bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-500/25 border border-emerald-500/25 transition shrink-0">
           Add
         </button>
       </div>`
@@ -774,7 +774,7 @@ export default class extends Controller {
 
     this.libraryPreviewTarget.classList.remove("hidden")
     if (this.hasLibraryPreviewTitleTarget) this.libraryPreviewTitleTarget.textContent = button.dataset.previewLabel || "Preview"
-    if (this.hasLibraryPreviewBodyTarget) this.libraryPreviewBodyTarget.innerHTML = '<div class="text-[12px] text-zinc-500">Loading…</div>'
+    if (this.hasLibraryPreviewBodyTarget) this.libraryPreviewBodyTarget.innerHTML = '<div class="text-[12px] text-fg-muted">Loading…</div>'
 
     try {
       const res = await fetch(`/api/v1/assets/${encodeURIComponent(assetId)}/preview`, { headers: { Accept: "application/json" } })
@@ -783,7 +783,7 @@ export default class extends Controller {
       if (this._previewAssetId !== assetId) return
       this.renderPreview(await res.json())
     } catch (_e) {
-      if (this.hasLibraryPreviewBodyTarget) this.libraryPreviewBodyTarget.innerHTML = '<div class="text-[12px] text-red-400">Couldn\'t load preview.</div>'
+      if (this.hasLibraryPreviewBodyTarget) this.libraryPreviewBodyTarget.innerHTML = '<div class="text-[12px] text-red-600 dark:text-red-400">Couldn\'t load preview.</div>'
     }
   }
 
@@ -799,32 +799,32 @@ export default class extends Controller {
       const img = document.createElement("img")
       img.src = a.download_url
       img.alt = a.filename || ""
-      img.className = "max-h-40 w-auto rounded-lg border border-white/10"
+      img.className = "max-h-40 w-auto rounded-lg border border-border"
       body.appendChild(img)
       return
     }
 
     if (["pending", "processing"].includes(x.status)) {
-      body.innerHTML = '<div class="text-[12px] text-amber-300/90">Extracting text… this preview updates once it\'s ready.</div>'
+      body.innerHTML = '<div class="text-[12px] text-amber-700 dark:text-amber-300/90">Extracting text… this preview updates once it\'s ready.</div>'
       return
     }
     if (x.status === "failed") {
-      body.innerHTML = `<div class="text-[12px] text-amber-400/90">${escapeHtml(friendlyExtractionError(x.error_code))}</div>`
+      body.innerHTML = `<div class="text-[12px] text-amber-600 dark:text-amber-400/90">${escapeHtml(friendlyExtractionError(x.error_code))}</div>`
       return
     }
 
     const text = (x.preview || "").trim()
     if (!text) {
-      body.innerHTML = '<div class="text-[12px] text-zinc-500">No text preview available.</div>'
+      body.innerHTML = '<div class="text-[12px] text-fg-muted">No text preview available.</div>'
       return
     }
     const pre = document.createElement("pre")
-    pre.className = "whitespace-pre-wrap break-words text-[11.5px] leading-relaxed text-zinc-300 max-h-40 overflow-auto"
+    pre.className = "whitespace-pre-wrap break-words text-[11.5px] leading-relaxed text-fg-muted max-h-40 overflow-auto"
     pre.textContent = text
     body.appendChild(pre)
     if (x.truncated) {
       const note = document.createElement("div")
-      note.className = "mt-1.5 text-[10.5px] text-zinc-600"
+      note.className = "mt-1.5 text-[10.5px] text-fg-subtle"
       note.textContent = "Showing a preview of the extracted text."
       body.appendChild(note)
     }
@@ -971,23 +971,23 @@ export default class extends Controller {
 
     let state = ""
     if (a.status === "uploading") {
-      state = `<div class="h-1 w-full rounded-full bg-white/[0.08] overflow-hidden"><div class="h-full bg-emerald-500/80" style="width:${a.progress || 0}%"></div></div>`
+      state = `<div class="h-1 w-full rounded-full bg-border overflow-hidden"><div class="h-full bg-emerald-500/80" style="width:${a.progress || 0}%"></div></div>`
     } else if (a.status === "error") {
-      state = `<span class="text-[10px] text-red-400">${friendlyUploadError(a.error)}</span>`
+      state = `<span class="text-[10px] text-red-600 dark:text-red-400">${friendlyUploadError(a.error)}</span>`
     } else if (a.extractionStatus === "failed") {
-      state = `<span class="text-[10px] text-amber-400/90">${friendlyExtractionError(a.extractionError)}</span>`
+      state = `<span class="text-[10px] text-amber-600 dark:text-amber-400/90">${friendlyExtractionError(a.extractionError)}</span>`
     }
 
     return `
-      <div class="flex items-center gap-2 rounded-lg border border-white/[0.07] bg-white/[0.03] px-2 py-1.5">
+      <div class="flex items-center gap-2 rounded-lg border border-border bg-panel px-2 py-1.5">
         ${hidden}
-        <span class="text-zinc-400 text-[13px] shrink-0">${libraryIcon(a.status === "error" ? "" : "*", true)}</span>
+        <span class="text-fg-muted text-[13px] shrink-0">${libraryIcon(a.status === "error" ? "" : "*", true)}</span>
         <span class="min-w-0 flex-1">
-          <span class="block truncate text-[12px] text-zinc-200">${escapeHtml(a.name || "file")}</span>
+          <span class="block truncate text-[12px] text-fg">${escapeHtml(a.name || "file")}</span>
           ${state}
         </span>
         <button type="button" data-key="${key}" data-action="chat-input#remove"
-          class="grid size-5 place-items-center rounded text-zinc-500 hover:text-zinc-200 hover:bg-white/[0.06] transition shrink-0"
+          class="grid size-5 place-items-center rounded text-fg-subtle hover:text-fg hover:bg-hover transition shrink-0"
           title="Remove">✕</button>
       </div>`
   }
@@ -1159,12 +1159,12 @@ function libStatusClass(status) {
   switch (status) {
     case "pending":
     case "processing":
-      return `${base} text-amber-400/90`
+      return `${base} text-amber-600 dark:text-amber-400/90`
     case "failed":
     case "canceled":
-      return `${base} text-red-400/90`
+      return `${base} text-red-600 dark:text-red-400/90`
     default:
-      return `${base} text-emerald-400/80`
+      return `${base} text-emerald-600 dark:text-emerald-400/80`
   }
 }
 

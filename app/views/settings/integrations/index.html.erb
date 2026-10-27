@@ -1,43 +1,116 @@
 <%= render "layouts/chat_layout" do %>
-  <header class="sticky top-0 z-20 flex h-[64px] items-center justify-between gap-3 border-b border-white/[0.06] bg-[#080809]/80 glass px-4">
-    <div class="flex items-center gap-2">
-      <button id="menuBtn" class="lg:hidden grid size-9 place-items-center rounded-xl bg-white/[0.04] hover:bg-white/[0.08] text-zinc-300">
+  <header class="sticky top-0 z-20 flex h-[64px] items-center justify-between gap-3 border-b border-border-subtle bg-sidebar/80 glass px-4">
+    <div class="flex items-center gap-2 min-w-0">
+      <button id="menuBtn" class="lg:hidden grid size-9 place-items-center rounded-xl bg-panel hover:bg-hover text-fg">
         <svg class="size-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
       </button>
-      <h1 class="text-[16px] font-semibold text-white">Integrations</h1>
+      <h1 class="text-[16px] font-semibold text-fg truncate">Integrations</h1>
+      <span class="hidden text-[12px] text-fg-subtle sm:inline">
+        · <%= @model_integrations.values.count(&:is_active?) + @plugins.count { |plugin| @integration_by_provider[plugin[:key]]&.is_active? } %> active
+      </span>
     </div>
+    <%= link_to new_tool_integration_path, class: "btn-primary text-[13px]" do %>
+      Manual setup
+    <% end %>
   </header>
 
   <main class="flex-1 overflow-y-auto p-6">
-    <div class="mx-auto max-w-[700px]">
-      <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <% @available_providers.each do |provider| %>
-          <% integration = @integrations.find_by(provider: provider) %>
-          <div class="card">
-            <div class="flex items-start justify-between">
-              <div class="flex items-center gap-3">
-                <div class="size-10 rounded-xl bg-white/[0.06] grid place-items-center text-zinc-400">
-                  <svg class="size-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
-                </div>
-                <div>
-                  <h3 class="font-medium text-white capitalize"><%= provider %></h3>
-                  <% if integration %>
-                    <p class="text-[12px] text-zinc-500">
-                      <%= integration.is_active ? "Active" : "Inactive" %>
-                      <% if integration.last_used_at %>
-                        • Last used <%= time_ago(integration.last_used_at) %>
-                      <% end %>
-                    </p>
+    <div class="mx-auto max-w-[900px] space-y-8">
+      <%# ── Model provider keys ─────────────────────────────────────────────
+          The credential an agent actually uses. Agent#api_key checks the
+          active organization integration FIRST, then Rails credentials, then
+          ENV — so saving a key here overrides a dead server key without a
+          redeploy. Secrets are never echoed back: only a last-4 fingerprint. %>
+      <section class="card">
+        <h2 class="text-[15px] font-medium text-fg mb-1">Model provider keys</h2>
+        <p class="text-[12.5px] leading-5 text-fg-muted mb-4">
+          Stored encrypted for <span class="font-medium text-fg"><%= current_organization.name %></span>.
+          An active organization key takes precedence over the server environment for these providers.
+        </p>
+
+        <div class="divide-y divide-border-subtle">
+          <% @model_providers.each do |provider| %>
+            <% integration = @model_integrations[provider[:key]] %>
+            <div id="provider-key-row-<%= provider[:key] %>" class="flex flex-wrap items-center justify-between gap-x-4 gap-y-3 py-4 first:pt-0 last:pb-0">
+              <div class="min-w-0 flex-1">
+                <div class="flex flex-wrap items-center gap-2">
+                  <h3 class="text-[14px] font-medium text-fg capitalize"><%= provider[:key] %></h3>
+                  <% if integration&.is_active? %>
+                    <span class="rounded-full bg-accent/10 px-2.5 py-1 text-[11px] font-semibold text-accent-text">Active</span>
+                  <% elsif integration %>
+                    <span class="rounded-full bg-hover px-2.5 py-1 text-[11px] font-semibold text-fg-subtle">Inactive</span>
                   <% else %>
-                    <p class="text-[12px] text-zinc-600">Not configured</p>
+                    <span class="rounded-full bg-hover px-2.5 py-1 text-[11px] font-semibold text-fg-subtle">Not configured</span>
                   <% end %>
                 </div>
+                <p class="mt-1 text-[12px] text-fg-subtle">
+                  <%= key_source_label(provider[:key], integration) %>
+                  <% if (fingerprint = key_fingerprint(integration)) %>
+                    · <%= fingerprint %>
+                  <% end %>
+                  · <%= provider[:models].size %> model<%= "s" unless provider[:models].size == 1 %>
+                </p>
               </div>
-              <%= status_badge(integration&.is_active ? "active" : "inactive") %>
+
+              <div class="flex flex-wrap items-center gap-2">
+                <% if integration %>
+                  <%= button_to integration.is_active? ? "Disable" : "Enable",
+                        toggle_tool_integration_path(integration), method: :post,
+                        class: "rounded-lg #{integration.is_active? ? 'bg-hover text-fg-muted hover:text-fg' : 'bg-accent/10 text-accent-text hover:bg-accent/20'} px-3 py-1.5 text-[12px] font-medium transition" %>
+                <% end %>
+                <%= form_with url: settings_integrations_keys_path, method: :post, class: "flex items-center gap-2" do %>
+                  <%= hidden_field_tag :provider, provider[:key] %>
+                  <%= password_field_tag :api_key, nil,
+                        placeholder: integration&.is_active? ? "Replace key" : "Paste API key",
+                        autocomplete: "new-password",
+                        class: "input-field w-40 sm:w-52 text-[12px] font-mono",
+                        "aria-label": "#{provider[:key].titleize} API key" %>
+                  <%= submit_tag "Save key", class: "btn-secondary border border-border text-[12px]" %>
+                <% end %>
+              </div>
             </div>
+          <% end %>
+        </div>
+      </section>
+
+      <%# ── Service plugins ──────────────────────────────────────────────────
+          Same card partial the /integrations marketplace renders, so the
+          Enable/Disable Turbo Stream keeps replacing plugin-card-<key> here. %>
+      <section>
+        <div class="mb-3 flex items-end justify-between gap-3">
+          <div>
+            <h2 class="text-[15px] font-medium text-fg">Service plugins</h2>
+            <p class="text-[12.5px] leading-5 text-fg-muted mt-0.5">
+              Connect a service and its tools become available to your agents. Pausing one removes
+              its tools from new runs immediately.
+            </p>
+          </div>
+          <%= link_to "Browse marketplace", tool_integrations_path, class: "shrink-0 text-[13px] font-medium text-accent-text underline-offset-2 hover:underline transition" %>
+        </div>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <% @plugins.each do |plugin| %>
+            <%= render "tool_integrations/plugin_card", plugin: plugin, integration: @integration_by_provider[plugin[:key]] %>
+          <% end %>
+        </div>
+
+        <%# Providers that are persisted but have no catalog plugin stay reachable
+            through the legacy CRUD form instead of disappearing from this page. %>
+        <% @uncataloged_providers.each do |provider| %>
+          <% integration = @integration_by_provider[provider] %>
+          <div class="card mt-4 flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h3 class="text-[14px] font-medium text-fg capitalize"><%= provider %></h3>
+              <p class="text-[12px] text-fg-subtle"><%= integration ? "Configured manually" : "No catalog plugin — manual configuration only" %></p>
+            </div>
+            <% if integration %>
+              <%= link_to "Manage", edit_tool_integration_path(integration), class: "btn-secondary text-[12px]" %>
+            <% else %>
+              <%= link_to "Configure", new_tool_integration_path(provider: provider), class: "btn-secondary text-[12px]" %>
+            <% end %>
           </div>
         <% end %>
-      </div>
+      </section>
     </div>
   </main>
 

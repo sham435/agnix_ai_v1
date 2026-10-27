@@ -8,7 +8,7 @@ export default class extends Controller {
   show(message) {
     const container = document.getElementById("toast-container")
     const el = document.createElement("div")
-    el.className = "pointer-events-auto rounded-xl bg-zinc-900/95 border border-emerald-500/30 px-4 py-2 text-sm text-emerald-400 shadow-lg backdrop-blur"
+    el.className = "pointer-events-auto rounded-xl bg-elevated/95 border border-emerald-500/30 px-4 py-2 text-sm text-emerald-600 dark:text-emerald-400 shadow-lg backdrop-blur"
     el.textContent = message
     container.appendChild(el)
     setTimeout(() => el.remove(), 3000)

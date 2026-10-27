@@ -1,8 +1,6 @@
-<%# Append the user message and clear the composer form. %>
-<%= turbo_stream.append "messages-list" do %>
-  <%= render "messages/message", message: @message %>
-<% end %>
-
+<%# Do not append the user message from the HTTP response: AgentStreamJob
+    broadcasts it first on the same ordered pipeline as the reply, so the
+    user's query always renders above its answer. %>
 <%= turbo_stream.update "message-form" do %>
   <%= render "messages/form", conversation: @message.conversation, message: Message.new %>
 <% end %>

@@ -623,6 +623,14 @@ export default class extends Controller {
   // aria-label cycle through the outcome so assistive tech + sighted users
   // both get feedback, and a failure briefly tints the button red.
   _doCopy(btn, text, okLabel, failLabel) {
+    // Capture the authored label here, before `finish` overwrites it. flashCopy
+    // and flashCopyFail also record it, but they run after the outcome label is
+    // already on the element — remembering it there would store "Copied
+    // response" and the restore would never return to "Copy response".
+    if (!btn.dataset.copyBaseLabel) {
+      btn.dataset.copyBaseLabel = btn.getAttribute("aria-label") || btn.getAttribute("title") || "Copy"
+    }
+
     const finish = (ok) => {
       const label = ok ? okLabel : failLabel
       btn.setAttribute("aria-label", label)
@@ -670,7 +678,7 @@ export default class extends Controller {
     }
   }
 
-  flashCopy(el, className = "text-emerald-400") {
+  flashCopy(el, className = "text-accent-text") {
     // Remember the pre-flash label once so we can restore it later without
     // clobbering an author-supplied aria-label.
     if (!el.dataset.copyBaseLabel) {
@@ -684,25 +692,22 @@ export default class extends Controller {
     if (!el.dataset.copyBaseLabel) {
       el.dataset.copyBaseLabel = el.getAttribute("aria-label") || el.getAttribute("title") || "Copy"
     }
-    el.classList.add("text-red-400")
-    setTimeout(() => el.classList.remove("text-red-400"), 1400)
+    // classList.add takes one token per argument, so the light/dark pair is
+    // passed as two. Bare red-400 is a dark-canvas value: ~2.5:1 on white.
+    el.classList.add("text-red-600", "dark:text-red-400")
+    setTimeout(() => el.classList.remove("text-red-600", "dark:text-red-400"), 1400)
   }
 
   regenerate(event) {
     const btn = event.currentTarget
     btn.dataset.state = "loading"
-    btn.classList.add("animate-spin", "pointer-events-none", "text-emerald-400")
+    btn.classList.add("animate-spin", "pointer-events-none", "text-accent-text")
     this.element.dispatchEvent(new CustomEvent("agent:regenerate", { bubbles: true }))
   }
 
   goodResponse(event) {
     const btn = event.currentTarget
-    this.flashCopy(btn, "text-emerald-400")
-  }
-
-  flashCopy(el, className = "text-emerald-400") {
-    el.classList.add(className)
-    setTimeout(() => el.classList.remove(className), 1200)
+    this.flashCopy(btn, "text-accent-text")
   }
 }
 

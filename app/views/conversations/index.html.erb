@@ -1,10 +1,10 @@
 <!-- Header -->
-<header class="sticky top-0 z-20 flex h-[64px] items-center justify-between gap-3 border-b border-white/[0.06] bg-[#080809]/80 glass px-4">
+<header class="sticky top-0 z-20 flex h-[64px] items-center justify-between gap-3 border-b border-border bg-sidebar/80 glass px-4">
   <div class="flex items-center gap-2 min-w-0">
-    <button id="menuBtn" class="lg:hidden grid size-9 place-items-center rounded-xl bg-white/[0.04] hover:bg-white/[0.08] text-zinc-300" aria-label="Open navigation menu">
+    <button id="menuBtn" class="lg:hidden grid size-9 place-items-center rounded-xl bg-hover hover:bg-border text-fg-muted" aria-label="Open navigation menu">
       <svg class="size-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
     </button>
-    <h1 class="text-[16px] font-semibold text-white truncate">Shams <span class="font-arabic text-emerald-400">شمس</span> AgentOS</h1>
+    <h1 class="text-[16px] font-semibold text-fg truncate">Shams <span class="font-arabic text-accent-text">شمس</span> AgentOS</h1>
   </div>
 
   <div class="flex items-center gap-2 shrink-0">
@@ -13,7 +13,7 @@
         to the emerald dot on very narrow viewports (max-sm hides the words).
         animate-pulse is behind motion-safe: so prefers-reduced-motion users
         see a steady dot. %>
-    <div class="inline-flex items-center gap-1.5 rounded-xl bg-white/[0.04] border border-white/[0.06] px-2.5 py-1.5 sm:px-3 sm:py-2 text-[12px] sm:text-[13px] text-zinc-300"
+    <div class="inline-flex items-center gap-1.5 rounded-xl bg-panel border border-border px-2.5 py-1.5 sm:px-3 sm:py-2 text-[12px] sm:text-[13px] text-fg-muted"
          role="status"
          aria-label="Shams AI is running Rails 8.1">
       <span class="size-2 rounded-full bg-emerald-500 motion-safe:animate-pulse" aria-hidden="true"></span>
@@ -48,16 +48,16 @@
           </g>
         </svg>
       </div>
-      <h1 class="text-[32px] sm:text-[42px] lg:text-[56px] font-semibold tracking-tight text-white">
-        Shams <span class="font-arabic text-emerald-400">شمس</span> AgentOS
+      <h1 class="text-[32px] sm:text-[42px] lg:text-[56px] font-semibold tracking-tight text-fg">
+        Shams <span class="font-arabic text-accent-text">شمس</span> AgentOS
       </h1>
-      <p class="mt-3 text-[16px] sm:text-[18px] text-zinc-400">Better Coding, Smarter Agents</p>
+      <p class="mt-3 text-[16px] sm:text-[18px] text-fg-muted">Better Coding, Smarter Agents</p>
       <%# §7: footer describes the verified stack, not runtime health. Rails 8.1
           is confirmed at boot (Rails::VERSION). Solid Queue adapter is the
           ActiveJob adapter in dev+prod. Action Cable is mounted at /cable
           (async in dev, solid_cable in prod). Kamal 2 is the deploy tool, so
           we describe it as such rather than implying a live health check. %>
-      <p class="mt-1 text-[12px] sm:text-[13px] text-zinc-600 leading-snug px-2">
+      <p class="mt-1 text-[12px] sm:text-[13px] text-fg-subtle leading-snug px-2">
         Built on Rails <%= Rails::VERSION::STRING %> · Solid Queue · Action Cable · deployed with Kamal 2
       </p>
     </div>
@@ -65,12 +65,12 @@
     <!-- Input -->
     <div class="relative mx-auto mt-10 sm:mt-14 max-w-[720px]"
          data-controller="tools-panel">
-      <%= form_with url: conversations_path, method: :post, class: "group relative rounded-[28px] border border-white/[0.08] bg-gradient-to-b from-white/[0.06] to-white/[0.02] p-1.5 shadow-[inset_0_1px_0_0_rgba(255,255,255,0.04),0_20px_80px_rgba(0,0,0,0.5)] backdrop-blur-xl", data: { turbo_stream: true, controller: "chat-input", action: "turbo:submit-end->chat-input#clear" } do |f| %>
-        <div class="rounded-[22px] bg-[#0c0c0f] px-3 sm:px-4 py-3">
+      <%= form_with url: conversations_path, method: :post, class: "group relative rounded-[28px] border border-border bg-panel/70 p-1.5 shadow-[0_12px_48px_rgba(0,0,0,0.25)] backdrop-blur-xl transition focus-within:border-accent/50 focus-within:ring-2 focus-within:ring-accent/20", data: { turbo_stream: true, controller: "chat-input", action: "turbo:submit-end->chat-input#clear" } do |f| %>
+        <div class="rounded-[22px] bg-elevated px-3 sm:px-4 py-3">
           <%= f.text_area :content,
             rows: 1,
             placeholder: "Ask Anything...",
-            class: "w-full resize-none bg-transparent placeholder-zinc-600 text-[16px] leading-7 text-zinc-100 outline-none py-2",
+            class: "w-full resize-none bg-transparent placeholder-fg-subtle text-[16px] leading-7 text-fg outline-none py-2",
             id: "composer-input",
             autocomplete: "off",
             value: params[:prompt],
@@ -95,13 +95,13 @@
             </script>
           <% end %>
 
-          <div class="flex items-center justify-between pt-2 border-t border-white/[0.06] mt-2 gap-2">
+          <div class="flex items-center justify-between pt-2 border-t border-border mt-2 gap-2">
             <div class="flex items-center gap-1.5 min-w-0">
               <%# §4-5: Tools button — the panel opens above the composer and
                   lists Capabilities::Registry entries with truthful state, plus
                   the four integrations named in the requirements. %>
               <button type="button"
-                      class="flex items-center gap-1.5 rounded-xl hover:bg-white/[0.06] px-2.5 py-2 text-[13px] text-zinc-400 hover:text-zinc-200 transition"
+                      class="flex items-center gap-1.5 rounded-xl hover:bg-hover px-2.5 py-2 text-[13px] text-fg-subtle hover:text-fg transition"
                       data-action="click->tools-panel#toggle"
                       data-tools-panel-target="toggle"
                       aria-haspopup="dialog"
@@ -120,7 +120,7 @@
             <div class="flex items-center gap-1.5 shrink-0" data-controller="platform-hint" data-platform-hint-modifier-value="Meta">
               <%# §6: the visible hint updates to match the platform's actual
                   submit combo (Enter on Windows/Linux/mobile, ⌘↵ on macOS). %>
-              <span class="hidden sm:block text-[12px] text-zinc-600 mr-1" data-platform-hint-target="label">↵</span>
+              <span class="hidden sm:block text-[12px] text-fg-subtle mr-1" data-platform-hint-target="label">↵</span>
               <button type="submit"
                       class="grid size-9 place-items-center rounded-xl bg-gradient-to-b from-emerald-400 to-emerald-600 text-black hover:brightness-110 active:scale-95 transition shadow-lg shadow-emerald-900/30"
                       aria-label="Send message"
@@ -138,7 +138,7 @@
           viewport at every width from 320px upward. %>
       <div id="dashboard-tools-panel"
            hidden
-           class="absolute z-40 mt-2 w-[min(560px,calc(100vw-1.5rem))] max-h-[min(480px,60vh)] overflow-y-auto rounded-2xl border border-white/[0.08] bg-[#0c0c0f]/95 backdrop-blur-xl shadow-2xl shadow-black/50"
+           class="absolute z-40 mt-2 w-[min(560px,calc(100vw-1.5rem))] max-h-[min(480px,60vh)] overflow-y-auto rounded-2xl border border-border bg-elevated/95 backdrop-blur-xl shadow-2xl shadow-black/20"
            data-tools-panel-target="panel"
            role="dialog"
            aria-modal="false"
@@ -161,7 +161,7 @@
         ].each do |text| %>
           <%= link_to text.truncate(48, omission: "…"),
               conversations_path(prompt: text),
-              class: "px-3 py-1.5 rounded-full bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.06] text-[13px] text-zinc-400 hover:text-zinc-200 transition",
+              class: "px-3 py-1.5 rounded-full bg-panel hover:bg-hover border border-border text-[13px] text-fg-muted hover:text-fg transition",
               data: { turbo_action: "advance" },
               title: text %>
         <% end %>
@@ -187,13 +187,13 @@
       ] %>
       <% cards.each do |card| %>
         <%= link_to conversations_path(prompt: card[:prompt]),
-            class: "group rounded-2xl border border-white/[0.06] bg-gradient-to-b from-white/[0.04] to-transparent p-4 hover:border-emerald-500/30 transition text-left",
+            class: "group rounded-2xl border border-border bg-panel/60 p-4 hover:border-accent/40 transition text-left",
             data: { turbo_action: "advance" } do %>
-          <div class="size-10 rounded-xl bg-emerald-500/10 text-emerald-400 grid place-items-center mb-3">
+          <div class="size-10 rounded-xl bg-accent/10 text-accent-text grid place-items-center mb-3">
             <svg class="size-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M16 18l6-6-6-6"/><path d="M8 6l-6 6 6 6"/></svg>
           </div>
-          <h3 class="font-medium text-white"><%= card[:title] %></h3>
-          <p class="text-[13px] text-zinc-500 mt-1"><%= card[:blurb] %></p>
+          <h3 class="font-medium text-fg"><%= card[:title] %></h3>
+          <p class="text-[13px] text-fg-muted mt-1"><%= card[:blurb] %></p>
         <% end %>
       <% end %>
     </div>

@@ -1,40 +1,40 @@
 <%= render "layouts/chat_layout" do %>
-  <header class="sticky top-0 z-20 flex h-[64px] items-center justify-between gap-3 border-b border-white/[0.06] bg-[#080809]/80 glass px-4">
-    <%= link_to tool_integrations_path, class: "flex items-center gap-2 text-zinc-400 hover:text-zinc-200 transition" do %>
+  <header class="sticky top-0 z-20 flex h-[64px] items-center justify-between gap-3 border-b border-border-subtle bg-sidebar/80 glass px-4">
+    <%= link_to tool_integrations_path, class: "flex items-center gap-2 text-fg-muted hover:text-fg transition" do %>
       <svg class="size-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m15 18-6-6 6-6"/></svg>
     <% end %>
     <div class="flex items-center gap-2">
-      <h1 class="text-[16px] font-semibold text-white"><%= @integration.name %></h1>
+      <h1 class="text-[16px] font-semibold text-fg"><%= @integration.name %></h1>
       <%= status_badge(@integration.is_active ? "active" : "inactive") %>
     </div>
     <div class="flex items-center gap-2">
       <%= link_to edit_tool_integration_path(@integration), class: "btn-secondary text-[13px]" do %>
         Edit
       <% end %>
-      <%= button_to "Delete", tool_integration_path(@integration), method: :delete, class: "text-zinc-500 hover:text-red-400 transition text-[13px]", data: { turbo: false } %>
+      <%= button_to "Delete", tool_integration_path(@integration), method: :delete, class: "text-fg-subtle hover:text-red-600 dark:hover:text-red-400 transition text-[13px]", data: { turbo: false } %>
     </div>
   </header>
 
   <main class="flex-1 overflow-y-auto p-6">
     <div class="mx-auto max-w-[600px] space-y-6">
       <div class="card">
-        <h2 class="text-[15px] font-medium text-white mb-3">Configuration</h2>
+        <h2 class="text-[15px] font-medium text-fg mb-3">Configuration</h2>
         <dl class="grid grid-cols-2 gap-4 text-[13px]">
           <div>
-            <dt class="text-zinc-500">Provider</dt>
-            <dd class="text-white font-medium capitalize mt-1"><%= @integration.provider %></dd>
+            <dt class="text-fg-subtle">Provider</dt>
+            <dd class="text-fg font-medium capitalize mt-1"><%= @integration.provider %></dd>
           </div>
           <div>
-            <dt class="text-zinc-500">Status</dt>
-            <dd class="text-white font-medium capitalize mt-1"><%= @integration.is_active ? "Enabled" : "Disabled" %></dd>
+            <dt class="text-fg-subtle">Status</dt>
+            <dd class="text-fg font-medium capitalize mt-1"><%= @integration.is_active ? "Enabled" : "Disabled" %></dd>
           </div>
           <div>
-            <dt class="text-zinc-500">Last Used</dt>
-            <dd class="text-white font-medium mt-1"><%= @integration.last_used_at ? time_ago(@integration.last_used_at) : "Never" %></dd>
+            <dt class="text-fg-subtle">Last Used</dt>
+            <dd class="text-fg font-medium mt-1"><%= @integration.last_used_at ? time_ago(@integration.last_used_at) : "Never" %></dd>
           </div>
           <div>
-            <dt class="text-zinc-500">API Key</dt>
-            <dd class="text-white font-medium font-mono text-[12px] mt-1"><%= @integration.api_key.present? ? "••••••••" : "Not set" %></dd>
+            <dt class="text-fg-subtle">API Key</dt>
+            <dd class="text-fg font-medium font-mono text-[12px] mt-1"><%= @integration.api_key.present? ? "••••••••" : "Not set" %></dd>
           </div>
         </dl>
       </div>

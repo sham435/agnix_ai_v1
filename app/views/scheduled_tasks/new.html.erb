@@ -2,9 +2,9 @@
     ?prompt=… so the current chat text pre-fills the prompt (server-side, so it
     renders even before Stimulus boots).
 -%>
-<header class="sticky top-0 z-20 flex h-[64px] items-center justify-between gap-3 border-b border-white/[0.06] glass px-4">
+<header class="sticky top-0 z-20 flex h-[64px] items-center justify-between gap-3 border-b border-border-subtle bg-canvas/80 glass px-4">
   <div class="flex items-center gap-2 min-w-0">
-    <button id="menuBtn" class="lg:hidden grid size-9 place-items-center rounded-xl bg-white/[0.04] hover:bg-white/[0.08] text-zinc-300" aria-label="Open navigation menu">
+    <button id="menuBtn" class="lg:hidden grid size-9 place-items-center rounded-xl bg-panel hover:bg-hover text-fg" aria-label="Open navigation menu">
       <svg class="size-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
     </button>
     <h1 class="text-[16px] font-semibold text-fg truncate">New scheduled task</h1>

@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title><%= content_for?(:title) ? yield(:title) : "Shams شمس AgentOS" %></title>
   <meta name="description" content="AI Agentic Agent Platform - Better Coding, Smarter Agents">
-  <meta name="theme-color" content="#050505">
+  <meta name="theme-color" content="#0b0d10">
   <meta name="csrf-token" content="<%= form_authenticity_token %>">
 
   <%= csp_meta_tag %>
@@ -22,27 +22,30 @@
     .font-sans { font-family: 'Instrument Sans', 'Inter', system-ui, sans-serif; }
     ::-webkit-scrollbar { width: 6px; height: 6px; }
     ::-webkit-scrollbar-track { background: transparent; }
-    ::-webkit-scrollbar-thumb { background: #2a2a2a; border-radius: 999px; }
-    ::-webkit-scrollbar-thumb:hover { background: #3a3a3a; }
+    ::-webkit-scrollbar-thumb { background: var(--color-border); border-radius: 999px; }
+    ::-webkit-scrollbar-thumb:hover { background: var(--color-fg-subtle); }
     .glass { backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px); }
-    .glass-card { background: rgba(23, 23, 22, 0.6); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); border: 1px solid rgba(255,255,255,0.06); }
-    .accent-glow { box-shadow: 0 0 30px rgba(92, 184, 112, 0.15); }
+    .glass-card { background: color-mix(in srgb, var(--color-panel) 60%, transparent); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); border: 1px solid var(--color-border); }
+    .accent-glow { box-shadow: 0 0 30px rgba(16, 185, 129, 0.15); }
   </style>
 
   <script nonce="<%= content_security_policy_nonce %>">
     // Phase 1b — apply the theme before first paint (no flash of wrong theme).
-    // Order: localStorage (per-device) -> server preference -> OS hint -> dark.
+    // Order: localStorage (per-device) -> explicit server preference -> dark.
+    // The OS prefers-color-scheme hint is deliberately NOT consulted: the chat
+    // app ships refined-dark by default and a half-tokenized OS flip is what
+    // produced the mixed white-canvas/dark-chrome UI. Only an explicit user
+    // choice (toggle, persisted locally and on the server) selects light.
     (function () {
       var html = document.documentElement;
       var server = html.getAttribute("data-server-theme") || "";
       var stored = null;
       try { stored = localStorage.getItem("shams.theme"); } catch (e) {}
-      var system = (window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches) ? "light" : "dark";
-      var theme = (stored === "light" || stored === "dark") ? stored : (server === "light" || server === "dark") ? server : system;
+      var theme = (stored === "light" || stored === "dark") ? stored : (server === "light" || server === "dark") ? server : "dark";
       html.setAttribute("data-theme", theme);
       html.classList.toggle("dark", theme === "dark");
       var meta = document.querySelector('meta[name="theme-color"]');
-      if (meta) meta.setAttribute("content", theme === "light" ? "#ffffff" : "#050505");
+      if (meta) meta.setAttribute("content", theme === "light" ? "#ffffff" : "#0b0d10");
     })();
   </script>
 
@@ -50,14 +53,14 @@
   <%= javascript_importmap_tags %>
 </head>
 
-<body class="bg-canvas text-zinc-200 font-sans antialiased min-h-screen selection:bg-emerald-500/20 selection:text-emerald-300">
+<body class="bg-canvas text-fg font-sans antialiased min-h-screen selection:bg-emerald-500/20 selection:text-emerald-700 dark:selection:text-emerald-300">
   <% if notice %>
-    <div class="fixed top-4 right-4 z-50 rounded-xl bg-emerald-500/10 border border-emerald-500/20 px-4 py-3 text-sm text-emerald-400" data-controller="flash">
+    <div class="fixed top-4 right-4 z-50 rounded-xl bg-accent/10 border border-accent/20 px-4 py-3 text-sm text-accent-text" data-controller="flash">
       <%= notice %>
     </div>
   <% end %>
   <% if alert %>
-    <div class="fixed top-4 right-4 z-50 rounded-xl bg-red-500/10 border border-red-500/20 px-4 py-3 text-sm text-red-400" data-controller="flash">
+    <div class="fixed top-4 right-4 z-50 rounded-xl bg-red-500/10 border border-red-500/20 px-4 py-3 text-sm text-red-600 dark:text-red-400" data-controller="flash">
       <%= alert %>
     </div>
   <% end %>
