@@ -6,7 +6,7 @@ class Api::V1::ConversationsController < ApplicationController
       .where(status: "active")
       .order(updated_at: :desc)
       .includes(:agent)
-    render json: @conversations, each_serializer: Api::V1::ConversationSerializer
+    render json: @conversations, include: :agent
   end
 
   def show
