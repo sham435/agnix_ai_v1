@@ -178,6 +178,26 @@ RSpec.describe "Chat UI requirements bundle", :js, type: :system do
         expect(btn["aria-label"]).to eq("Copy response")
       end
     end
+
+    it "restores the authored label once the copy feedback window closes" do
+      # chat_controller.js once defined flashCopy twice; the later (shorter)
+      # definition won and never stored the button's original aria-label, so the
+      # restore step fell back to a generic "Copy" and clobbered "Copy response".
+      visit conversation_path(conversation)
+      within "#assistant-message-#{message.id}" do
+        btn = page.find("button[data-action*='chat#copy']", visible: :all)
+        btn.hover
+        btn.click
+
+        # Headless Chrome may grant or deny the clipboard write, so either
+        # outcome is acceptable — but the label must come back to the authored one.
+        expect(page).to have_css(
+          "button[aria-label='Copied response'], button[aria-label='Copy failed']",
+          visible: :all, wait: 3
+        )
+        expect(page).to have_css("button[aria-label='Copy response']", visible: :all, wait: 5)
+      end
+    end
   end
 
   # ── §9 — mode selector reliability ──────────────────────────────────────

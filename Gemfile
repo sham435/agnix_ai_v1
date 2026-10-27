@@ -47,6 +47,7 @@ gem "omniauth-github", "~> 2.0"
 # -- HTTP & APIs --
 gem "httparty", "~> 0.22"          # HTTP client for LLM integrations
 gem "faraday", "~> 2.12"           # HTTP for webhooks
+gem "pdf-reader"
 gem "json_schemer", "~> 2.5"        # JSON Schema validation for tool calling
 
 # -- Email --

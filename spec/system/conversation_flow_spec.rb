@@ -25,18 +25,18 @@ RSpec.describe "Conversation flow", type: :system, js: true do
 
   before do
     # Stub the LLM endpoint so all chat completions return deterministically.
-    stub_request(:post, %r{opencode\.ai/zen/v1/chat/completions})
+    # Agent defaults to anthropic provider -> Llm::AnthropicAdapter -> POST /v1/messages.
+    stub_request(:post, %r{api\.anthropic\.com/v1/messages})
       .to_return(
         status: 200,
         body: {
-          id: "chatcmpl-test",
-          object: "chat.completion",
-          choices: [{
-            index: 0,
-            message: { role: "assistant", content: "Hello there!", tool_calls: [] },
-            finish_reason: "stop"
-          }],
-          usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 }
+          id: "msg_test",
+          type: "message",
+          role: "assistant",
+          content: [{ type: "text", text: "Hello there!" }],
+          model: "claude-sonnet-4-6",
+          stop_reason: "end_turn",
+          usage: { input_tokens: 10, output_tokens: 5 }
         }.to_json,
         headers: { "Content-Type" => "application/json" }
       )
@@ -92,25 +92,31 @@ RSpec.describe "Conversation flow", type: :system, js: true do
     convo.messages.create!(role: "user", content: "hi")
 
     # Stub: first call returns empty plan [], second returns the answer.
-    stub_request(:post, %r{opencode\.ai/zen/v1/chat/completions})
+    stub_request(:post, %r{api\.anthropic\.com/v1/messages})
       .to_return([
         {
           status: 200,
           body: {
-            id: "chatcmpl-plan",
-            object: "chat.completion",
-            choices: [{ index: 0, message: { role: "assistant", content: "[]" }, finish_reason: "stop" }],
-            usage: { prompt_tokens: 10, completion_tokens: 1, total_tokens: 11 }
+            id: "msg_plan",
+            type: "message",
+            role: "assistant",
+            content: [{ type: "text", text: "[]" }],
+            model: "claude-sonnet-4-6",
+            stop_reason: "end_turn",
+            usage: { input_tokens: 10, output_tokens: 1 }
           }.to_json,
           headers: { "Content-Type" => "application/json" }
         },
         {
           status: 200,
           body: {
-            id: "chatcmpl-answer",
-            object: "chat.completion",
-            choices: [{ index: 0, message: { role: "assistant", content: "Hello there!" }, finish_reason: "stop" }],
-            usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 }
+            id: "msg_answer",
+            type: "message",
+            role: "assistant",
+            content: [{ type: "text", text: "Hello there!" }],
+            model: "claude-sonnet-4-6",
+            stop_reason: "end_turn",
+            usage: { input_tokens: 10, output_tokens: 5 }
           }.to_json,
           headers: { "Content-Type" => "application/json" }
         }

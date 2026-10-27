@@ -1,5 +1,9 @@
 # spec/models/agent_run_spec.rb
 
+# Narrative model specs: several assertions per example and allow/spy stubs
+# are intentional, consistent with the integration specs in this repo.
+# rubocop:disable RSpec/MultipleExpectations, RSpec/ExampleLength, RSpec/MessageSpies, RSpec/LetSetup, RSpec/StubbedMock, RSpec/MultipleMemoizedHelpers
+
 require "rails_helper"
 
 RSpec.describe AgentRun, type: :model do
@@ -99,7 +103,7 @@ RSpec.describe AgentRun, type: :model do
     end
 
     it "preserves existing steps when appending" do
-      agent_run.update!(reasoning_steps: [{ "step" => "pre-existing", "t" => "2026-01-01T00:00:00Z" }])
+      agent_run.update!(reasoning_steps: [ { "step" => "pre-existing", "t" => "2026-01-01T00:00:00Z" } ])
       agent_run.append_reasoning("New step")
 
       steps = agent_run.reload.reasoning_steps
@@ -206,4 +210,98 @@ RSpec.describe AgentRun, type: :model do
       expect { agent_run.destroy! }.to change(AgentTodo, :count).by(-2)
     end
   end
+
+  # ── #verify_outputs! — no false build success ────────────────────────
+
+  # Narrative verification suite: several assertions per example by design.
+  # rubocop:disable RSpec/MultipleExpectations, RSpec/ExampleLength, RSpec/MessageSpies, RSpec/LetSetup
+  describe "#verify_outputs!" do
+    let(:run) { create(:agent_run, mode: "auto_build", status: "executing") }
+
+    def done_todo(title, result: "wrote it")
+      create(:agent_todo, agent_run: run, title: title, status: "done", result: result, position: run.todos.size)
+    end
+
+    before do
+      allow(run).to receive(:broadcast_reasoning)
+      allow(run).to receive(:broadcast_status)
+    end
+
+    it "completes when every promised file exists" do
+      path = "/tmp/shams-verify-spec-#{SecureRandom.hex(4)}/generated.py"
+      FileUtils.mkdir_p(File.dirname(path))
+      File.write(path, "x")
+      done_todo("Write '#{path}'")
+      done_todo("Create the project directory at '#{File.dirname(path)}'")
+
+      expect(run.verify_outputs!).to eq("completed")
+      expect(run.reload.status).to eq("completed")
+      expect(run.todos.where(status: "done").count).to eq(2)
+    ensure
+      FileUtils.rm_rf(File.dirname(path))
+    end
+
+    it "downgrades done steps whose promised file is missing and fails the run" do
+      missing = "/tmp/shams-verify-spec-#{SecureRandom.hex(4)}-absent/src/model.py"
+      done_todo("Write '#{missing}'", result: "I'm sorry, I couldn't generate a response.")
+
+      expect(run.verify_outputs!).to eq("failed")
+      expect(run.reload.status).to eq("failed")
+
+      todo = run.todos.reload.first
+      expect(todo.status).to eq("failed")
+      expect(todo.result).to include("Output verification:")
+      expect(todo.result).to include(missing)
+      expect(run.reasoning_steps.last["step"]).to eq("Output verification")
+      expect(run.reasoning_steps.last["detail"]).to include("run marked failed")
+    end
+
+    it "keeps truly-present targets done while failing only missing ones" do
+      path = "/tmp/shams-verify-spec-#{SecureRandom.hex(4)}/README.md"
+      FileUtils.mkdir_p(File.dirname(path))
+      File.write(path, "readme")
+      missing = "/tmp/shams-verify-spec-#{SecureRandom.hex(4)}-missing/src/module.rb"
+      done_todo("Write '#{path}'")
+      done_todo("Write '#{missing}'")
+
+      expect(run.verify_outputs!).to eq("failed")
+      statuses = run.todos.reload.pluck(:status)
+      expect(statuses).to include("done")
+      expect(statuses).to include("failed")
+    ensure
+      FileUtils.rm_rf(File.dirname(path))
+    end
+
+    it "ignores done steps without quoted path targets" do
+      done_todo("Install dependencies")
+
+      expect(run.verify_outputs!).to eq("completed")
+      expect(run.todos.reload.first.status).to eq("done")
+    end
+
+    it "verifies only done steps — failed and pending steps are not checked" do
+      create(:agent_todo, agent_run: run, title: "Write '/tmp/absent-from-failed-step/x.py'", status: "failed", result: "step failed")
+      create(:agent_todo, agent_run: run, title: "Write '/tmp/absent-from-pending-step/x.py'", status: "pending", position: 1)
+
+      expect(run.verify_outputs!).to eq("completed")
+    end
+
+    it "does not verify non-build runs" do
+      plan_run = create(:agent_run, mode: "auto_plan", status: "executing")
+      create(:agent_todo, agent_run: plan_run, title: "Write '/tmp/non-build-missing/x.py'", status: "done", result: "done")
+
+      expect(plan_run.verify_outputs!).to eq("completed")
+      expect(plan_run.todos.reload.first.status).to eq("done")
+    end
+
+    it "leaves interrupted runs untouched" do
+      interrupted = create(:agent_run, mode: "auto_build", status: "interrupted")
+      create(:agent_todo, agent_run: interrupted, title: "Write '/tmp/interrupted-missing/x.py'", status: "done", result: "done")
+
+      expect(interrupted.verify_outputs!).to eq("interrupted")
+      expect(interrupted.reload.status).to eq("interrupted")
+      expect(interrupted.todos.reload.first.status).to eq("done")
+    end
+  end
+  # rubocop:enable RSpec/MultipleExpectations, RSpec/ExampleLength, RSpec/MessageSpies, RSpec/LetSetup
 end

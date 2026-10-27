@@ -16,6 +16,22 @@ RSpec.describe Agent, type: :model do
       expect(client.provider).to eq("anthropic")
       expect(client.model).to eq("claude-sonnet-4-6")
     end
+
+    it "routes the bonsai provider to the local llama.cpp server" do
+      agent = create(:agent, provider: "bonsai", model: "bonsai-27b")
+      adapter = agent.llm_client.send(:adapter)
+      expect(adapter).to be_a(Llm::OpenaiAdapter)
+      expect(adapter.base_url).to eq("http://127.0.0.1:8910/v1")
+      expect(adapter.api_key).to eq("local")
+    end
+
+    it "routes bonsai-2-27b to the ternary Bonsai 2 server on port 8080" do
+      agent = create(:agent, provider: "bonsai", model: "bonsai-2-27b")
+      adapter = agent.llm_client.send(:adapter)
+      expect(adapter).to be_a(Llm::OpenaiAdapter)
+      expect(adapter.base_url).to eq("http://127.0.0.1:8080/v1")
+      expect(adapter.api_key).to eq("local")
+    end
   end
 
   describe "#enabled_tools" do

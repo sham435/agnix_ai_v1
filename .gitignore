@@ -41,6 +41,10 @@ Thumbs.db
 log/*.log
 log/auto_fixes/*.md
 
+# Local machine scratch (never app code): curl cookie jars and agent tool memory
+/cookies.txt
+/.opencode-memory.json
+
 # Keep these directories
 !/log/.keep
 !/tmp/.keep
