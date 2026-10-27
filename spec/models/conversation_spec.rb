@@ -85,4 +85,59 @@ RSpec.describe Conversation, type: :model do
       expect(conversation.placeholder_assistant?(m)).to be false
     end
   end
+
+  # Deadlock regression: PG::TRDeadlockDetected 'while updating tuple ... in
+  # relation "agents"'. Two concurrent AgentStreamJobs on ONE conversation took
+  # the same two rows in opposite orders — a Message write went
+  # conversations -> agents (counter_cache + touch chain, the agents hop coming
+  # from the old `belongs_to :agent, touch: true`), while Run.create! went
+  # agents -> conversations (counter_cache on agents, touch on conversations).
+  # Message writes must never reach for the agents row; that is what closes the
+  # cycle, so these examples pin the SQL each path emits.
+  describe "row lock order" do
+    def capture_sql
+      statements = []
+      subscriber = ActiveSupport::Notifications.subscribe("sql.active_record") do |*, payload|
+        statements << payload[:sql]
+      end
+      yield
+      statements
+    ensure
+      ActiveSupport::Notifications.unsubscribe(subscriber)
+    end
+
+    def updates_to(sql, table)
+      sql.grep(/^UPDATE "#{table}" /)
+    end
+
+    it "writes a message without locking the agents (or organizations) row" do
+      conversation # resolve the lazy factory row outside the captured window
+      sql = capture_sql { conversation.messages.create!(role: "user", content: "hi") }
+
+      expect(updates_to(sql, "conversations")).not_to be_empty
+      expect(updates_to(sql, "agents")).to be_empty
+      expect(updates_to(sql, "organizations")).to be_empty
+    end
+
+    it "leaves agents.updated_at alone while conversation activity continues" do
+      agent = conversation.agent
+      before = agent.updated_at
+
+      conversation.messages.create!(role: "user", content: "hi")
+      conversation.messages.create!(role: "assistant", content: "hello")
+
+      expect(agent.reload.updated_at).to eq(before)
+    end
+
+    it "still records the run-side lock order (agents before conversations)" do
+      # Documented on purpose: this path is the other half of the cycle. It may
+      # keep that order only because the message path no longer takes agents.
+      run = build(:run, agent: conversation.agent, conversation: conversation)
+
+      sql = capture_sql { run.save! }
+
+      expect(updates_to(sql, "agents")).not_to be_empty
+      expect(updates_to(sql, "conversations")).not_to be_empty
+    end
+  end
 end

@@ -13,7 +13,16 @@
 #  updated_at     :datetime         not null
 #
 class Conversation < ApplicationRecord
-  belongs_to :agent, touch: true
+  # NEVER re-add `touch: true` here. A message write locks the conversation row
+  # (counter_cache + touch) and, through this association, then reached for the
+  # agent row; `Run` locks the same pair in the opposite order (counter_cache on
+  # agents, then the conversation touch). Two concurrent AgentStreamJobs on one
+  # conversation deadlocked exactly that way (PG::TRDeadlockDetected "while
+  # updating tuple in relation agents"). Nothing reads agents.updated_at — the
+  # agents row is not an activity counter, and the sidebar orders on
+  # conversations.updated_at. :project keeps its touch because no writer takes a
+  # project row before a conversation row, so it cannot close a lock cycle.
+  belongs_to :agent
   belongs_to :user
   belongs_to :project, optional: true, touch: true
 
