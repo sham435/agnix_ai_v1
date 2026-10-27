@@ -5,4 +5,4 @@ jobs: bin/jobs
 # bonsai-* providers) is intentionally NOT a Procfile process: foreman shuts the
 # whole stack down as soon as any process exits, and the launcher exits 1 when
 # :8080 is already serving /health. Start it in its own terminal instead:
-#   ../../run-bonsai.sh         (i.e. ~/bonsai227b-shamsai/run-bonsai.sh)
+#   bin/run-bonsai              (add "1bit" for the 1-bit server on :8910)

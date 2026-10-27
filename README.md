@@ -96,19 +96,51 @@ bin/rails db:seed
 bin/rails credentials:edit
 # Add your API keys (see config/credentials template below)
 
-# 6. Start the app
+# 6. Start the app (terminal 1)
 bin/dev
 # Starts: Rails server (:3001) + Tailwind watcher + Solid Queue
 
-# 7. (Optional) local Bonsai model server, in a second terminal
-# Only needed for the bonsai-* providers; kept out of Procfile.dev because
-# foreman stops the whole stack when any process exits.
-../../run-bonsai.sh        # Bonsai 2 27B on :8080  (add "1bit" for :8910)
+# 7. Local model server (terminal 2, from the Shams repo root)
+bin/run-bonsai             # Bonsai 2 27B on :8080
+bin/run-bonsai 1bit        # 1-bit Bonsai 27B on :8910
 ```
 
 Visit `http://localhost:3001` and login with:
 - Email: `shams@shams.ai`
 - Password: `password123`
+
+### Local model server (Bonsai)
+
+The `bonsai-*` agents talk to a local llama.cpp server that you run in its own
+terminal, alongside `bin/dev`:
+
+```bash
+bin/run-bonsai          # terminal 2 - Bonsai 2 27B (ternary) on :8080
+bin/dev                 # terminal 1 - web (:3001) + css + jobs
+```
+
+It is not an entry in `Procfile.dev` on purpose. Foreman terminates the whole
+process group as soon as *any* process exits, and the model launcher exits
+non-zero when its port already answers `/health`, so a "nice to have" model
+server in the Procfile would take the app down with it.
+
+The launcher resolves the Bonsai toolkit from its own location - the `bonsai227b`
+checkout that sits next to this app - and takes these optional knobs from the
+environment:
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `BONSAI_DIR` | `../../bonsai227b` (resolved from the app root) | Checkout holding `setup.sh` + `scripts/`. Set it if your weights/runtime live elsewhere. |
+| `BONSAI_PORT` | `8080` (`8910` for `1bit`) | Port llama.cpp binds. Deliberately not `PORT`, because `bin/dev` owns that for the web server. |
+| `BONSAI_FAMILY` | `bonsai2` (`bonsai` for `1bit`) | Weights family: `bonsai2`, `bonsai` (1-bit), `ternary`. The launcher pins it per branch. |
+| `BONSAI_MODEL` | `27B` (size) | For the launcher this is the weights *size* (`27B`, `9B`, `8B`, `4B`, `2B`, `1.7B`). In the app's `.env` the same name holds the OpenAI request id (`bonsai-2-27b`); the launcher overrides it, so the two never collide. |
+| `BONSAI_CTX` | auto (RAM-tiered) | Context window. Unset or `0` picks the tiered default. |
+
+One-time weight download (~8GB for Bonsai 2 27B, ~4GB for the 1-bit build):
+
+```bash
+cd "$BONSAI_DIR" && BONSAI_OPENWEBUI=0 BONSAI_CODE_INTERPRETER=0 ./setup.sh
+```
 
 ## Configuration
 

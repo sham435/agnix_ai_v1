@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+# Launches the local Bonsai model server for Shams (OpenAI-compatible llama.cpp).
+#
+#   bin/run-bonsai        -> Bonsai 2 27B (ternary) on :8080  = model "bonsai-2-27b"
+#   bin/run-bonsai 1bit   -> 1-bit Bonsai 27B       on :8910  = model "bonsai-27b"
+#
+# The Rails app reaches these servers via BONSAI2_BASE_URL / BONSAI_BASE_URL in .env.
+# Run this in its own terminal, next to `bin/dev`:
+#
+#   terminal 1:  bin/dev            # web (:3001) + css + jobs
+#   terminal 2:  bin/run-bonsai     # model server on :8080
+#
+# It is deliberately NOT a Procfile.dev process: foreman terminates the whole
+# process group as soon as any process exits, and this launcher exits non-zero
+# when its port is already serving /health (i.e. when the server is already up),
+# so it can never be an optional sidecar.
+#
+# Configuration (no secrets here, keys live in .env / Rails credentials):
+#   BONSAI_DIR    Where the bonsai227b toolkit (weights + scripts) lives.
+#                 Default: the sibling checkout two levels above the app root.
+#   BONSAI_PORT   Port for llama.cpp. Default 8080 (bonsai2) / 8910 (1bit).
+#                 Deliberately NOT PORT: bin/dev exports PORT for the web server.
+#   BONSAI_FAMILY bonsai2 (default) | bonsai (1-bit) | ternary | all. The family
+#                 and size pins below override whatever the calling shell has.
+#   BONSAI_MODEL  In this app that is the OpenAI request id (e.g. bonsai-2-27b);
+#                 the toolkit expects a weights SIZE (27B/9B/8B/4B/2B/1.7B). This
+#                 script always passes an explicit size, and scripts/common.sh in
+#                 the toolkit normalizes the app-side spelling if it leaks in.
+#   BONSAI_CTX    Context window for the server. Unset or 0 = RAM-tiered default.
+#
+# One-time setup for the weights + runtime (~8GB for Bonsai 2 27B):
+#   cd "$BONSAI_DIR" && BONSAI_OPENWEBUI=0 BONSAI_CODE_INTERPRETER=0 ./setup.sh
+set -euo pipefail
+
+# Resolve everything from the script location, never the caller's cwd.
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+SHAMS_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
+
+DEFAULT_BONSAI_DIR="$(cd -- "$SHAMS_ROOT/../.." && pwd)/bonsai227b"
+BONSAI_DIR="${BONSAI_DIR:-$DEFAULT_BONSAI_DIR}"
+
+if [[ ! -d "$BONSAI_DIR" ]]; then
+  printf 'Bonsai model repository not found: %s\n' "$BONSAI_DIR" >&2
+  printf 'Set BONSAI_DIR to the correct directory.\n' >&2
+  exit 1
+fi
+
+if [[ ! -f "$BONSAI_DIR/scripts/start_llama_server.sh" ]]; then
+  printf 'No llama.cpp launcher in %s (expected scripts/start_llama_server.sh).\n' "$BONSAI_DIR" >&2
+  printf 'Run the one-time setup first: cd "%s" && ./setup.sh\n' "$BONSAI_DIR" >&2
+  exit 1
+fi
+
+cd -- "$BONSAI_DIR"
+
+# scripts/start_llama_server.sh parses no flags of its own: it reads
+# BONSAI_FAMILY, BONSAI_MODEL, BONSAI_HOST and PORT from the environment and
+# forwards any leftover arguments straight to llama-server. So: no --host,
+# --port or --alias here - those reached llama.cpp as duplicate flags.
+case "${1:-bonsai2}" in
+  1bit)
+    # 1-bit family per bonsai227b/Bonsai1_README.md (tutorial setup)
+    exec env BONSAI_FAMILY=bonsai BONSAI_MODEL=27B \
+      BONSAI_CTX="${BONSAI_CTX:-100000}" \
+      BONSAI_HOST="${BONSAI_HOST:-127.0.0.1}" PORT="${BONSAI_PORT:-8910}" \
+      ./scripts/start_llama_server.sh
+    ;;
+  bonsai2|2|*)
+    # Bonsai 2 27B ternary (repo default) - port 8080 matches BONSAI2_BASE_URL
+    exec env BONSAI_FAMILY=bonsai2 BONSAI_MODEL=27B \
+      BONSAI_HOST="${BONSAI_HOST:-127.0.0.1}" PORT="${BONSAI_PORT:-8080}" \
+      ./scripts/start_llama_server.sh
+    ;;
+esac
