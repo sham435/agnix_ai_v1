@@ -69,10 +69,14 @@ Rails.application.configure do
 
   # Secure cookies.
   config.session_store :cookie_store,
-    key: "_agnix_session",
+    key: "_shams_session",
     same_site: :lax,
     secure: Rails.env.production?
 
   # Default URL options.
   config.default_url_options = { host: ENV.fetch("APP_HOST") }
+
+  # Private upload storage. Production service is chosen via credentials
+  # (never auto-selected); falls back to the local Disk service.
+  config.active_storage.service = Rails.application.credentials.dig(:active_storage, :service)&.to_sym || :local
 end

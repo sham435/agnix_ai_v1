@@ -49,4 +49,7 @@ Rails.application.configure do
   config.hosts << /.*\.local/
   config.hosts << "localhost"
   config.hosts << "127\.0\.0\.1"
+
+  # Private upload storage (Disk service, storage.yml).
+  config.active_storage.service = :local
 end
