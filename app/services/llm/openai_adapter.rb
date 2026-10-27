@@ -93,14 +93,17 @@ module Llm
 
               delta = choice["delta"] || {}
 
-              # Reasoning models emit chain-of-thought in "reasoning_content"
-              # before any visible "content". Stream it to the caller (kind
-              # "reasoning") so the UI can show live "thinking" during the long
-              # pre-answer phase instead of a dead spinner; also keep it as a
-              # fallback if the stream is starved of content.
-              if delta["reasoning_content"]
-                reasoning << delta["reasoning_content"]
-                yield(delta["reasoning_content"], reasoning, tool_calls, "reasoning") if block_given?
+              # Reasoning models emit chain-of-thought before any visible
+              # "content": llama.cpp under "reasoning_content", OpenRouter-style
+              # gateways under "reasoning". Tag either as a "reasoning" frame so
+              # the UI can show a live "thinking" phase during the long
+              # pre-answer wait instead of a dead spinner. The payload is never
+              # answer text - Agents::AgentRunner drops it and forwards only a
+              # status, and nothing here may substitute it into the reply.
+              thought = delta["reasoning_content"].presence || delta["reasoning"].presence
+              if thought
+                reasoning << thought
+                yield(thought, reasoning, tool_calls, "reasoning") if block_given?
               end
 
               if delta["content"]
@@ -139,13 +142,13 @@ module Llm
         raise provider_error(e)
       end
 
-      # Content-starved reasoning stream: mirror sync_chat and surface the
-      # reasoning so the caller never persists a blank assistant message.
-      if full_content.empty? && !reasoning.empty?
-        full_content = reasoning
-        yield(full_content, full_content, tool_calls, "content") if block_given?
-      end
-
+      # A stream can end without any visible content - a reasoning model that
+      # spent the whole completion budget thinking, or a gateway that answered
+      # with something other than events. Blank stays blank: AgentStreamJob
+      # marks the row metadata["empty_response"] and the UI tells the user the
+      # agent returned no text. Substituting the chain of thought here is what
+      # used to paste private reasoning into the answer bubble as if it were
+      # the reply, so it deliberately does not happen.
       { content: full_content, tool_calls: tool_calls,
         tokens: usage_tokens || estimate_tokens(full_content) }
     end
@@ -163,12 +166,14 @@ module Llm
       data = JSON.parse(response.body)
       choice = data.dig("choices", 0, "message") || {}
 
-      # Reasoning-capable models can spend the entire response on internal
-      # reasoning and leave the visible content empty (""). llama.cpp emits
-      # "reasoning_content", OpenRouter-style providers emit "reasoning" —
-      # surface whichever is present instead of returning a blank reply.
-      content = choice["content"].presence ||
-        choice["reasoning_content"].presence || choice["reasoning"].presence
+      # Only the visible answer is the reply. Reasoning-capable models keep
+      # their thinking in "reasoning_content" (llama.cpp) or "reasoning"
+      # (OpenRouter-style gateways) and can spend the whole completion budget
+      # there, leaving content empty; that is an empty answer, and the caller
+      # records metadata["empty_response"] so the UI says so. Falling back to
+      # the thinking text was a live defect - a truncated Recursive Flint turn
+      # returned its entire internal monologue as the message body.
+      content = choice["content"]
 
       raw_tool_calls = choice["tool_calls"] || []
 

@@ -13,7 +13,13 @@ RSpec.describe Llm::OpenaiAdapter do
   end
 
   describe "reasoning-only responses" do
-    it "falls back to reasoning_content (llama.cpp) when content is blank" do
+    # Chain of thought is never answer text. A reply that spent its whole
+    # budget thinking comes back EMPTY, which AgentStreamJob records as
+    # metadata["empty_response"] and the UI states plainly - instead of
+    # pasting the model's private monologue into the user's bubble, which is
+    # what the old reasoning->content fallback did (reproduced live on a
+    # truncated Recursive Flint turn).
+    it "returns an empty answer when only reasoning_content (llama.cpp) is present" do
       stub_response(
         choices: [ {
           finish_reason: "length",
@@ -24,11 +30,11 @@ RSpec.describe Llm::OpenaiAdapter do
 
       result = adapter.sync_chat(messages: [ { role: "user", content: "Reply PONG" } ], tools: [],
                                  temperature: 0.7, max_tokens: 100)
-      expect(result[:content]).to include("PONG")
-      expect(result[:content]).not_to be_blank
+      expect(result[:content]).to eq("")
+      expect(result[:content]).not_to include("PONG")
     end
 
-    it "falls back to reasoning (OpenRouter style) when content is blank" do
+    it "returns an empty answer when only reasoning (OpenRouter style) is present" do
       stub_response(
         choices: [ {
           finish_reason: "stop",
@@ -39,7 +45,10 @@ RSpec.describe Llm::OpenaiAdapter do
 
       result = adapter.sync_chat(messages: [ { role: "user", content: "hello" } ], tools: [],
                                  temperature: 0.7, max_tokens: 100)
-      expect(result[:content]).to eq("openrouter reasoning body")
+      expect(result[:content]).to eq("")
+      expect(result[:content]).not_to include("reasoning")
+      # The server's usage still counts the tokens it really generated.
+      expect(result[:tokens]).to eq(10)
     end
 
     it "prefers real content over reasoning" do
@@ -104,16 +113,40 @@ RSpec.describe Llm::OpenaiAdapter do
       expect(result[:tokens]).to eq(57)
     end
 
-    it "surfaces reasoning_content when the stream yields no visible content" do
+    it "leaves the answer empty when the stream only carried reasoning_content" do
       stub_stream([
         { choices: [ { index: 0, delta: { reasoning_content: "only thinking here" } } ] }.to_json,
         { choices: [], usage: { completion_tokens: 20 } }.to_json
       ])
 
+      kinds = []
       result = adapter.stream_chat(messages: [ { role: "user", content: "hi" } ], tools: [],
-                                   temperature: 0.7, max_tokens: 100) { |_c, _f, _t| }
-      expect(result[:content]).to eq("only thinking here")
-      expect(result[:content]).not_to be_blank
+                                   temperature: 0.7, max_tokens: 100) do |_piece, _full, _tcs, kind|
+        kinds << kind
+      end
+
+      # The thinking is not smuggled into the reply; the caller sees a blank
+      # answer and reports it as an empty response.
+      expect(result[:content]).to eq("")
+      expect(kinds).to eq([ "reasoning" ])
+    end
+
+    it "treats OpenRouter-style delta reasoning as thinking, not as content" do
+      stub_stream([
+        { choices: [ { index: 0, delta: { reasoning: "Flint is pondering" } } ] }.to_json,
+        { choices: [ { index: 0, delta: { content: "FLINT-LIVE-OK" } } ] }.to_json,
+        { choices: [], usage: { completion_tokens: 30 } }.to_json
+      ])
+
+      frames = []
+      result = adapter.stream_chat(messages: [ { role: "user", content: "hi" } ], tools: [],
+                                   temperature: 0.7, max_tokens: 100) do |piece, _full, _tcs, kind|
+        frames << [ kind, piece ]
+      end
+
+      expect(frames).to eq([ [ "reasoning", "Flint is pondering" ], [ "content", "FLINT-LIVE-OK" ] ])
+      expect(result[:content]).to eq("FLINT-LIVE-OK")
+      expect(result[:tokens]).to eq(30)
     end
 
     it "retries once on a transient connection error before anything streamed" do
