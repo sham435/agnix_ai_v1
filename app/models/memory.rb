@@ -21,9 +21,29 @@ class Memory < ApplicationRecord
   validates :content, presence: true
 
   # Nearest neighbor search via pgvector cosine distance.
+  # Vector must be a numeric array — validated before interpolation.
   scope :nearest_to, ->(vector, limit = 5) {
-    order(Arel.sql("embedding <=> '#{vector}'")).limit(limit)
+    sanitized_vector = Memory.send(:validate_vector!, vector)
+    order(Arel.sql("embedding <=> '#{sanitized_vector}'")).limit(limit)
   }
+
+  class << self
+    private
+
+    def validate_vector!(vector)
+      case vector
+      when Array
+        vector.map { |v| Float(v) rescue raise(ArgumentError, "Invalid embedding value: #{v.inspect}") }
+      when String
+        # Accept stringified arrays like "[0.1,0.2,...]" or bare comma-separated floats.
+        raw = vector.gsub(/[\[\]\s]/, "")
+        parts = raw.split(",")
+        parts.map { |v| Float(v) rescue raise(ArgumentError, "Invalid embedding string: #{vector[0..50].inspect}") }
+      else
+        raise ArgumentError, "Vector must be an Array or String, got #{vector.class}"
+      end.to_s
+    end
+  end
 
   scope :for_user_and_agent, ->(user_id, agent_id) {
     where(user_id: user_id).where(agent_id: [agent_id, nil])

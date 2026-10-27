@@ -4,90 +4,171 @@ module Llm
   class OpenaiAdapter
     BASE_URL = "https://api.openai.com/v1"
 
-    attr_reader :api_key, :model, :base_url
+    # HTTParty timeouts (seconds): open_timeout for TCP handshake, timeout for read.
+    OPEN_TIMEOUT = 10
+    # Generous read timeout: local models (Bonsai/Ollama) can take minutes to
+    # process large prompts on CPU, and long agentic tool-turn generations
+    # legitimately run long. Remote APIs answer earlier and are unaffected.
+    READ_TIMEOUT = 600
 
-    def initialize(api_key:, model:, base_url: nil)
+    # Transient-failure resilience. A local llama.cpp server can briefly be
+    # unreachable (crash + watchdog restart, laptop wake, socket reset). Retry
+    # connection-level errors with a short backoff instead of failing the run.
+    MAX_RETRIES = 3
+    RETRY_BACKOFF = 2 # seconds, multiplied by the attempt number
+    TRANSIENT_ERRORS = [
+      Errno::ECONNREFUSED, Errno::ECONNRESET, Errno::EHOSTUNREACH,
+      Errno::ENETUNREACH, Errno::EPIPE, Net::OpenTimeout, Net::ReadTimeout,
+      EOFError, IOError
+    ].freeze
+
+    # "Server isn't there" is NOT worth a long retry loop: if nothing is
+    # listening we fail fast (one quick retry for a watchdog restart) and raise
+    # an actionable error, rather than stalling the request for ~12s. Mid-stream
+    # resets/timeouts keep the more generous MAX_RETRIES budget above.
+    CONNECTION_ERRORS = [ Errno::ECONNREFUSED, Errno::EHOSTUNREACH, Errno::ENETUNREACH ].freeze
+    MAX_CONNECT_RETRIES = 1
+    CONNECT_BACKOFF = 0.5
+
+    attr_reader :api_key, :model, :base_url, :top_p
+
+    def initialize(api_key:, model:, base_url: nil, top_p: nil)
       @api_key = api_key
       @model = model
       @base_url = base_url || BASE_URL
+      @top_p = top_p
     end
 
-    def chat(messages:, tools:, temperature:, max_tokens:, stream: false)
-      Rails.logger.info "[agnix] chat model=#{model} tools=#{tools.present?} stream=#{stream}"
+    def chat(messages:, tools:, temperature:, max_tokens:, top_p: nil, stream: false)
+      Rails.logger.info "[shams] chat model=#{model} tools=#{tools.present?} stream=#{stream}"
       if stream
-        stream_chat(messages: messages, tools: tools, temperature: temperature, max_tokens: max_tokens)
+        stream_chat(messages: messages, tools: tools, temperature: temperature, max_tokens: max_tokens, top_p: top_p)
       else
-        sync_chat(messages: messages, tools: tools, temperature: temperature, max_tokens: max_tokens)
+        sync_chat(messages: messages, tools: tools, temperature: temperature, max_tokens: max_tokens, top_p: top_p)
       end
     end
 
-    def stream_chat(messages:, tools:, temperature:, max_tokens:, &block)
-      body = build_request_body(messages, tools, temperature, max_tokens)
+    def stream_chat(messages:, tools:, temperature:, max_tokens:, top_p: nil, &block)
+      body = build_request_body(messages, tools, temperature, max_tokens, top_p)
       body[:stream] = true
       body[:stream_options] = { include_usage: true }
 
       full_content = +""
+      reasoning = +""
       tool_calls = []
+      usage_tokens = nil
+      attempt = 0
 
-      HTTParty.post("#{base_url}/chat/completions",
-        headers: headers,
-        body: body.to_json,
-        stream_body: true
-      ) do |chunk|
-        chunk.to_s.each_line do |line|
-          line = line.chomp
-          next unless line.start_with?("data: ")
-          data = line.delete_prefix("data: ")
-          next if data == "[DONE]"
+      begin
+        attempt += 1
+        # Reset buffers on each (re)attempt so a retry replays from scratch.
+        full_content = +""
+        reasoning = +""
+        tool_calls = []
+        usage_tokens = nil
 
-          begin
-            event = JSON.parse(data)
-            choice = event.dig("choices", 0)
-            next unless choice
+        HTTParty.post("#{base_url}/chat/completions",
+          headers: headers,
+          body: body.to_json,
+          stream_body: true,
+          timeout: READ_TIMEOUT,
+          open_timeout: OPEN_TIMEOUT
+        ) do |chunk|
+          chunk.to_s.each_line do |line|
+            line = line.chomp
+            next unless line.start_with?("data: ")
+            data = line.delete_prefix("data: ")
+            next if data == "[DONE]"
 
-            delta = choice["delta"]
-            if delta["content"]
-              full_content << delta["content"]
-              yield(delta["content"], full_content, tool_calls) if block_given?
-            end
+            begin
+              event = JSON.parse(data)
 
-            if delta["tool_calls"]
-              delta["tool_calls"].each do |tc|
-                if tc["index"] && tool_calls[tc["index"]]
-                  tool_calls[tc["index"]][:function][:arguments] << tc.dig("function", "arguments").to_s
-                else
-                  tool_calls << {
-                    id: tc["id"],
-                    type: "function",
-                    function: { name: tc.dig("function", "name"), arguments: tc.dig("function", "arguments").to_s }
-                  }
+              # The authoritative usage arrives on the final chunk (empty
+              # "choices"). Capture it so the reported token count matches the
+              # server instead of a chars/4 guess.
+              usage_tokens = event.dig("usage", "completion_tokens") if event["usage"]
+
+              choice = event.dig("choices", 0)
+              next unless choice
+
+              delta = choice["delta"] || {}
+
+              # Reasoning models emit chain-of-thought in "reasoning_content"
+              # before any visible "content". Stream it to the caller (kind
+              # "reasoning") so the UI can show live "thinking" during the long
+              # pre-answer phase instead of a dead spinner; also keep it as a
+              # fallback if the stream is starved of content.
+              if delta["reasoning_content"]
+                reasoning << delta["reasoning_content"]
+                yield(delta["reasoning_content"], reasoning, tool_calls, "reasoning") if block_given?
+              end
+
+              if delta["content"]
+                full_content << delta["content"]
+                yield(delta["content"], full_content, tool_calls, "content") if block_given?
+              end
+
+              if delta["tool_calls"]
+                delta["tool_calls"].each do |tc|
+                  if tc["index"] && tool_calls[tc["index"]]
+                    tool_calls[tc["index"]][:function][:arguments] << tc.dig("function", "arguments").to_s
+                  else
+                    tool_calls << {
+                      id: tc["id"],
+                      type: "function",
+                      function: { name: tc.dig("function", "name"), arguments: tc.dig("function", "arguments").to_s }
+                    }
+                  end
                 end
               end
+            rescue JSON::ParserError
+              next
             end
-          rescue JSON::ParserError
-            next
           end
         end
+      rescue *TRANSIENT_ERRORS => e
+        # Only safe to retry before anything was streamed to the caller.
+        conn = CONNECTION_ERRORS.include?(e.class)
+        max_attempts = conn ? (MAX_CONNECT_RETRIES + 1) : MAX_RETRIES
+        backoff = conn ? CONNECT_BACKOFF : RETRY_BACKOFF
+        if full_content.empty? && tool_calls.empty? && attempt < max_attempts
+          Rails.logger.warn "[shams] stream retry #{attempt}/#{max_attempts} after #{e.class}: #{e.message.to_s[0, 120]}"
+          sleep(backoff * attempt)
+          retry
+        end
+        raise provider_error(e)
       end
 
-      { content: full_content, tool_calls: tool_calls, tokens: estimate_tokens(full_content) }
+      # Content-starved reasoning stream: mirror sync_chat and surface the
+      # reasoning so the caller never persists a blank assistant message.
+      if full_content.empty? && !reasoning.empty?
+        full_content = reasoning
+        yield(full_content, full_content, tool_calls, "content") if block_given?
+      end
+
+      { content: full_content, tool_calls: tool_calls,
+        tokens: usage_tokens || estimate_tokens(full_content) }
     end
 
-    def sync_chat(messages:, tools:, temperature:, max_tokens:, **)
-      body = build_request_body(messages, tools, temperature, max_tokens)
+    def sync_chat(messages:, tools:, temperature:, max_tokens:, top_p: nil, **)
+      body = build_request_body(messages, tools, temperature, max_tokens, top_p)
 
-      response = HTTParty.post("#{base_url}/chat/completions",
-        headers: headers,
-        body: body.to_json
-      )
+      response = post_json("#{base_url}/chat/completions", body)
 
       unless response.success?
-        Rails.logger.error "[agnix] ERROR #{response.code} - #{response.body.truncate(500)}"
+        Rails.logger.error "[shams] ERROR #{response.code} - #{response.body.truncate(500)}"
         raise LlmError, "OpenAI API error: #{response.code} - #{response.body}"
       end
 
       data = JSON.parse(response.body)
-      choice = data.dig("choices", 0, "message")
+      choice = data.dig("choices", 0, "message") || {}
+
+      # Reasoning-capable models can spend the entire response on internal
+      # reasoning and leave the visible content empty (""). llama.cpp emits
+      # "reasoning_content", OpenRouter-style providers emit "reasoning" —
+      # surface whichever is present instead of returning a blank reply.
+      content = choice["content"].presence ||
+        choice["reasoning_content"].presence || choice["reasoning"].presence
 
       raw_tool_calls = choice["tool_calls"] || []
 
@@ -96,18 +177,16 @@ module Llm
       end
 
       {
-        content: choice["content"] || "",
+        content: content.to_s,
         tool_calls: tool_calls,
-        tokens: data.dig("usage", "completion_tokens") || estimate_tokens(choice["content"]),
+        tokens: data.dig("usage", "completion_tokens") || estimate_tokens(content),
         finish_reason: data.dig("choices", 0, "finish_reason") || "stop"
       }
     end
 
     def embeddings(text)
-      response = HTTParty.post("#{base_url}/embeddings",
-        headers: headers,
-        body: { model: "text-embedding-3-small", input: text, encoding_format: "float" }.to_json
-      )
+      response = post_json("#{base_url}/embeddings",
+        { model: "text-embedding-3-small", input: text, encoding_format: "float" })
 
       unless response.success?
         raise LlmError, "OpenAI Embedding error: #{response.code}"
@@ -119,13 +198,41 @@ module Llm
 
     private
 
-    def build_request_body(messages, tools, temperature, max_tokens)
+    # HTTParty POST with retry + linear backoff for transient connection
+    # errors (server restarting, socket reset, timeouts). Non-idempotent
+    # generation is acceptable to replay here because a connection-level
+    # failure means the request never completed on the server side.
+    def post_json(url, body)
+      attempt = 0
+      begin
+        attempt += 1
+        HTTParty.post(url,
+          headers: headers,
+          body: body.to_json,
+          timeout: READ_TIMEOUT,
+          open_timeout: OPEN_TIMEOUT
+        )
+      rescue *TRANSIENT_ERRORS => e
+        conn = CONNECTION_ERRORS.include?(e.class)
+        max_attempts = conn ? (MAX_CONNECT_RETRIES + 1) : MAX_RETRIES
+        backoff = conn ? CONNECT_BACKOFF : RETRY_BACKOFF
+        if attempt < max_attempts
+          Rails.logger.warn "[shams] retry #{attempt}/#{max_attempts} after #{e.class}: #{e.message.to_s[0, 120]}"
+          sleep(backoff * attempt)
+          retry
+        end
+        raise provider_error(e)
+      end
+    end
+
+    def build_request_body(messages, tools, temperature, max_tokens, top_p = nil)
       body = {
         model: model,
-        messages: messages.map { |m| { role: m[:role], content: m[:content].to_s } },
+        messages: messages.map { |m| format_message(m) },
         temperature: temperature,
         max_tokens: max_tokens
       }
+      body[:top_p] = top_p unless top_p.nil?
 
       if tools.any?
         body[:tools] = tools.map do |tool|
@@ -143,11 +250,32 @@ module Llm
       body
     end
 
+    def format_message(msg)
+      formatted = { role: msg[:role], content: msg[:content].to_s }
+
+      if msg[:role] == "tool"
+        formatted[:tool_call_id] = msg[:tool_call_id]
+      elsif msg[:role] == "assistant" && (msg[:tool_calls] || msg[:tool_call_id])
+        formatted[:tool_calls] = msg[:tool_calls]
+      end
+
+      formatted
+    end
+
     def headers
       {
         "Authorization" => "Bearer #{api_key}",
         "Content-Type" => "application/json"
       }
+    end
+
+    def provider_error(e)
+      if CONNECTION_ERRORS.include?(e.class)
+        LlmError.new("Could not reach the model server at #{base_url} (#{e.class}). " \
+                     "Check that the local LLM server is running and listening on this port.")
+      else
+        LlmError.new("The model server at #{base_url} did not respond in time (#{e.class}).")
+      end
     end
 
     def estimate_tokens(text)

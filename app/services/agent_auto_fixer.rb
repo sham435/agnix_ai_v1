@@ -44,7 +44,7 @@ class AgentAutoFixer
     rel = Pathname.new(app_file).relative_path_from(Rails.root.join("app")).to_s
     candidates = [
       Rails.root.join("spec", rel.sub(/\.rb\z/, "_spec.rb")),
-      Rails.root.join("spec", rel.sub(/\.rb\z/, "s_spec.rb")),
+      Rails.root.join("spec", rel.sub(/\.rb\z/, "s_spec.rb"))
     ]
     candidates.find(&:exist?)&.to_s
   end
@@ -75,13 +75,19 @@ class AgentAutoFixer
       #{context[:diff]}
     PROMPT
 
-    result = llm_client.chat(messages: [{ role: "user", content: prompt }])
+    result = llm_client.chat(messages: [ { role: "user", content: prompt } ])
     content = result[:content].to_s
     content[/```diff\n(.*?)\n```/m, 1] || content[/```ruby\n(.*?)\n```/m, 1] || content
+  rescue StandardError => e
+    # The auto-fixer is best-effort: any LLM failure (network, auth, provider
+    # limits like a 403 free-tier rejection) stops this fix attempt instead of
+    # crashing whoever triggered the original error handling.
+    Rails.logger.error "[AgentAutoFixer] LLM failed: #{e.class}: #{e.message.truncate(200)}"
+    nil
   end
 
   def apply_patch(file_path, diff)
-    return [false, "No diff content"] if diff.blank?
+    return [ false, "No diff content" ] if diff.blank?
 
     patched = diff.dup
     patched.gsub!(/^```diff\n/, "")
@@ -89,15 +95,15 @@ class AgentAutoFixer
     patched.gsub!(/^```\n?/, "")
 
     if patched.match?(/\A--- a\/.*\n\+\+\+ b\/.*/m)
-      tmp = Tempfile.new(["patch", ".diff"])
+      tmp = Tempfile.new([ "patch", ".diff" ])
       tmp.write(patched)
       tmp.close
       _stdout, stderr, status = Open3.capture3("patch", file_path.to_s, tmp.path)
       tmp.unlink
-      [status.success?, stderr.to_s.strip]
+      [ status.success?, stderr.to_s.strip ]
     else
       File.write(file_path, patched)
-      [true, ""]
+      [ true, "" ]
     end
   end
 
@@ -108,7 +114,7 @@ class AgentAutoFixer
       status: success ? "SUCCESS" : "FAILED",
       stderr: @error.to_s.truncate(10_000),
       patch: patch,
-      files_modified: [log_data[:file]],
+      files_modified: [ log_data[:file] ],
       duration_ms: 0
     )
 
@@ -138,10 +144,16 @@ class AgentAutoFixer
   end
 
   def llm_client
-    @llm_client ||= Llm::Client.new(
-      provider: "opencode",
-      model: "big-pickle",
-      api_key: ENV.fetch("OPENCODE_API_KEY", "")
-    )
+    @llm_client ||= begin
+      agent = @conversation&.agent
+      if agent&.model.present?
+        # Prefer the conversation's own agent model: it is configured for this
+        # project, points at the local Bonsai/Ollama servers in most runs, and
+        # needs no external network or paid API keys.
+        Llm::Client.new(provider: agent.provider, model: agent.model, api_key: agent.try(:api_key))
+      else
+        Llm::Client.new(provider: "opencode", model: "big-pickle", api_key: ENV.fetch("OPENCODE_API_KEY", ""))
+      end
+    end
   end
 end

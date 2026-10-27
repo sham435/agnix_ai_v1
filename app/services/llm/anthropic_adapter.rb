@@ -4,6 +4,9 @@ module Llm
   class AnthropicAdapter
     BASE_URL = "https://api.anthropic.com/v1"
 
+    OPEN_TIMEOUT = 10
+    READ_TIMEOUT = 120
+
     attr_reader :api_key, :model
 
     def initialize(api_key:, model:)
@@ -11,29 +14,35 @@ module Llm
       @model = model
     end
 
-    def chat(messages:, tools:, temperature:, max_tokens:, stream: false)
+    def chat(messages:, tools:, temperature:, max_tokens:, top_p: nil, stream: false)
       if stream
-        stream_chat(messages: messages, tools: tools, temperature: temperature, max_tokens: max_tokens)
+        stream_chat(messages: messages, tools: tools, temperature: temperature, max_tokens: max_tokens, top_p: top_p)
       else
-        sync_chat(messages: messages, tools: tools, temperature: temperature, max_tokens: max_tokens)
+        sync_chat(messages: messages, tools: tools, temperature: temperature, max_tokens: max_tokens, top_p: top_p)
       end
     end
 
-    def stream_chat(messages:, tools:, temperature:, max_tokens:, &block)
-      body = build_request_body(messages, tools, temperature, max_tokens)
+    def stream_chat(messages:, tools:, temperature:, max_tokens:, top_p: nil, &block)
+      body = build_request_body(messages, tools, temperature, max_tokens, top_p)
       body[:stream] = true
 
       full_content = +""
       tool_calls = []
+      raw = +""
+      saw_sse = false
 
       HTTParty.post("#{BASE_URL}/messages",
         headers: headers,
         body: body.to_json,
-        stream_body: true
+        stream_body: true,
+        timeout: READ_TIMEOUT,
+        open_timeout: OPEN_TIMEOUT
       ) do |chunk|
+        raw << chunk.to_s
         chunk.to_s.each_line do |line|
           line = line.chomp
           next unless line.start_with?("data: ")
+          saw_sse = true
           data = line.delete_prefix("data: ")
           next if data == "[DONE]"
 
@@ -77,15 +86,56 @@ module Llm
         end
       end
 
+      # Buffered-response fallback. We ask for a stream, but some gateways and
+      # models ignore stream:true and return one complete JSON message. Without
+      # this the SSE parser yields nothing and the turn looks "empty". Parse the
+      # raw body as a non-streaming message and surface its text as a single
+      # content delta so streaming consumers still receive genuine tokens.
+      if !saw_sse && full_content.empty? && tool_calls.empty? && !raw.empty?
+        parsed = (JSON.parse(raw) rescue nil)
+
+        # A rejected request (bad key, out of credit, unknown model) also arrives
+        # as one JSON object — but an error, not a message. The SSE parser finds
+        # no deltas, so without this the turn finalizes as an empty reply and the
+        # UI blames the user's phrasing while the provider's actual complaint is
+        # thrown away. Raise instead: the runner records it on the run and on the
+        # message metadata.
+        if parsed.is_a?(Hash) && parsed["type"] == "error"
+          detail = parsed.dig("error", "message").to_s.presence ||
+                   parsed.dig("error", "type").to_s.presence ||
+                   raw.to_s.truncate(300)
+          raise LlmError, "Anthropic API error: #{detail}"
+        end
+
+        Array(parsed&.dig("content")).each do |part|
+          case part["type"]
+          when "text"
+            text = part["text"].to_s
+            next if text.empty?
+
+            full_content << text
+            yield(full_content, full_content, tool_calls) if block_given?
+          when "tool_use"
+            tool_calls << {
+              id: part["id"],
+              type: "function",
+              function: { name: part["name"], arguments: part["input"].to_json }
+            }
+          end
+        end
+      end
+
       { content: full_content, tool_calls: tool_calls, tokens: estimate_tokens(full_content) }
     end
 
-    def sync_chat(messages:, tools:, temperature:, max_tokens:, **)
-      body = build_request_body(messages, tools, temperature, max_tokens)
+    def sync_chat(messages:, tools:, temperature:, max_tokens:, top_p: nil, **)
+      body = build_request_body(messages, tools, temperature, max_tokens, top_p)
 
       response = HTTParty.post("#{BASE_URL}/messages",
         headers: headers,
-        body: body.to_json
+        body: body.to_json,
+        timeout: READ_TIMEOUT,
+        open_timeout: OPEN_TIMEOUT
       )
 
       unless response.success?
@@ -128,7 +178,7 @@ module Llm
 
     private
 
-    def build_request_body(messages, tools, temperature, max_tokens)
+    def build_request_body(messages, tools, temperature, max_tokens, top_p = nil)
       system_message = messages.find { |m| m[:role] == "system" }
       chat_messages = messages.reject { |m| m[:role] == "system" }
 
@@ -138,6 +188,7 @@ module Llm
         temperature: temperature,
         max_tokens: max_tokens
       }
+      body[:top_p] = top_p unless top_p.nil?
       body[:system] = system_message[:content] if system_message
       body[:tools] = format_tools(tools) if tools.any?
 
