@@ -1,0 +1,48 @@
+<%= render "layouts/chat_layout" do %>
+  <header class="sticky top-0 z-20 flex h-[64px] items-center justify-between gap-3 border-b border-border-subtle bg-sidebar/80 glass px-4">
+    <div class="flex items-center gap-2">
+      <button id="menuBtn" class="lg:hidden grid size-9 place-items-center rounded-xl bg-panel hover:bg-hover text-fg-muted">
+        <svg class="size-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+      </button>
+      <h1 class="text-[16px] font-semibold text-fg">Organizations</h1>
+    </div>
+    <%= link_to new_organization_path, class: "btn-primary text-[13px]" do %>
+      <svg class="size-4 mr-1.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 5v14M5 12h14" stroke-linecap="round"/></svg>
+      New Organization
+    <% end %>
+  </header>
+
+  <main class="flex-1 overflow-y-auto p-6">
+    <div class="mx-auto max-w-[900px]">
+      <% if @organizations.any? %>
+        <div class="space-y-3">
+          <% @organizations.each do |org| %>
+            <%= link_to organization_path(org), class: "flex items-center justify-between rounded-2xl bg-panel border border-border-subtle px-5 py-4 hover:bg-hover transition" do %>
+              <div class="flex items-center gap-3">
+                <div class="size-10 rounded-xl bg-accent/10 grid place-items-center text-accent-text">
+                  <svg class="size-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 21h18M5 21V7l7-4 7 4v14M9 9h.01M9 13h.01M15 9h.01M15 13h.01M9 17h.01M15 17h.01"/></svg>
+                </div>
+                <div>
+                  <div class="text-[14px] font-medium text-fg"><%= org.name %></div>
+                  <div class="text-[12px] text-fg-subtle"><%= org.users.size %> members • <%= org.agents.size %> agents</div>
+                </div>
+              </div>
+              <%= status_badge(org.plan) %>
+            <% end %>
+          <% end %>
+        </div>
+      <% else %>
+        <div class="text-center py-20">
+          <div class="size-16 rounded-2xl bg-accent/10 text-accent-text grid place-items-center mx-auto mb-4">
+            <svg class="size-8" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 21h18M5 21V7l7-4 7 4v14"/></svg>
+          </div>
+          <h2 class="text-xl font-semibold text-fg mb-2">No organizations yet</h2>
+          <p class="text-fg-subtle mb-6">Create an organization to manage teams and agents.</p>
+          <%= link_to "Create Organization", new_organization_path, class: "btn-primary" %>
+        </div>
+      <% end %>
+    </div>
+  </main>
+
+  <%= render "shared/sidebar_js" %>
+<% end %>

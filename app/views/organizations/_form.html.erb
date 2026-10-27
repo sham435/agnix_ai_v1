@@ -1,0 +1,21 @@
+<div class="card">
+  <%= form_with model: organization, class: "space-y-4" do |f| %>
+    <div>
+      <label class="block text-[13px] font-medium text-fg-muted mb-1">Name</label>
+      <%= f.text_field :name, placeholder: "Acme Inc.", class: "input-field", required: true %>
+    </div>
+    <div>
+      <label class="block text-[13px] font-medium text-fg-muted mb-1">Slug</label>
+      <%= f.text_field :slug, placeholder: "acme", class: "input-field" %>
+      <p class="text-[11px] text-fg-subtle mt-1">Auto-generated from name</p>
+    </div>
+    <div>
+      <label class="block text-[13px] font-medium text-fg-muted mb-1">Plan</label>
+      <%= f.select :plan, Organization.plans.map { |name, val| [name.titleize, val] }, {}, class: "input-field" %>
+    </div>
+    <div class="flex items-center justify-end gap-3 pt-2">
+      <%= link_to "Cancel", organization.persisted? ? organization_path(organization) : organizations_path, class: "btn-secondary" %>
+      <%= f.submit organization.persisted? ? "Update Organization" : "Create Organization", class: "btn-primary" %>
+    </div>
+  <% end %>
+</div>
