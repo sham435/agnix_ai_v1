@@ -40,15 +40,28 @@ RSpec.describe "Settings integrations", type: :request do
       get settings_integrations_path
 
       expect(response).to have_http_status(:ok)
-      %w[anthropic openai google ollama opencode bonsai].each do |provider|
+      %w[anthropic openai google ollama opencode bonsai openrouter].each do |provider|
         expect(response.body).to include(%(id="provider-key-row-#{provider}"))
       end
       expect(response.body).to include(%(name="api_key"))
       expect(response.body).to include(%(name="provider"))
-      %w[anthropic openai google ollama opencode bonsai].each do |provider|
+      %w[anthropic openai google ollama opencode bonsai openrouter].each do |provider|
         expect(response.body).to include(%(value="#{provider}"))
       end
       expect(response.body).to include("Save key")
+    end
+
+    # The openrouter row is what makes the gateway usable in-app: it is the
+    # only place an operator can paste a key for the Flint route without a
+    # redeploy. One model is listed because MODELS[:openrouter] holds exactly
+    # the route this install probed live.
+    it "renders the openrouter row with its key field and the single Flint model" do
+      get settings_integrations_path
+
+      expect(response.body).to match(/id="provider-key-row-openrouter".*?>Not configured</m)
+      expect(response.body).to match(/id="provider-key-row-openrouter".*?\b1 model\b/m)
+      expect(response.body).to include(%(value="openrouter"))
+      expect(response.body).to include("Openrouter API key")
     end
 
     it "gives every marketplace plugin a connect action when nothing is configured" do
@@ -103,6 +116,33 @@ RSpec.describe "Settings integrations", type: :request do
       get settings_integrations_path
       expect(response.body).not_to include("sk-ant-org-replacement-777")
       expect(response.body).to include("-777")
+    end
+
+    # openrouter is accepted here because MODEL_PROVIDERS is derived from
+    # Agent::MODELS: adding the provider's catalog entry is what opened this
+    # row up. The stored credential then beats ENV for Flint agents.
+    it "stores an openrouter key that a Flint agent actually uses" do
+      post settings_integrations_keys_path,
+           params: { provider: "openrouter", api_key: "sk-or-v1-flint-9182" },
+           headers: html_form_headers
+
+      row = ToolIntegration.find_by(organization: organization, provider: "openrouter")
+      expect(row).to be_present
+      expect(row.name).to eq("Openrouter API")
+      expect(row.is_active?).to be(true)
+      expect(row.reload.decrypted_credentials["api_key"]).to eq("sk-or-v1-flint-9182")
+      expect(response).to redirect_to(settings_integrations_path)
+
+      agent = create(:agent, organization: organization, provider: "openrouter",
+                             model: "recursive/flint-v1.0:free")
+      expect(agent.api_key).to eq("sk-or-v1-flint-9182")
+      expect(agent.llm_client.send(:adapter).base_url).to eq("https://openrouter.ai/api/v1")
+
+      # Encrypted at rest; the page shows only the last-4 fingerprint.
+      expect(raw_credentials(row.id)).not_to include("sk-or-v1-flint-9182")
+      get settings_integrations_path
+      expect(response.body).not_to include("sk-or-v1-flint-9182")
+      expect(response.body).to include("9182")
     end
 
     it "replaces the key in place instead of adding a second row per provider" do

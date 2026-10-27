@@ -26,6 +26,13 @@ RSpec.describe Agent do
       expect(described_class.models_for("not-a-provider")).to eq(Agent::MODELS.values.first)
     end
 
+    it "offers openrouter only the route this install verified live" do
+      # Flint's route id carries both a namespace colon and a ":free" tier
+      # suffix; OpenRouter expects it verbatim, so the catalog stores the id as
+      # published rather than a mangled variant.
+      expect(described_class.models_for("openrouter")).to eq([ "recursive/flint-v1.0:free" ])
+    end
+
     it "covers every provider the enum can store" do
       # The form builds its Provider list from MODELS.keys; this keeps the enum
       # and the catalog from drifting apart again.
@@ -65,6 +72,14 @@ RSpec.describe Agent do
       agent = described_class.new(provider: "google", model: "gemini-2.5-flash")
 
       expect(agent.model_select_options.map(&:last).tally.values.max).to eq(1)
+    end
+
+    it "lists the Flint route as a plain catalog option for an openrouter agent" do
+      agent = described_class.new(provider: "openrouter", model: "recursive/flint-v1.0:free")
+
+      # A catalogued model is not labelled "(saved here)", and the route id is
+      # used as its own label so what the form shows is what OpenRouter receives.
+      expect(agent.model_select_options).to eq([ [ "recursive/flint-v1.0:free", "recursive/flint-v1.0:free" ] ])
     end
   end
 end

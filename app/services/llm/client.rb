@@ -1,12 +1,14 @@
 # LLM Client - Unified interface for multiple LLM providers.
 # Supports Anthropic Claude, OpenAI, Google (Gemini, through its
-# OpenAI-compatible endpoint), Ollama (local), and Bonsai (local,
+# OpenAI-compatible endpoint), OpenRouter (its catalogue of third-party
+# routes, also OpenAI-compatible), Ollama (local), and Bonsai (local,
 # PrismML's compressed Qwen served by llama.cpp behind an OpenAI-compatible
 # API: 1-bit Bonsai 27B and ternary Bonsai 2 27B, each on its own port).
 # Sources:
 #   - https://docs.anthropic.com/en/api/messages
 #   - https://platform.openai.com/docs/api-reference/chat
 #   - https://ai.google.dev/gemini-api/docs/openai
+#   - https://openrouter.ai/docs/api-reference/overview
 #   - https://github.com/ollama/ollama/blob/main/docs/api.md
 #   - https://huggingface.co/prism-ml/Bonsai-27B-gguf
 #   - https://huggingface.co/collections/prism-ml/bonsai-2
@@ -67,15 +69,31 @@ module Llm
       when "anthropic"
         Llm::AnthropicAdapter.new(api_key: api_key, model: model)
       when "openai"
+        # Legacy path: before openrouter was its own provider, an OpenRouter key
+        # on an openai agent was the only way to reach the gateway. Kept so
+        # already-saved rows keep working; it now shares openrouter_base_url so
+        # both paths address the same endpoint.
         if api_key.to_s.start_with?("sk-or-v1")
           Llm::OpenaiAdapter.new(
             api_key: api_key,
             model: model,
-            base_url: ENV.fetch("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+            base_url: openrouter_base_url
           )
         else
           Llm::OpenaiAdapter.new(api_key: api_key, model: model)
         end
+      when "openrouter"
+        # OpenRouter exposes third-party routes (Recursive's Flint among them)
+        # over the OpenAI wire format, so the shared adapter speaks it
+        # unchanged. Unlike the sniff above, this branch is chosen by the
+        # provider the user picked - it does not depend on the key's prefix,
+        # so an organization key pasted into Settings > Integrations routes
+        # correctly whatever it starts with.
+        Llm::OpenaiAdapter.new(
+          api_key: api_key,
+          model: model,
+          base_url: openrouter_base_url
+        )
       when "ollama"
         Llm::OllamaAdapter.new(api_key: api_key, model: model)
       when "bonsai"
@@ -107,6 +125,12 @@ module Llm
 
     def google_base_url
       ENV.fetch("GOOGLE_BASE_URL", "https://generativelanguage.googleapis.com/v1beta/openai/v1")
+    end
+
+    # OpenRouter's OpenAI-compatible ingress. The path already carries its
+    # version segment, so the adapter appends /chat/completions to it.
+    def openrouter_base_url
+      ENV.fetch("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
     end
 
     # Endpoint selection is driven by the PROVIDER, never by a stored model

@@ -26,13 +26,23 @@ class Agent < ApplicationRecord
   # gemini-3.8-flash / gemini-3.7-flash (read timeouts and 503 on tool calls),
   # gemini-3.1-pro-preview (429 quota) and gemini-2.5-pro / gemini-2.5-flash-lite
   # (404 "no longer available to new users").
+  #
+  # openrouter speaks the OpenAI wire format, so its ids are OpenRouter route
+  # ids verbatim. recursive/flint-v1.0:free was probed live against this
+  # install's key: it answered plain text, emitted a well-formed tool_call
+  # (finish_reason "tool_calls") and streamed SSE with authoritative usage.
+  # Catalog metadata: free (prompt/completion 0), 262,144 context, 235,929 max
+  # completion. On the wire its chain of thought travels in its own fields -
+  # delta["reasoning"] / delta["reasoning_details"] - and only the finished
+  # answer appears in delta["content"].
   MODELS = {
     anthropic: %w[claude-opus-4-8 claude-sonnet-4-6 claude-haiku-4-5-20251001],
     openai: %w[gpt-4o gpt-4o-mini o1 o3-mini],
     google: %w[gemini-3.6-flash gemini-3.5-flash gemini-3.5-flash-lite gemini-2.5-flash],
     ollama: %w[llama3.1 mistral codellama],
     opencode: %w[deepseek-v4-flash-free big-pickle nemotron-3-super-free minimax-m3-free mimo-v2.5-free],
-    bonsai: %w[bonsai-27b bonsai-2-27b]
+    bonsai: %w[bonsai-27b bonsai-2-27b],
+    openrouter: %w[recursive/flint-v1.0:free]
   }.freeze
 
   belongs_to :organization, touch: true
@@ -43,7 +53,15 @@ class Agent < ApplicationRecord
   has_many :projects, dependent: :destroy
   has_many :scheduled_tasks, dependent: :destroy
 
-  enum :provider, { anthropic: "anthropic", openai: "openai", google: "google", opencode: "opencode", ollama: "ollama", bonsai: "bonsai" }
+  enum :provider, {
+    anthropic: "anthropic",
+    openai: "openai",
+    google: "google",
+    opencode: "opencode",
+    ollama: "ollama",
+    bonsai: "bonsai",
+    openrouter: "openrouter"
+  }
 
   validates :name, :slug, :model, presence: true
   validates :slug, uniqueness: { scope: :organization_id }

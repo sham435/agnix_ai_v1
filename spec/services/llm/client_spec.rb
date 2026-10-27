@@ -14,6 +14,7 @@ RSpec.describe Llm::Client do
     ENV["BONSAI_BASE_URL"] = "http://127.0.0.1:8910/v1"
     ENV["BONSAI2_BASE_URL"] = "http://127.0.0.1:8080/v1"
     ENV["BONSAI_MODEL"] = "bonsai-2-27b"
+    ENV["OPENROUTER_BASE_URL"] = "https://openrouter.ai/api/v1"
     example.run
   ensure
     ENV.replace(original)
@@ -130,6 +131,75 @@ RSpec.describe Llm::Client do
 
       expect(kwargs[:base_url]).to eq("https://generativelanguage.googleapis.com/v1beta/openai/v1")
       expect(kwargs[:api_key]).to be_nil
+    end
+  end
+
+  # openrouter is a provider in its own right now (Flint is its verified
+  # route), so reaching the gateway no longer depends on an "openai" agent
+  # happening to hold a key that starts with sk-or-v1.
+  describe "openrouter" do
+    def openrouter_client(model: "recursive/flint-v1.0:free", api_key: "sk-or-v1-test-key")
+      described_class.new(provider: "openrouter", model: model, api_key: api_key)
+    end
+
+    it "builds the OpenAI-compatible adapter against the gateway and keeps the route id" do
+      kwargs = built_with do
+        openrouter_client.chat(messages: [ { role: "user", content: "hi" } ], tools: [])
+      end
+
+      expect(kwargs[:base_url]).to eq("https://openrouter.ai/api/v1")
+      # Namespace colon and ":free" tier suffix are part of OpenRouter's id.
+      expect(kwargs[:model]).to eq("recursive/flint-v1.0:free")
+      expect(kwargs[:api_key]).to eq("sk-or-v1-test-key")
+    end
+
+    it "routes by the chosen provider even when the key has no OpenRouter prefix" do
+      kwargs = built_with do
+        openrouter_client(api_key: "an-org-key-without-the-old-prefix")
+          .chat(messages: [ { role: "user", content: "hi" } ], tools: [])
+      end
+
+      expect(kwargs[:base_url]).to eq("https://openrouter.ai/api/v1")
+    end
+
+    it "honours an explicit OPENROUTER_BASE_URL override" do
+      ENV["OPENROUTER_BASE_URL"] = "https://proxy.example.test/api/v1"
+
+      kwargs = built_with do
+        openrouter_client.chat(messages: [ { role: "user", content: "hi" } ], tools: [])
+      end
+
+      expect(kwargs[:base_url]).to eq("https://proxy.example.test/api/v1")
+    end
+
+    it "falls back to the public gateway when OPENROUTER_BASE_URL is unset" do
+      ENV.delete("OPENROUTER_BASE_URL")
+
+      kwargs = built_with do
+        openrouter_client.chat(messages: [ { role: "user", content: "hi" } ], tools: [])
+      end
+
+      expect(kwargs[:base_url]).to eq("https://openrouter.ai/api/v1")
+    end
+
+    it "never sends openrouter traffic to the raw OpenAI host" do
+      kwargs = built_with do
+        openrouter_client.chat(messages: [ { role: "user", content: "hi" } ], tools: [])
+      end
+
+      expect(kwargs[:base_url]).not_to include("api.openai.com")
+    end
+
+    # Rows saved before the provider existed stay reachable: an "openai" agent
+    # wearing an OpenRouter key must not start 401ing against api.openai.com.
+    it "keeps the legacy sk-or-v1 sniff on the openai branch pointed at the same gateway" do
+      kwargs = built_with do
+        described_class.new(provider: "openai", model: "recursive/flint-v1.0:free", api_key: "sk-or-v1-legacy")
+          .chat(messages: [ { role: "user", content: "hi" } ], tools: [])
+      end
+
+      expect(kwargs[:base_url]).to eq("https://openrouter.ai/api/v1")
+      expect(kwargs[:model]).to eq("recursive/flint-v1.0:free")
     end
   end
 end
