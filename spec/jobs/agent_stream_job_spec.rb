@@ -356,4 +356,142 @@ RSpec.describe AgentStreamJob, type: :job do
         .to eq("the answer to keep")
     end
   end
+
+  # ── honest terminal frames ────────────────────────────────────────────
+  #
+  # AgentRunner rescues provider errors, writes an honest error state into the
+  # placeholder and returns the bad news in its result hash instead of raising.
+  # The job used to ignore that verdict and announce `completed` anyway — the
+  # browser stopped "thinking" on a lie, and a failed re-run retired the answer
+  # it was supposed to replace.
+  describe "run failure verdict" do
+    def stub_reported_failure(message = "provider down")
+      allow(runner).to receive(:run) do |_content, **_opts, &blk|
+        blk&.call({ type: "status", phase: "failed", error: message })
+        row = conversation.messages.reload.where(role: "assistant").order(:created_at).last
+        row.update!(
+          content: "I encountered an error while processing your request.",
+          metadata: row.metadata.merge("error" => message).except("streaming")
+        )
+        { content: "I encountered an error while processing your request.", error: message }
+      end
+    end
+
+    it "announces failed with the provider's reason instead of completed" do
+      stub_reported_failure
+      payloads = broadcasted_payloads
+
+      described_class.perform_now(
+        conversation_id: conversation.id, user_id: user.id, message_content: "Hi"
+      )
+
+      types = payloads.map { |p| p[:type] }
+      expect(types).not_to include("completed")
+      failed = payloads.find { |p| p[:type] == "failed" }
+      expect(failed[:code]).to eq("provider_error")
+      expect(failed[:message]).to eq("provider down")
+      expect(failed[:message_id]).to be_present
+      expect(failed[:conversation_id]).to eq(conversation.id)
+    end
+
+    it "keeps the superseded reply when the re-run only reports failure" do
+      superseded = conversation.messages.create!(role: "assistant", content: "the answer to keep")
+      stub_reported_failure
+
+      described_class.perform_now(
+        conversation_id: conversation.id, user_id: user.id,
+        message_content: "Hi", replaces_message_id: superseded.id
+      )
+
+      expect(conversation.messages.reload.find_by(id: superseded.id)&.content)
+        .to eq("the answer to keep")
+      expect(Turbo::StreamsChannel).not_to have_received(:broadcast_remove_to)
+    end
+  end
+
+  # ── run budget (the Timeout.timeout replacement) ──────────────────────
+  #
+  # The job used to wrap the run in `Timeout.timeout(RUN_TIMEOUT_SECONDS)`. The
+  # raise landed at an arbitrary instruction — including inside the DB write that
+  # persists the reply — rolled the placeholder back, and reached the user as the
+  # meaningless "Agent error: execution expired". The budget is now a checkpoint
+  # between chunks: it can only fire where nothing is mid-flight, and it says
+  # which limit it hit.
+  describe "run budget" do
+    # Comments may name the removed construct to explain why; code may not use it.
+    def job_code
+      File.read(Rails.root.join("app/jobs/agent_stream_job.rb"))
+           .lines.reject { |line| line.lstrip.start_with?("#") }
+           .join
+    end
+
+    def captured_turbo_html
+      fragments = []
+      allow(Turbo::StreamsChannel).to receive(:broadcast_append_to) do |_target, **kwargs|
+        fragments << kwargs[:html].to_s
+      end
+      fragments
+    end
+
+    it "no longer interrupts runs with Timeout" do
+      code = job_code
+      expect(code).not_to include("Timeout.timeout")
+      expect(code).not_to include("RUN_TIMEOUT_SECONDS")
+      expect(code).not_to match(/^require "timeout"/)
+    end
+
+    it "stops an endless run at a chunk boundary with an honest reason" do
+      allow(runner).to receive(:run) do |_content, **_opts, &blk|
+        blk&.call({ type: "content_delta", text: "Hel" })
+        blk&.call({ type: "content_delta", text: "lo" })
+      end
+      # rubocop:disable RSpec/AnyInstance
+      allow_any_instance_of(described_class).to receive(:elapsed_seconds)
+        .and_return(AgentStreamJob::RUN_LIMIT + 1)
+      # rubocop:enable RSpec/AnyInstance
+      payloads = broadcasted_payloads
+      html = captured_turbo_html
+
+      described_class.perform_now(
+        conversation_id: conversation.id, user_id: user.id,
+        message_content: "Hi", request_id: "req-budget"
+      )
+
+      types = payloads.map { |p| p[:type] }
+      expect(types).to include("failed")
+      expect(types).not_to include("completed")
+      expect(payloads.find { |p| p[:type] == "failed" }[:code]).to eq("run_timeout")
+
+      # The in-chat error says what happened instead of "execution expired".
+      expect(html.join).to include("without reaching an answer")
+      expect(html.join).not_to include("execution expired")
+
+      # Because the stop happens between chunks, the placeholder still exists
+      # and gets finalized: nothing is rolled back and nothing spins forever.
+      started = payloads.find { |p| p[:type] == "assistant_started" }
+      placeholder = conversation.messages.reload.find(started[:message_id])
+      expect(placeholder.streaming?).to be(false)
+    end
+
+    it "lets a slow but progressing run finish (a stalled local model is not a wedged one)" do
+      allow(runner).to receive(:run) do |_content, **_opts, &blk|
+        blk&.call({ type: "content_delta", text: "Hel" })
+        row = conversation.messages.reload.where(role: "assistant").order(:created_at).last
+        row.update!(content: "Hello there", tokens: 4, metadata: row.metadata.except("streaming"))
+      end
+      # rubocop:disable RSpec/AnyInstance
+      allow_any_instance_of(described_class).to receive(:elapsed_seconds)
+        .and_return(20 * 60)
+      # rubocop:enable RSpec/AnyInstance
+      payloads = broadcasted_payloads
+
+      described_class.perform_now(
+        conversation_id: conversation.id, user_id: user.id, message_content: "Hi"
+      )
+
+      expect(payloads.map { |p| p[:type] }).to include("completed")
+      expect(conversation.messages.reload.where(role: "assistant").last.content)
+        .to eq("Hello there")
+    end
+  end
 end
