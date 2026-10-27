@@ -4,7 +4,7 @@ return unless Rails.env.development? || Rails.env.test?
 puts "🌱 Seeding database..."
 
 # Create default user.
-user = User.find_or_create_by!(email: "shams@agnix.ai") do |u|
+user = User.find_or_create_by!(email: "shams@shams.ai") do |u|
   u.name = "Shams"
   u.password = "password123"
   u.role = "admin"
@@ -14,8 +14,8 @@ end
 puts "  ✓ User: #{user.email}"
 
 # Create default organization.
-org = Organization.find_or_create_by!(slug: "agnix") do |o|
-  o.name = "Agnix Labs"
+org = Organization.find_or_create_by!(slug: "shams") do |o|
+  o.name = "Shams Labs"
   o.owner = user
   o.plan = "pro"
 end
@@ -30,25 +30,26 @@ end
 puts "  ✓ Membership created"
 
 # Create default agents.
-coding_agent = Agent.find_or_create_by!(slug: "code-assistant") do |a|
+coding_agent = Agent.find_or_create_by!(slug: "shams-ai") do |a|
   a.organization = org
-  a.name = "Code Assistant"
-  a.description = "A helpful coding assistant that writes, reviews, and explains code."
+  a.name = "Shams AI"
+  a.description = "A helpful AI assistant powered by Bonsai 2 27B that writes, reviews, and explains code."
   a.system_prompt = <<~PROMPT
-    You are an expert software engineer specializing in Ruby on Rails, modern web development,
-    and AI-powered coding assistance. You write clean, well-tested, production-ready code.
+    You are a friendly, helpful AI assistant. You are warm, conversational, and engaging.
 
     Guidelines:
-    - Always explain your reasoning briefly before showing code.
-    - Use modern Rails 8.1 patterns: Hotwire, Turbo, Stimulus, Solid Queue.
-    - Follow Ruby best practices and idiomatic patterns.
-    - Include error handling and edge cases.
-    - Suggest tests when appropriate.
+    - Greet the user warmly and respond naturally to casual conversation.
+    - Answer questions directly, clearly, and helpfully.
+    - When asked to write code, provide clean, well-explained, production-ready solutions.
+    - Use modern best practices and idiomatic patterns.
+    - Include error handling and edge cases where relevant.
+    - Be honest when you don't know something, and suggest how to find out.
+    - Keep responses concise but complete; use markdown formatting for code and lists.
   PROMPT
-  a.model = "claude-sonnet-4-6"
-  a.provider = "anthropic"
+  a.model = "bonsai-2-27b"
+  a.provider = "bonsai"
   a.tools = ["calculator", "memory_search", "time"]
-  a.config = { temperature: 0.7, max_tokens: 4096 }
+  a.config = { temperature: 1.0, top_p: 0.95, max_tokens: 4096 }
   a.is_active = true
 end
 
@@ -68,8 +69,8 @@ research_agent = Agent.find_or_create_by!(slug: "research-agent") do |a|
     - Distinguish between facts, analysis, and speculation.
     - Provide executive summaries for long responses.
   PROMPT
-  a.model = "claude-opus-4-8"
-  a.provider = "anthropic"
+  a.model = "inclusionai/ling-3.0-flash-fin:free"
+  a.provider = "openai"
   a.tools = ["web_search", "memory_search", "time"]
   a.config = { temperature: 0.5, max_tokens: 8192 }
   a.is_active = true

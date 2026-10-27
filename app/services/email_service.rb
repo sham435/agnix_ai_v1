@@ -5,7 +5,7 @@ class EmailService
       Postmark::ApiClient.new(
         Rails.application.credentials.dig(:postmark, :api_token)
       ).deliver_mail_with_template({
-        From: "Shams <hello@agnix.ai>",
+        From: "Shams <hello@shams.ai>",
         To: user.email,
         TemplateAlias: "welcome",
         TemplateModel: {
@@ -19,7 +19,7 @@ class EmailService
       Postmark::ApiClient.new(
         Rails.application.credentials.dig(:postmark, :api_token)
       ).deliver_mail_with_template({
-        From: "Shams <hello@agnix.ai>",
+        From: "Shams <hello@shams.ai>",
         To: user.email,
         TemplateAlias: "password-reset",
         TemplateModel: {
@@ -33,7 +33,7 @@ class EmailService
       Postmark::ApiClient.new(
         Rails.application.credentials.dig(:postmark, :api_token)
       ).deliver_mail_with_template({
-        From: "Shams <billing@agnix.ai>",
+        From: "Shams <billing@shams.ai>",
         To: user.email,
         TemplateAlias: "invoice",
         TemplateModel: {
@@ -49,7 +49,7 @@ class EmailService
       Postmark::ApiClient.new(
         Rails.application.credentials.dig(:postmark, :api_token)
       ).deliver_mail_with_template({
-        From: "Shams <alerts@agnix.ai>",
+        From: "Shams <alerts@shams.ai>",
         To: owner.email,
         TemplateAlias: "usage-alert",
         TemplateModel: {

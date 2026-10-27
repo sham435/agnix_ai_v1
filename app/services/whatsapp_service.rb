@@ -147,7 +147,7 @@ class WhatsappService
       # Create a new user if auto-provisioning is enabled.
       if Rails.application.credentials.dig(:whatsapp, :auto_provision)
         User.create!(
-          email: "#{phone_number}@whatsapp.agnix.local",
+          email: "#{phone_number}@whatsapp.shams.local",
           name: name || "WhatsApp User #{phone_number}",
           whatsapp_phone: phone_number,
           password: SecureRandom.hex(16),
