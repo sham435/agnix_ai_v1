@@ -1,10 +1,11 @@
 class AgentRunner
-  # Conversational turns rarely need more than a handful of model<->tool
-  # round-trips, so the chat loop stays tightly capped. A build task, by
-  # contrast, can legitimately churn through dozens (scaffold files, install
-  # dependencies, run and re-run verification), so it gets a much larger
-  # budget before we give up. See #iteration_budget for how they are chosen.
-  MAX_ITERATIONS = 10
+  # A tool-using chat turn can now do real multi-step work on the machine (the
+  # agent's enabled tools include run_command/write_file even without an OS
+  # mode), so the old tight cap of 10 cut off work that was still progressing.
+  # Chat gets a moderate budget; a build/OS task, which can legitimately churn
+  # through dozens of steps (scaffold files, install dependencies, re-verify),
+  # gets a larger one. See #iteration_budget for how they are chosen.
+  MAX_ITERATIONS = 20
   BUILD_MAX_ITERATIONS = 30
   MAX_TOOL_CALLS_PER_TURN = 5
   OS_MODES = %w[auto_plan auto_build manual_plan manual_build].freeze
