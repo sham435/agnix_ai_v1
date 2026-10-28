@@ -12,6 +12,21 @@ RSpec.describe Llm::OpenaiAdapter do
     allow(HTTParty).to receive(:post).and_return(response)
   end
 
+  # HTTParty streams the body through HTTParty::ResponseFragment, which delegates
+  # the raw chunk text and also answers #code with the status line. A double with
+  # those two messages drives the adapter exactly as a live gateway does. The
+  # older examples yield bare Strings instead, which carry no status at all.
+  def stream_fragment(text, code)
+    double(to_s: text, code: code)
+  end
+
+  def stub_stream_fragments(fragments, returns: nil)
+    allow(HTTParty).to receive(:post) do |_url, _opts, &blk|
+      fragments.each { |fragment| blk&.call(fragment) }
+      returns
+    end
+  end
+
   describe "reasoning-only responses" do
     # Chain of thought is never answer text. A reply that spent its whole
     # budget thinking comes back EMPTY, which AgentStreamJob records as
@@ -187,6 +202,78 @@ RSpec.describe Llm::OpenaiAdapter do
 
       expect(kinds).to eq([ "reasoning", "content" ])
       expect(pieces).to eq([ "thinking hard", "Hi" ])
+    end
+  end
+
+  # A gateway outage used to look like a model that had nothing to say: the
+  # error body is not an SSE stream, so every byte was dropped and the turn
+  # "finished" empty. The status line is now read off the stream itself.
+  describe "HTTP status failures" do
+    let(:gateway) do
+      described_class.new(api_key: "sk-or-v1-test", model: "recursive/flint-v1.0:free",
+                          base_url: "https://openrouter.ai/api/v1")
+    end
+
+    def stream(&block)
+      gateway.stream_chat(messages: [ { role: "user", content: "hi" } ], tools: [],
+                          temperature: 0.7, max_tokens: 100, &block)
+    end
+
+    it "raises with the server's own reason instead of returning an empty answer" do
+      stub_stream_fragments([
+        stream_fragment(%({"error":{"message":"upstream rate limited","type":"rate_limit"}}), 429)
+      ], returns: double(code: "429"))
+
+      frames = []
+      expect { stream { |piece, *_| frames << piece } }
+        .to raise_error(Llm::OpenaiAdapter::LlmError) { |error|
+          expect(error.message).to include("https://openrouter.ai/api/v1", "HTTP 429", "upstream rate limited")
+        }
+      expect(frames).to be_empty
+    end
+
+    it "never parses an error body as events, even when it looks like an event" do
+      stub_stream_fragments([
+        stream_fragment('data: {"choices":[{"index":0,"delta":{"content":"SHOULD-NOT-LEAK"}}]}', 500)
+      ])
+
+      frames = []
+      expect { stream { |piece, *_| frames << piece } }
+        .to raise_error(Llm::OpenaiAdapter::LlmError, /HTTP 500/)
+      expect(frames.join).not_to include("SHOULD-NOT-LEAK")
+    end
+
+    it "names the status when the error response has no body to show" do
+      # A 0-length 502 still streams exactly one fragment: the status line, with
+      # nothing but an empty chunk attached to it.
+      stub_stream_fragments([ stream_fragment("", 502) ])
+
+      expect { stream }.to raise_error(Llm::OpenaiAdapter::LlmError, /HTTP 502 with no response body/)
+    end
+
+    it "reads the status from the completed response when no fragment is streamed" do
+      # If the transport yields nothing at all, the status HTTParty reports once
+      # the request finishes is the only signal - an error must not be able to
+      # pass as a completed empty turn.
+      allow(HTTParty).to receive(:post).and_return(double(code: "503"))
+
+      expect { stream }.to raise_error(Llm::OpenaiAdapter::LlmError, /HTTP 503 with no response body/)
+    end
+
+    it "streams normally while the transport reports 2xx" do
+      stub_stream_fragments([
+        stream_fragment(%(data: {"choices":[{"index":0,"delta":{"reasoning":"pondering"}}]}\n\n), 200),
+        stream_fragment(%(data: {"choices":[{"index":0,"delta":{"content":"FLINT-LIVE-OK"}}]}\n\n), 200),
+        stream_fragment(%(data: {"choices":[],"usage":{"completion_tokens":30}}\n\n), 200),
+        stream_fragment("data: [DONE]\n\n", 200)
+      ], returns: double(code: "200"))
+
+      frames = []
+      result = stream { |piece, _full, _tcs, kind| frames << [ kind, piece ] }
+
+      expect(frames).to eq([ [ "reasoning", "pondering" ], [ "content", "FLINT-LIVE-OK" ] ])
+      expect(result[:content]).to eq("FLINT-LIVE-OK")
+      expect(result[:tokens]).to eq(30)
     end
   end
 

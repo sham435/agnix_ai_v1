@@ -30,6 +30,13 @@ module Llm
     MAX_CONNECT_RETRIES = 1
     CONNECT_BACKOFF = 0.5
 
+    # Streaming responses are judged by their status line, not by what the body
+    # happens to parse into: only 2xx is a stream, anything else is a gateway
+    # failure. Error bodies are kept (truncated) so the raised message carries
+    # the provider's own reason instead of a bare status code.
+    SUCCESS_STATUSES = (200..299).freeze
+    MAX_ERROR_BODY = 500
+
     attr_reader :api_key, :model, :base_url, :top_p
 
     def initialize(api_key:, model:, base_url: nil, top_p: nil)
@@ -66,14 +73,33 @@ module Llm
         reasoning = +""
         tool_calls = []
         usage_tokens = nil
+        stream_status = nil
+        error_body = +""
 
-        HTTParty.post("#{base_url}/chat/completions",
+        response = HTTParty.post("#{base_url}/chat/completions",
           headers: headers,
           body: body.to_json,
           stream_body: true,
           timeout: READ_TIMEOUT,
           open_timeout: OPEN_TIMEOUT
         ) do |chunk|
+          # While streaming, HTTParty yields a ResponseFragment that exposes the
+          # numeric status line as soon as the headers arrive, so the turn is
+          # judged on the real HTTP result instead of on what the body happens
+          # to parse into. A gateway failure is not an SSE stream: OpenRouter
+          # answers a 429 with plain JSON, which used to yield no "data:" lines
+          # at all, and the run "succeeded" with an empty reply - the model was
+          # blamed for the provider's outage. Keep the server's own reason and
+          # skip the parse.
+          status = status_of(chunk)
+          if status
+            stream_status = status
+            unless SUCCESS_STATUSES.cover?(status)
+              error_body << chunk.to_s if error_body.bytesize < MAX_ERROR_BODY
+              next
+            end
+          end
+
           chunk.to_s.each_line do |line|
             line = line.chomp
             next unless line.start_with?("data: ")
@@ -128,6 +154,17 @@ module Llm
               next
             end
           end
+        end
+
+        # Error bodies and healthy streams both arrive through the fragment
+        # block above, but a response that streams no fragments at all leaves
+        # stream_status unset - the completed response still carries the status
+        # line, so read it there. nil means the transport never told us (a stub
+        # that yields bare String chunks does exactly this), which counts as
+        # unknown, not as a failure.
+        stream_status ||= status_of(response)
+        if stream_status && !SUCCESS_STATUSES.cover?(stream_status)
+          raise stream_error(stream_status, error_body)
         end
       rescue *TRANSIENT_ERRORS => e
         # Only safe to retry before anything was streamed to the caller.
@@ -272,6 +309,29 @@ module Llm
         "Authorization" => "Bearer #{api_key}",
         "Content-Type" => "application/json"
       }
+    end
+
+    # The numeric HTTP status of a streaming turn. HTTParty yields a
+    # ResponseFragment that delegates the chunk text but also answers #code, and
+    # the completed response answers #code too; a bare String chunk (what test
+    # stubs yield) answers neither, so the caller gets nil and treats the status
+    # as unknown instead of inventing one.
+    def status_of(source)
+      return nil unless source.respond_to?(:code)
+
+      Integer(source.code.to_s, 10)
+    rescue ArgumentError
+      nil
+    end
+
+    # A non-2xx streaming turn is a provider failure, not an empty answer. Say
+    # which endpoint refused, with the reason it gave, so the run is recorded
+    # failed with something actionable instead of a blank message.
+    def stream_error(status, error_body)
+      reason = error_body.to_s.strip[0, MAX_ERROR_BODY]
+      Rails.logger.error "[shams] ERROR #{status} - #{reason.presence || "(empty body)"}"
+      detail = reason.presence ? ": #{reason}" : " with no response body"
+      LlmError.new("Model server at #{base_url} answered HTTP #{status}#{detail}.")
     end
 
     def provider_error(e)
