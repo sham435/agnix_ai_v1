@@ -7,6 +7,13 @@ module Llm
     OPEN_TIMEOUT = 10
     READ_TIMEOUT = 120
 
+    # A streaming turn is judged by its status line, not by what the body happens
+    # to parse into: only 2xx is a response, anything else is a gateway or API
+    # failure. The error body is kept (truncated) so the raised message carries
+    # Anthropic's own complaint instead of a bare status code.
+    SUCCESS_STATUSES = (200..299).freeze
+    MAX_ERROR_BODY = 500
+
     attr_reader :api_key, :model
 
     def initialize(api_key:, model:)
@@ -30,14 +37,30 @@ module Llm
       tool_calls = []
       raw = +""
       saw_sse = false
+      stream_status = nil
+      error_body = +""
 
-      HTTParty.post("#{BASE_URL}/messages",
+      response = HTTParty.post("#{BASE_URL}/messages",
         headers: headers,
         body: body.to_json,
         stream_body: true,
         timeout: READ_TIMEOUT,
         open_timeout: OPEN_TIMEOUT
       ) do |chunk|
+        # HTTParty yields a ResponseFragment while streaming, which answers
+        # #code as soon as the headers arrive. A rejection is not an SSE stream
+        # - Anthropic answers 4xx/5xx with one JSON object, a proxy may answer
+        # with HTML - so keep the reason, skip the parse, and fail below instead
+        # of finalizing the turn as an empty reply.
+        status = status_of(chunk)
+        if status
+          stream_status = status
+          unless SUCCESS_STATUSES.cover?(status)
+            error_body << chunk.to_s if error_body.bytesize < MAX_ERROR_BODY
+            next
+          end
+        end
+
         raw << chunk.to_s
         chunk.to_s.each_line do |line|
           line = line.chomp
@@ -84,6 +107,14 @@ module Llm
             next
           end
         end
+      end
+
+      # If the transport yielded no fragments at all, the status HTTParty
+      # reports once the request finishes is the only signal. A status it never
+      # reported stays unknown instead of being invented as a failure.
+      stream_status ||= status_of(response)
+      if stream_status && !SUCCESS_STATUSES.cover?(stream_status)
+        raise stream_error(stream_status, error_body)
       end
 
       # Buffered-response fallback. We ask for a stream, but some gateways and
@@ -217,6 +248,31 @@ module Llm
         "anthropic-version" => "2024-02-01",
         "content-type" => "application/json"
       }
+    end
+
+    # The numeric HTTP status of a streaming turn. HTTParty yields a
+    # ResponseFragment that delegates the chunk text but also answers #code, and
+    # the completed response answers #code too; a bare String chunk (what test
+    # stubs yield) answers neither, so the caller gets nil and treats the status
+    # as unknown instead of inventing one.
+    def status_of(source)
+      return nil unless source.respond_to?(:code)
+
+      Integer(source.code.to_s, 10)
+    rescue ArgumentError
+      nil
+    end
+
+    # A non-2xx streaming turn is an API failure, not an empty answer. Phrased
+    # like sync_chat's error so the run records the status and the provider's
+    # own complaint instead of finalizing a blank reply. Whitespace is collapsed:
+    # a proxy's HTML failure would otherwise paint a multi-line blob into the
+    # single-line error bubble.
+    def stream_error(status, error_body)
+      reason = error_body.to_s.gsub(/\s+/, " ").strip[0, MAX_ERROR_BODY]
+      Rails.logger.error "[shams] ERROR #{status} - #{reason.presence || "(empty body)"}"
+      detail = reason.presence ? " - #{reason}" : " with no response body"
+      LlmError.new("Anthropic API error: HTTP #{status}#{detail}")
     end
 
     def estimate_tokens(text)
