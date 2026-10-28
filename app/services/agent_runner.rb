@@ -1,5 +1,11 @@
 class AgentRunner
+  # Conversational turns rarely need more than a handful of model<->tool
+  # round-trips, so the chat loop stays tightly capped. A build task, by
+  # contrast, can legitimately churn through dozens (scaffold files, install
+  # dependencies, run and re-run verification), so it gets a much larger
+  # budget before we give up. See #iteration_budget for how they are chosen.
   MAX_ITERATIONS = 10
+  BUILD_MAX_ITERATIONS = 30
   MAX_TOOL_CALLS_PER_TURN = 5
   OS_MODES = %w[auto_plan auto_build manual_plan manual_build].freeze
   CHAT_ATTACHMENT_TOOLS = %w[read_asset list_assets].freeze
@@ -347,6 +353,14 @@ class AgentRunner
     Rails.logger.warn "broadcast_turbo error: #{e.message}"
   end
 
+  # A build/OS run operates on the machine through real tools and can span
+  # many steps; it gets the larger budget. Plain conversational chat keeps the
+  # tight cap. This mirrors the OS_MODES gate in tool_definitions that decides
+  # whether on-machine execution tools are available at all.
+  def iteration_budget
+    conversation.mode.in?(OS_MODES) ? BUILD_MAX_ITERATIONS : MAX_ITERATIONS
+  end
+
   def execute_tool_loop(user_message, stream: true, &block)
     refresh_live_references!
     @generating_announced = false
@@ -364,7 +378,7 @@ class AgentRunner
     tool_call_results = []
 
     begin
-      MAX_ITERATIONS.times do |iteration|
+      iteration_budget.times do |iteration|
         messages = build_messages(tool_call_results)
         tool_schemas = build_tool_schemas
 

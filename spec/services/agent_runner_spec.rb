@@ -563,7 +563,7 @@ RSpec.describe AgentRunner, type: :service do
 
       # Evidence gating: a text-only reply executes no tool action, so the
       # pending step can no longer be marked done.
-      expect(agent_run.reload.todos.pluck(:status)).to eq(%w[done failed])
+      expect(agent_run.reload.todos.order(:position).pluck(:status)).to eq(%w[done failed])
       expect(agent_run.todos.find_by(title: "Step two").result).to include("No tool action was executed")
       expect(agent_run.status).to eq("completed")
     end
@@ -636,6 +636,26 @@ RSpec.describe AgentRunner, type: :service do
     it "excludes mode context when conversation has no mode" do
       prompt = runner.send(:build_system_prompt)
       expect(prompt).not_to include("Current OS mode")
+    end
+  end
+
+  # ── iteration_budget ────────────────────────────────────────────────
+
+  describe "#iteration_budget" do
+    subject(:runner) { described_class.new(agent: agent, conversation: conversation, user: user) }
+
+    it "uses the tight conversational cap when there is no OS mode" do
+      expect(runner.send(:iteration_budget)).to eq(AgentRunner::MAX_ITERATIONS)
+    end
+
+    it "raises the cap for build/OS-mode runs that work on the machine" do
+      conversation.update!(mode: "auto_build")
+      expect(runner.send(:iteration_budget)).to eq(AgentRunner::BUILD_MAX_ITERATIONS)
+    end
+
+    it "raises the cap for plan-mode runs too" do
+      conversation.update!(mode: "auto_plan")
+      expect(runner.send(:iteration_budget)).to eq(AgentRunner::BUILD_MAX_ITERATIONS)
     end
   end
 end
