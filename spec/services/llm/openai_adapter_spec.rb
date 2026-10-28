@@ -243,6 +243,19 @@ RSpec.describe Llm::OpenaiAdapter do
       expect(frames.join).not_to include("SHOULD-NOT-LEAK")
     end
 
+    it "keeps a multi-line failure page on one line of the message" do
+      # A reverse proxy in front of the gateway answers with an HTML page. Its
+      # text is quoted as the reason, so the newlines must not spill into the
+      # single-line error bubble the job renders.
+      page = "<html>\n  <head><title>502 Bad Gateway</title></head>\n  <body>upstream gone</body>\n</html>"
+      stub_stream_fragments([ stream_fragment(page, 502) ])
+
+      expect { stream }.to raise_error(Llm::OpenaiAdapter::LlmError) { |error|
+        expect(error.message).to include("HTTP 502", "502 Bad Gateway", "upstream gone")
+        expect(error.message).not_to include("\n")
+      }
+    end
+
     it "names the status when the error response has no body to show" do
       # A 0-length 502 still streams exactly one fragment: the status line, with
       # nothing but an empty chunk attached to it.

@@ -326,9 +326,11 @@ module Llm
 
     # A non-2xx streaming turn is a provider failure, not an empty answer. Say
     # which endpoint refused, with the reason it gave, so the run is recorded
-    # failed with something actionable instead of a blank message.
+    # failed with something actionable instead of a blank message. Whitespace is
+    # collapsed: a proxy's HTML failure would otherwise paint a multi-line blob
+    # into the single-line error bubble.
     def stream_error(status, error_body)
-      reason = error_body.to_s.strip[0, MAX_ERROR_BODY]
+      reason = error_body.to_s.gsub(/\s+/, " ").strip[0, MAX_ERROR_BODY]
       Rails.logger.error "[shams] ERROR #{status} - #{reason.presence || "(empty body)"}"
       detail = reason.presence ? ": #{reason}" : " with no response body"
       LlmError.new("Model server at #{base_url} answered HTTP #{status}#{detail}.")
