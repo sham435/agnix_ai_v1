@@ -66,8 +66,12 @@ class AgentRunner
 
     # OS modes always execute on this machine: guarantee the execution tools
     # are available even when the agent's configured tool list is chat-only.
+    # `scaffold` is included here because laying down a whole verified project
+    # in one call is precisely what a build task needs, and doing it by hand
+    # through write/run round-trips is what used to exhaust the iteration
+    # budget.
     if conversation.mode.in?(OS_MODES)
-      os_names = %w[run_command code_executor write_file read_file calculator memory_search time]
+      os_names = %w[run_command code_executor write_file read_file calculator memory_search time scaffold]
       names = (names | os_names | attachment_tools | image_tools)
     else
       # Plain chat: conversations carrying user attachments get the read-only

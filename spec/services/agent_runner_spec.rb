@@ -148,6 +148,16 @@ RSpec.describe AgentRunner, type: :service do
       expect(names).to include("run_command", "write_file", "read_asset", "list_assets")
     end
 
+    it "guarantees the scaffold tool on OS/build runs even with a chat-only config" do
+      allow(agent).to receive(:enabled_tools).and_return([])
+      os_conversation = create(:conversation, user: user, agent: agent, mode: "auto_build")
+      os_runner = described_class.new(agent: agent, conversation: os_conversation, user: user)
+
+      expect(os_runner.tool_definitions).to include("scaffold")
+      # ...but plain chat does not hand it out for free.
+      expect(runner.tool_definitions).not_to include("scaffold")
+    end
+
     it "passes the acting user into executor context for ownership checks" do
       allow(agent).to receive(:enabled_tools).and_return([ "test_tool" ])
       allow(Agents::ToolRegistry).to receive(:execute).and_return({ ok: true })

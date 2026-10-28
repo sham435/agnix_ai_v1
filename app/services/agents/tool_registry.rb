@@ -241,6 +241,36 @@ Agents::ToolRegistry.register "write_file",
     { ok: false, error: e.message, path: args["path"] }
   end
 
+Agents::ToolRegistry.register "scaffold",
+  description: "Generate a complete, runnable project from a curated template in ONE call and " \
+               "verify it before returning. It writes the whole file tree into an absolute " \
+               "target_dir (inside the approved workspace), probes local interpreters for one " \
+               "that can import the framework, runs a real system check, and returns the pinned " \
+               "run command. Use this instead of hand-writing dozens of files when the user asks " \
+               "to scaffold a project (currently: template 'django_landing').",
+  parameters: {
+    type: "object",
+    properties: {
+      target_dir: { type: "string", description: "Absolute directory to create the project in " \
+                                                 "(e.g. /Users/you/projects/myapp)" },
+      template: { type: "string", description: "Template to lay down. Default: django_landing" },
+      brand: { type: "string", description: "Optional product/brand name used in the page copy " \
+                                            "(default: NOVA)" },
+      force: { type: "boolean", description: "Overwrite an existing project in target_dir " \
+                                             "(default false: refuses if manage.py already exists)" }
+    },
+    required: [ "target_dir" ]
+  } do |args, _context|
+  Agents::Scaffolder.scaffold(
+    template: args["template"] || "django_landing",
+    target_dir: args["target_dir"],
+    brand: args["brand"],
+    force: args["force"] ? true : false
+  )
+rescue SecurityError, StandardError => e
+  { ok: false, error: e.message }
+end
+
 Agents::ToolRegistry.register "calculator",
   description: "Perform mathematical calculations",
   parameters: {

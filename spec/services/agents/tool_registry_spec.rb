@@ -251,4 +251,42 @@ RSpec.describe Agents::ToolRegistry, type: :service do
       end
     end
   end
+
+  # The interpreter-pinned project scaffolder. Registration + delegation only
+  # here; the file/interpreter logic is covered by scaffolder_spec.
+  describe "scaffold" do
+    it "is registered and advertised to the model" do
+      tool = described_class.get("scaffold")
+      expect(tool).to be_present
+      expect(tool[:description]).to include("django_landing")
+      expect(described_class.schemas([ "scaffold" ]).first[:parameters][:required]).to include("target_dir")
+    end
+
+    it "validates that target_dir is present before running" do
+      expect { described_class.execute("scaffold", {}) }
+        .to raise_error(ArgumentError, /Invalid arguments/)
+    end
+
+    it "defaults the template and delegates to Agents::Scaffolder" do
+      allow(Agents::Scaffolder).to receive(:scaffold).and_return({ ok: true, project_dir: "/tmp/x" })
+
+      result = described_class.execute("scaffold", { "target_dir" => "/tmp/x" })
+      expect(result[:ok]).to be true
+      expect(Agents::Scaffolder).to have_received(:scaffold).with(
+        template: "django_landing", target_dir: "/tmp/x", brand: nil, force: false
+      )
+    end
+
+    it "passes through template, brand and force" do
+      allow(Agents::Scaffolder).to receive(:scaffold).and_return({ ok: true })
+
+      described_class.execute("scaffold", {
+        "target_dir" => "/tmp/y", "template" => "django_landing",
+        "brand" => "Quasar", "force" => true
+      })
+      expect(Agents::Scaffolder).to have_received(:scaffold).with(
+        template: "django_landing", target_dir: "/tmp/y", brand: "Quasar", force: true
+      )
+    end
+  end
 end
