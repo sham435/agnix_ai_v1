@@ -193,9 +193,8 @@ RAILS_MAX_THREADS=10
 WEB_CONCURRENCY=2
 PORT=3000
 
-# Solid Queue
-SOLID_QUEUE_WORKERS=2
-SOLID_QUEUE_AGENT_WORKERS=1
+# Solid Queue (config/queue.yml reads JOB_CONCURRENCY for the worker process count)
+JOB_CONCURRENCY=2
 
 # App
 APP_HOST=shams.example.com
