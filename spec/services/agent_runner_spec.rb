@@ -80,6 +80,104 @@ RSpec.describe AgentRunner, type: :service do
     end
   end
 
+  # ── scaffold availability in NORMAL CHAT (opt-in via enabled_tools) ──
+  #
+  # The scaffold capability ships behind the same config-driven surfacing as
+  # every other native tool: it reaches the model only because the agent's
+  # enabled_tools list names it. These examples pin that contract without
+  # re-testing the scaffolder itself (covered by scaffolder_spec).
+  describe "scaffold in normal chat" do
+    # A chat agent configured exactly like the seeded Shams AI assistant.
+    let(:chat_agent) { create(:agent, organization: organization, tools: [ "calculator", "memory_search", "time", "scaffold" ]) }
+    let(:chat_conversation) { create(:conversation, user: user, agent: chat_agent) } # no OS mode => plain chat
+    let(:chat_runner) { described_class.new(agent: chat_agent, conversation: chat_conversation, user: user) }
+
+    it "surfaces the registered scaffold tool for a chat agent that enables it" do
+      names = chat_runner.tool_definitions
+      expect(names).to include("scaffold")
+      # Existing chat tools are preserved, not replaced.
+      expect(names).to include("calculator", "memory_search", "time")
+    end
+
+    it "hands the real scaffold schema to the provider when the model is called" do
+      expect(Agents::ToolRegistry.get("scaffold")).to be_present
+      captured_tools = nil
+      allow(chat_agent).to receive(:llm_client).and_return(client)
+      allow(client).to receive(:chat) do |**kwargs|
+        captured_tools = kwargs[:tools]
+        { content: "ok", tool_calls: [], tokens: 5 }
+      end
+
+      chat_runner.run("make me a landing page", stream: false)
+
+      expect(captured_tools.map { |s| s[:name] }).to include("scaffold")
+      expect(captured_tools.find { |s| s[:name] == "scaffold" }[:parameters][:required]).to include("target_dir")
+    end
+
+    it "does not hand scaffold to a chat agent that has not enabled it" do
+      plain = create(:agent, organization: organization, tools: [ "calculator", "time" ])
+      plain_conversation = create(:conversation, user: user, agent: plain)
+      runner = described_class.new(agent: plain, conversation: plain_conversation, user: user)
+
+      expect(runner.tool_definitions).not_to include("scaffold")
+    end
+
+    it "invokes scaffolding end-to-end through the existing chat tool loop" do
+      allow(chat_agent).to receive(:llm_client).and_return(client)
+      allow(client).to receive(:chat).and_return(
+        { content: nil, tool_calls: [ { id: "s1", type: "function",
+          function: { name: "scaffold", arguments: '{"target_dir":"/tmp/shams-chat-scaffold"}' } } ], tokens: 8 },
+        { content: "Scaffolded and verified.", tool_calls: [], tokens: 12 }
+      )
+      allow(Agents::Scaffolder).to receive(:scaffold).and_return({ ok: true, project_dir: "/tmp/shams-chat-scaffold" })
+
+      result = chat_runner.run("scaffold a django landing", stream: false)
+
+      expect(Agents::Scaffolder).to have_received(:scaffold).with(
+        template: "django_landing", target_dir: "/tmp/shams-chat-scaffold", brand: nil, force: false
+      )
+      expect(result[:content]).to eq("Scaffolded and verified.")
+    end
+
+    it "creates nothing unless the model actually calls the tool" do
+      allow(chat_agent).to receive(:llm_client).and_return(client)
+      allow(client).to receive(:chat).and_return({ content: "Sure, what should it be?", tool_calls: [], tokens: 6 })
+      expect(Agents::Scaffolder).not_to receive(:scaffold)
+
+      chat_runner.run("let's build something someday", stream: false)
+    end
+
+    it "keeps the bounded refusal contract on the enabled chat path" do
+      # Unknown template short-circuits before any disk write; a blocked path
+      # is refused by the executor guardrails — no project created either way.
+      missing = "/tmp/shams-never-#{SecureRandom.hex(6)}"
+      refused = Agents::ToolRegistry.execute("scaffold", { "template" => "rails-api", "target_dir" => missing })
+      expect(refused[:ok]).to be false
+      expect(refused[:error_code]).to eq("unknown_template")
+      expect(File).not_to exist(missing)
+
+      blocked = Agents::ToolRegistry.execute("scaffold", { "target_dir" => "/etc/shams-blocked-app" })
+      expect(blocked[:ok]).to be false
+      expect(blocked[:error_code]).to eq("blocked_path")
+    end
+  end
+
+  # ── OS/build modes keep their guaranteed scaffold availability ────────
+
+  describe "scaffold on build modes" do
+    let(:build_agent) { create(:agent, organization: organization, tools: []) }
+
+    it "auto_build and manual_build expose the execution set including scaffold" do
+      %w[auto_build manual_build].each do |mode|
+        conv = create(:conversation, user: user, agent: build_agent, mode: mode)
+        runner = described_class.new(agent: build_agent, conversation: conv, user: user)
+        names = runner.tool_definitions
+
+        expect(names).to include("scaffold", "run_command", "write_file", "read_file", "code_executor")
+      end
+    end
+  end
+
   # ── capability-aware chat tool surfacing (Phase C) ──────────────────
 
   describe "capability-aware tool surfacing" do

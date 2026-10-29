@@ -48,7 +48,7 @@ coding_agent = Agent.find_or_create_by!(slug: "shams-ai") do |a|
   PROMPT
   a.model = "bonsai-2-27b"
   a.provider = "bonsai"
-  a.tools = ["calculator", "memory_search", "time"]
+  a.tools = ["calculator", "memory_search", "time", "scaffold"]
   a.config = { temperature: 1.0, top_p: 0.95, max_tokens: 4096 }
   a.is_active = true
 end
