@@ -1,5 +1,8 @@
 web: bin/rails server -p 3001
-css: bin/rails tailwindcss:watch
+# "[always]" sets Tailwind's --watch=always: v4 stops watching as soon as stdin
+# closes, and foreman gives this process no tty stdin - without it the watcher
+# prints its banner, exits 0, and foreman tears the whole stack down.
+css: bin/rails "tailwindcss:watch[always]"
 jobs: bin/jobs
 # The local model server (OpenAI-compatible llama.cpp on :8080, used by the
 # bonsai-* providers) is intentionally NOT a Procfile process: foreman shuts the
