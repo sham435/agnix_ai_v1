@@ -55,6 +55,23 @@ end
 
 puts "  ✓ Agent: #{coding_agent.name}"
 
+# Idempotent capability upgrade. The block above only sets tools when the agent
+# row is FIRST created; on an existing install (an agent seeded before the
+# `scaffold` tool existed) find_or_create_by never rewrites tools. Append the
+# registered `scaffold` tool to the chat assistant only when it is missing, so
+# re-seeding grants the capability without clobbering operator-edited tool
+# lists or duplicating the entry. Tolerates both plain-string and {"name"=>…}
+# hash entries and preserves existing tools and their order. Safe to run
+# repeatedly.
+scaffold_present = coding_agent.tools.any? do |t|
+  (t.is_a?(Hash) ? (t["name"] || t[:name]) : t).to_s == "scaffold"
+end
+unless scaffold_present
+  coding_agent.tools = coding_agent.tools + [ "scaffold" ]
+  coding_agent.save!
+  puts "  ✓ Enabled scaffolding on #{coding_agent.name}"
+end
+
 research_agent = Agent.find_or_create_by!(slug: "research-agent") do |a|
   a.organization = org
   a.name = "Research Agent"
