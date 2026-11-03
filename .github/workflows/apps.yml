@@ -110,18 +110,37 @@ jobs:
         working-directory: apps/shams
         run: |
           $ErrorActionPreference = "Stop"
-          $release = Get-ChildItem -Path build/windows -Recurse -Directory |
-            Where-Object { $_.Name -eq "Release" } |
+          # CMake leaves intermediate folders named "Release" under
+          # build/windows (x64/ALL_BUILD.dir/Release is one, and it is empty),
+          # so the real output is found by its executable, not by directory
+          # name: build/windows/x64/runner/Release/shams_app.exe.
+          $exe = Get-ChildItem -Path build/windows -Recurse -Filter shams_app.exe |
             Select-Object -First 1
-          if (-not $release) {
-            Write-Host "no runner/Release output found - tree follows"
+          if (-not $exe) {
+            Write-Host "shams_app.exe not found under build/windows - tree follows"
             Get-ChildItem -Path build/windows -Recurse -Depth 4 |
               ForEach-Object { "  $($_.FullName)" }
             exit 1
           }
-          Write-Host "zipping $($release.FullName)"
-          Compress-Archive -Path (Join-Path $release.FullName "*") `
-            -DestinationPath shams-windows.zip
+          $release = $exe.DirectoryName
+          Write-Host "zipping $release"
+          Compress-Archive -Path (Join-Path $release "*") -DestinationPath shams-windows.zip
+          # Compress-Archive exits 0 without writing anything when its wildcard
+          # matches no files, so the archive's contents are asserted rather than
+          # its size (a compressible payload can be large and still zip tiny).
+          if (-not (Test-Path shams-windows.zip)) {
+            Write-Host "::error::shams-windows.zip was not created"
+            exit 1
+          }
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $archive = [System.IO.Compression.ZipFile]::OpenRead((Resolve-Path shams-windows.zip))
+          $names = @($archive.Entries | ForEach-Object { $_.FullName })
+          $archive.Dispose()
+          if ($names -notcontains "shams_app.exe") {
+            Write-Host "::error::shams-windows.zip does not contain shams_app.exe; entries: $($names -join ', ')"
+            exit 1
+          }
+          Write-Host "shams-windows.zip holds $($names.Count) entries including shams_app.exe"
 
       - uses: actions/upload-artifact@v4
         with:
