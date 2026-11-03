@@ -49,7 +49,7 @@ coding_agent = Agent.find_or_create_by!(slug: "shams-ai") do |a|
   a.model = "bonsai-2-27b"
   a.provider = "bonsai"
   a.tools = ["calculator", "memory_search", "time", "scaffold"]
-  a.config = { temperature: 1.0, top_p: 0.95, max_tokens: 4096 }
+  a.config = { temperature: 1.0, top_p: 0.95, max_tokens: 8192 }
   a.is_active = true
 end
 
@@ -70,6 +70,26 @@ unless scaffold_present
   coding_agent.tools = coding_agent.tools + [ "scaffold" ]
   coding_agent.save!
   puts "  ✓ Enabled scaffolding on #{coding_agent.name}"
+end
+
+# Idempotent output-budget upgrade. Same reason as above: `find_or_create_by!`
+# only writes config when the row is created, so an install seeded at the old
+# 4096 cap keeps it forever. 4096 is not theoretical - a long file-writing turn
+# on this agent hit it exactly (`[LLM] latency_ms=239705 tokens=4096`) and the
+# generation was cut off mid-stream, storing an empty reply. Raise the cap to
+# 8192 on rows that are still at or below the old value, touching only
+# `max_tokens` so any other key an operator tuned (temperature, top_p, and
+# anything added later) survives, and leaving a deliberately higher hand-set
+# value alone. Safe to run repeatedly.
+target_max_tokens = 8192
+current_max_tokens = coding_agent.config.to_h["max_tokens"].to_i
+if current_max_tokens < target_max_tokens
+  coding_agent.config = coding_agent.config.to_h.merge(
+    "max_tokens" => target_max_tokens
+  )
+  coding_agent.save!
+  puts "  ✓ Raised #{coding_agent.name} max_tokens " \
+       "#{current_max_tokens} -> #{target_max_tokens}"
 end
 
 research_agent = Agent.find_or_create_by!(slug: "research-agent") do |a|
