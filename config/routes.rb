@@ -131,7 +131,7 @@ Rails.application.routes.draw do
         end
       end
       resources :attachment_drafts, only: [ :index, :create, :destroy ]
-      resources :conversations, only: [ :index, :show ] do
+      resources :conversations, only: [ :index, :show, :create ] do
         resources :messages, only: [ :create ]
       end
       resources :agents, only: [ :index, :show ]
