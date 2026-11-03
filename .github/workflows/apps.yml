@@ -1,0 +1,130 @@
+name: Apps
+
+# Builds the installable desktop artifacts for the Flutter client in
+# `apps/shams`. Android is built by developers on their own machines (see
+# apps/shams/README.md), so it is deliberately not built here.
+#
+# Why CI and not a laptop:
+#   - `flutter build macos` needs full Xcode, which is not installed locally.
+#   - `flutter build windows` can only run on Windows.
+# Both runners are free for this public repository.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "apps/shams/**"
+      - ".github/workflows/apps.yml"
+  pull_request:
+    paths:
+      - "apps/shams/**"
+      - ".github/workflows/apps.yml"
+  workflow_dispatch:
+    inputs:
+      api_base:
+        description: "SHAMS_API_BASE compiled into the desktop builds"
+        required: false
+        default: "http://localhost:3001"
+
+permissions:
+  contents: read
+
+env:
+  # Overridden by workflow_dispatch; push/PR runs use the app default.
+  SHAMS_API_BASE_FOR_BUILD: ${{ github.event.inputs.api_base || 'http://localhost:3001' }}
+
+jobs:
+  macos:
+    name: macOS app
+    runs-on: macos-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Flutter version
+        run: flutter --version
+
+      - name: Resolve packages
+        working-directory: apps/shams
+        run: flutter pub get
+
+      - name: Build .app
+        working-directory: apps/shams
+        run: |
+          flutter build macos --release \
+            --dart-define=SHAMS_API_BASE="$SHAMS_API_BASE_FOR_BUILD"
+
+      - name: Bundle the app for download
+        working-directory: apps/shams
+        run: |
+          set -euo pipefail
+          products="build/macos/Build/Products/Release"
+          app="$(find "$products" -maxdepth 1 -name '*.app' -print -quit)"
+          if [ -z "$app" ]; then
+            echo "no .app produced under $products - tree follows"
+            find build/macos -maxdepth 4 -type d | sed 's/^/  /'
+            exit 1
+          fi
+          echo "zipping $app"
+          ditto -c -k --keepParent "$app" shams-macos.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: shams-macos
+          path: apps/shams/shams-macos.zip
+          if-no-files-found: error
+
+  windows:
+    name: Windows app
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Flutter version
+        run: flutter --version
+
+      - name: Resolve packages
+        working-directory: apps/shams
+        run: flutter pub get
+
+      - name: Build win64 executable
+        working-directory: apps/shams
+        run: flutter build windows --release --dart-define=SHAMS_API_BASE="$env:SHAMS_API_BASE_FOR_BUILD"
+
+      - name: Bundle the build for download
+        working-directory: apps/shams
+        run: |
+          $ErrorActionPreference = "Stop"
+          $release = Get-ChildItem -Path build/windows -Recurse -Directory |
+            Where-Object { $_.Name -eq "Release" } |
+            Select-Object -First 1
+          if (-not $release) {
+            Write-Host "no runner/Release output found - tree follows"
+            Get-ChildItem -Path build/windows -Recurse -Depth 4 |
+              ForEach-Object { "  $($_.FullName)" }
+            exit 1
+          }
+          Write-Host "zipping $($release.FullName)"
+          Compress-Archive -Path (Join-Path $release.FullName "*") `
+            -DestinationPath shams-windows.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: shams-windows
+          path: apps/shams/shams-windows.zip
+          if-no-files-found: error
