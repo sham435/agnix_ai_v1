@@ -238,6 +238,7 @@ class _Bubble extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final user = message.isUser;
+    final detail = message.errorDetail;
 
     return Align(
       alignment: user ? Alignment.centerRight : Alignment.centerLeft,
@@ -251,9 +252,31 @@ class _Bubble extends StatelessWidget {
               : theme.colorScheme.surfaceContainerHighest,
           borderRadius: BorderRadius.circular(14),
         ),
-        child: SelectableText(
-          message.content.isEmpty ? '…' : message.content,
-          style: theme.textTheme.bodyMedium,
+        child: Column(
+          crossAxisAlignment: user
+              ? CrossAxisAlignment.end
+              : CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            SelectableText(
+              message.content.isEmpty ? '…' : message.content,
+              style: theme.textTheme.bodyMedium,
+            ),
+            // The stored sentence is deliberately generic, so a failed turn is
+            // otherwise unreadable: "I encountered an error" tells you nothing
+            // while `metadata["error"]` already says `x-api-key header is
+            // required`. Selectable, because the whole point is being able to
+            // hand the exact provider message to someone who can fix it.
+            if (detail != null) ...[
+              const SizedBox(height: 6),
+              SelectableText(
+                detail,
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: theme.colorScheme.error,
+                ),
+              ),
+            ],
+          ],
         ),
       ),
     );

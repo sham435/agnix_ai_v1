@@ -290,6 +290,42 @@ void main() {
       );
 
       test(
+        'a failed turn keeps the cause the server recorded in metadata',
+        () async {
+          final api = apiWith(
+            FakeTransport({
+              'GET /api/v1/conversations/$conversationId': [
+                json(
+                  200,
+                  conversationDetailPayload(
+                    streaming: false,
+                    reply: genericFailure,
+                    error: providerErrorDetail,
+                  ),
+                ),
+              ],
+            }),
+          );
+          final failed = await api.conversation(conversationId);
+
+          expect(failed.awaitingReply, isFalse);
+          expect(failed.messages.last.content, genericFailure);
+          expect(
+            failed.messages.last.errorDetail,
+            contains('x-api-key header is required'),
+            reason:
+                'the generic sentence alone is what made a failure '
+                'unreadable in the thread',
+          );
+          expect(
+            failed.messages.first.errorDetail,
+            isNull,
+            reason: 'a turn that did not fail reports no cause',
+          );
+        },
+      );
+
+      test(
         'sendMessage posts the turn to the nested route and returns the row',
         () async {
           final transport = FakeTransport({

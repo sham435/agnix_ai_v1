@@ -170,6 +170,23 @@ class Message {
   bool get isAssistant => role == 'assistant';
 
   bool get isStreaming => metadata['streaming'] == true;
+
+  /// Why this turn failed, whenever the server recorded a cause.
+  ///
+  /// `AgentRunner` stores a fixed, safe sentence in `content` and keeps the
+  /// real reason in `metadata["error"]`, so a thread that only prints `content`
+  /// repeats a placeholder and hides the answer. Measured on a live failed
+  /// turn from `GET /api/v1/conversations/:id`:
+  ///
+  ///     "content":  "I encountered an error while processing your request."
+  ///     "metadata": {"error": "Anthropic API error: HTTP 401 - {...
+  ///                  \"message\":\"x-api-key header is required\"...}",
+  ///                  "stream_started_at": "2026-11-03T17:44:21Z"}
+  String? get errorDetail {
+    final error = metadata['error'];
+    if (error is String && error.isNotEmpty) return error;
+    return null;
+  }
 }
 
 /// A UUID (or, defensively, any scalar) rendered as the string the API uses.

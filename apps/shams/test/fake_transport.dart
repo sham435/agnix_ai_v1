@@ -123,6 +123,19 @@ String conversationDetailPayload({
 const messageCreatedPayload =
     '{"message":$_userMessageJson,"status":"processing"}';
 
+/// The sentence `AgentRunner` stores in `content` for *any* failed run. It is
+/// deliberately uninformative, which is why the cause travels separately.
+const genericFailure = 'I encountered an error while processing your request.';
+
+/// A `metadata["error"]` value copied from a live failed turn - an agent with
+/// no Anthropic key. Captured from `GET /api/v1/conversations/:id`, so the
+/// fixtures describe what the API really sends rather than what it was assumed
+/// to send.
+const providerErrorDetail =
+    'Anthropic API error: HTTP 401 - {"type":"error","error":{"type":'
+    '"authentication_error","message":"x-api-key header is required"},'
+    '"request_id":"req_011CggQjuTVXAGryYZaFcpyN"}';
+
 /// A conversation with no messages yet: what `POST /api/v1/conversations`
 /// without content produces, read back through the detail endpoint. No agent is
 /// embedded - `include: { messages: { include: :agent } }` puts it on the

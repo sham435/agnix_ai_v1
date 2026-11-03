@@ -49,6 +49,16 @@ final _answered = conversationDetailPayload(
   reply: 'Rails 8.2 is out.',
 );
 
+/// The same thread when the run failed. `content` holds only the fixed
+/// sentence; the reason lives in `metadata["error"]`, which is the difference
+/// between "something broke" and "the agent has no Anthropic key".
+final _failed = conversationDetailPayload(
+  title: 'Roadmap',
+  streaming: false,
+  reply: genericFailure,
+  error: providerErrorDetail,
+);
+
 /// Just past the 1200 ms interval `ChatScreen` polls on.
 const _pollTick = Duration(milliseconds: 1300);
 
@@ -232,6 +242,29 @@ void main() {
       (request) => request.uri.path == '/api/v1/conversations/$conversationId',
     );
     expect(polls, hasLength(3));
+  });
+
+  testWidgets('a failed turn shows the reason the server recorded', (
+    tester,
+  ) async {
+    final transport = FakeTransport({
+      ...signedInRoutes,
+      'GET /api/v1/conversations/$conversationId': [json(200, _failed)],
+    });
+    await tester.pumpWidget(appFor(transport));
+    await tester.pumpAndSettle();
+    await signIn(tester);
+
+    await tester.tap(find.text('Roadmap'));
+    await tester.pumpAndSettle();
+
+    expect(find.text(genericFailure), findsOneWidget);
+    // The sentence on its own was the whole complaint. This is the part that
+    // says what to fix - and it arrives in the payload today.
+    expect(find.textContaining('x-api-key header is required'), findsOneWidget);
+    // User turn, the sentence, and its cause - all selectable, so the exact
+    // provider error can be copied out of the app.
+    expect(find.byType(SelectableText), findsNWidgets(3));
   });
 
   testWidgets('New chat asks which agent, then opens an empty thread', (
