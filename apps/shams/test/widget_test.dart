@@ -59,6 +59,10 @@ final _failed = conversationDetailPayload(
   error: providerErrorDetail,
 );
 
+/// The same thread while `AgentStreamJob` is still working. The assistant row
+/// is an open placeholder, which is what keeps the screen in its waiting state.
+final _pending = conversationDetailPayload(title: 'Roadmap');
+
 /// Just past the 1200 ms interval `ChatScreen` polls on.
 const _pollTick = Duration(milliseconds: 1300);
 
@@ -242,6 +246,70 @@ void main() {
       (request) => request.uri.path == '/api/v1/conversations/$conversationId',
     );
     expect(polls, hasLength(3));
+  });
+
+  testWidgets('a second turn cannot be posted while the agent is writing', (
+    tester,
+  ) async {
+    int postedTurns(FakeTransport t) => t.sent
+        .where(
+          (request) =>
+              request.method == 'POST' &&
+              request.uri.path.endsWith('/messages'),
+        )
+        .length;
+
+    final transport = FakeTransport({
+      ...signedInRoutes,
+      'POST /api/v1/conversations/$conversationId/messages': [
+        json(201, messageCreatedPayload),
+      ],
+      // Open the thread, post a turn, then sit in the job's mid-run state for a
+      // poll before the answer finally lands.
+      'GET /api/v1/conversations/$conversationId': [
+        json(200, _roadmap),
+        json(200, _pending),
+        json(200, _pending),
+        json(200, _answered),
+      ],
+    });
+    await tester.pumpWidget(appFor(transport));
+    await tester.pumpAndSettle();
+    await signIn(tester);
+    await tester.tap(find.text('Roadmap'));
+    await tester.pumpAndSettle();
+
+    await tester.enterText(find.byType(TextField), 'and a second turn?');
+    await tester.tap(find.byIcon(Icons.send));
+    await tester.pump();
+    await tester.pump();
+
+    expect(find.text('Agent is thinking'), findsOneWidget);
+    // This is the whole point: the composer used to reopen seconds after the
+    // POST, while the reply still needed a minute, and a second tap started a
+    // second AgentStreamJob on the same conversation.
+    expect(tester.widget<TextField>(find.byType(TextField)).enabled, isFalse);
+    expect(
+      tester.widget<FilledButton>(find.byType(FilledButton)).onPressed,
+      isNull,
+    );
+
+    // Still waiting a poll tick later - and still exactly one turn posted.
+    await tester.pump(_pollTick);
+    await tester.pump();
+    expect(postedTurns(transport), 1);
+
+    await tester.pump(_pollTick);
+    await tester.pump();
+
+    expect(find.text('Agent is thinking'), findsNothing);
+    expect(find.text('Rails 8.2 is out.'), findsOneWidget);
+    expect(tester.widget<TextField>(find.byType(TextField)).enabled, isTrue);
+    expect(
+      tester.widget<FilledButton>(find.byType(FilledButton)).onPressed,
+      isNotNull,
+    );
+    expect(postedTurns(transport), 1);
   });
 
   testWidgets('a failed turn shows the reason the server recorded', (

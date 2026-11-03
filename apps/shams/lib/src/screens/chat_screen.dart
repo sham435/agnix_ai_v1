@@ -126,7 +126,16 @@ class _ChatScreenState extends State<ChatScreen> {
 
   Future<void> _send() async {
     final content = _controller.text.trim();
-    if (content.isEmpty || _sending) return;
+    // `awaitingReply` is the important half of this guard. The composer used to
+    // re-enable as soon as the POST returned, which is seconds before the
+    // agent's answer exists, so a second tap started a second `AgentStreamJob`
+    // on the same conversation: measured live, one message sent twice 64 s
+    // apart produced two runs, and the first stored an empty reply.
+    if (content.isEmpty ||
+        _sending ||
+        (_conversation?.awaitingReply ?? false)) {
+      return;
+    }
 
     setState(() {
       _sending = true;
@@ -222,7 +231,11 @@ class _ChatScreenState extends State<ChatScreen> {
                 ),
               ),
             ),
-          _Composer(controller: _controller, busy: _sending, onSubmit: _send),
+          _Composer(
+            controller: _controller,
+            busy: _sending || awaiting,
+            onSubmit: _send,
+          ),
         ],
       ),
     );
@@ -335,6 +348,10 @@ class _EmptyThread extends StatelessWidget {
   }
 }
 
+/// The message field and its send button.
+///
+/// `busy` means "no new turn may be posted" - either this client's own POST is
+/// in flight, or the agent is still writing the reply to the turn before.
 class _Composer extends StatelessWidget {
   const _Composer({
     required this.controller,
