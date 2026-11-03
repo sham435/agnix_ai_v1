@@ -1,0 +1,9 @@
+# Lints for the helper scripts in `tool/`.
+#
+# They inherit the app's rules but relax `avoid_print`: these are command-line
+# scripts, and writing to stdout is their entire purpose.
+include: package:flutter_lints/flutter.yaml
+
+linter:
+  rules:
+    avoid_print: false
