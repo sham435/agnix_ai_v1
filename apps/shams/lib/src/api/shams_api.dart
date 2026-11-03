@@ -92,6 +92,55 @@ class ShamsApi {
     return _listOfMaps(body).map(Conversation.fromJson).toList(growable: false);
   }
 
+  /// `POST /api/v1/conversations` - start a chat with [agentId].
+  ///
+  /// [content] is optional: with it the server runs the whole startup path
+  /// (user message, streaming assistant placeholder, `AgentStreamJob`), without
+  /// it the conversation is simply empty and the first turn goes through
+  /// [sendMessage].
+  Future<Conversation> createConversation({
+    required String agentId,
+    String? content,
+  }) async {
+    final response = await _send(
+      'POST',
+      '/api/v1/conversations',
+      body: jsonEncode({
+        'agent_id': agentId,
+        if (content != null && content.isNotEmpty) 'content': content,
+      }),
+    );
+    final body = _map(response, '/api/v1/conversations');
+    return Conversation.fromJson(body);
+  }
+
+  /// `GET /api/v1/conversations/:id` - one conversation with its messages.
+  Future<Conversation> conversation(String id) async {
+    final path = '/api/v1/conversations/$id';
+    final response = await _send('GET', path);
+    return Conversation.fromJson(_map(response, path));
+  }
+
+  /// `POST /api/v1/conversations/:id/messages` - one turn.
+  ///
+  /// The server answers 201 as soon as the user row is saved and queues
+  /// `AgentStreamJob`, so the reply is *not* in this response: callers poll
+  /// [conversation] until `awaitingReply` goes false.
+  Future<Message> sendMessage(String conversationId, String content) async {
+    final path = '/api/v1/conversations/$conversationId/messages';
+    final response = await _send(
+      'POST',
+      path,
+      body: jsonEncode({'content': content}),
+    );
+    final body = _map(response, path);
+    final message = body['message'];
+    if (message is! Map<String, dynamic>) {
+      throw ApiException('Expected a "message" object from $path.');
+    }
+    return Message.fromJson(message);
+  }
+
   void close() => _transport.close();
 
   Future<TransportResponse> _send(
@@ -167,6 +216,17 @@ class ShamsApi {
       );
     }
     return body.whereType<Map<String, dynamic>>().toList(growable: false);
+  }
+
+  Map<String, dynamic> _map(TransportResponse response, String path) {
+    final body = _decode(response, path);
+    if (body is! Map<String, dynamic>) {
+      throw ApiException(
+        'Expected a JSON object from $path, received ${body.runtimeType}.',
+        statusCode: response.statusCode,
+      );
+    }
+    return body;
   }
 
   String _errorMessage(TransportResponse response) {

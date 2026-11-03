@@ -1,8 +1,14 @@
 /// The subset of the Rails v1 JSON payloads this app renders.
 ///
-/// Field names mirror `mobile/src/api/types.ts` so both clients describe the
-/// same API contract, and parsing stays defensive: an unexpected or missing key
-/// degrades to a fallback instead of throwing.
+/// Parsing stays defensive: an unexpected or missing key degrades to a
+/// fallback instead of throwing.
+///
+/// Ids are strings because the server's primary keys are UUIDs
+/// (`create_table "conversations", id: :uuid`), which `rails runner` confirms
+/// for every payload this client reads. `mobile/src/api/types.ts` declares them
+/// as `number`; that is wrong against this API and is exactly the kind of
+/// assumption this file is not allowed to inherit - a UUID parsed as an int
+/// becomes 0, and any URL built from it points at nothing.
 library;
 
 class Agent {
@@ -17,7 +23,7 @@ class Agent {
     this.updatedAt,
   });
 
-  final int id;
+  final String id;
   final String name;
   final String? slug;
   final String? description;
@@ -27,7 +33,7 @@ class Agent {
   final DateTime? updatedAt;
 
   factory Agent.fromJson(Map<String, dynamic> json) => Agent(
-    id: _int(json['id']),
+    id: _id(json['id']),
     name: (json['name'] as String?) ?? 'Untitled agent',
     slug: json['slug'] as String?,
     description: json['description'] as String?,
@@ -53,42 +59,124 @@ class Conversation {
     this.title,
     this.agentId,
     this.agent,
+    this.messages = const [],
     this.updatedAt,
   });
 
-  final int id;
+  final String id;
   final String status;
   final String? title;
-  final int? agentId;
+  final String? agentId;
 
   /// `GET /api/v1/conversations` embeds the agent (`include: :agent`).
   final Agent? agent;
+
+  /// Only `GET /api/v1/conversations/:id` sends messages
+  /// (`include: { messages: { include: :agent } }`); the list leaves this empty.
+  final List<Message> messages;
   final DateTime? updatedAt;
 
   factory Conversation.fromJson(Map<String, dynamic> json) => Conversation(
-    id: _int(json['id']),
+    id: _id(json['id']),
     status: (json['status'] as String?) ?? 'active',
     title: json['title'] as String?,
-    agentId: json['agent_id'] == null ? null : _int(json['agent_id']),
+    agentId: json['agent_id'] == null ? null : _id(json['agent_id']),
     agent: json['agent'] is Map<String, dynamic>
         ? Agent.fromJson(json['agent'] as Map<String, dynamic>)
         : null,
+    messages: (json['messages'] is List)
+        ? (json['messages'] as List)
+              .whereType<Map<String, dynamic>>()
+              .map(Message.fromJson)
+              .toList(growable: false)
+        : const [],
     updatedAt: _date(json['updated_at']),
   );
+
+  /// The agent behind this thread, wherever the payload chose to put it.
+  ///
+  /// `GET /api/v1/conversations` embeds `agent` on the conversation, while
+  /// `GET /api/v1/conversations/:id` embeds it on each *message* and leaves the
+  /// conversation without one - so the detail read falls back to the newest
+  /// message that carries an agent.
+  Agent? get effectiveAgent {
+    if (agent != null) return agent;
+    for (final message in messages.reversed) {
+      if (message.agent != null) return message.agent;
+    }
+    return null;
+  }
 
   String get displayName {
     final title = this.title;
     if (title != null && title.isNotEmpty) return title;
-    final agentName = agent?.name;
+    final agentName = effectiveAgent?.name;
     if (agentName != null && agentName.isNotEmpty) return agentName;
-    return 'Conversation #$id';
+    return 'Untitled conversation';
   }
+
+  /// True while the server has an assistant row still being written.
+  ///
+  /// `Conversations::StartChat` and `Api::V1::MessagesController` both create
+  /// the reply as a placeholder carrying `metadata["streaming"] = true`, and
+  /// `AgentStreamJob` clears it when the answer lands - so this is the signal
+  /// the chat screen polls on instead of a guessed delay.
+  bool get awaitingReply => messages.any((message) => message.isStreaming);
 }
 
-int _int(Object? value) {
-  if (value is int) return value;
-  if (value is num) return value.toInt();
-  return int.tryParse(value?.toString() ?? '') ?? 0;
+/// One turn in a conversation.
+class Message {
+  const Message({
+    required this.id,
+    required this.role,
+    required this.content,
+    this.conversationId,
+    this.agentId,
+    this.agent,
+    this.metadata = const {},
+    this.createdAt,
+  });
+
+  final String id;
+  final String role;
+  final String content;
+  final String? conversationId;
+  final String? agentId;
+
+  /// `GET /api/v1/conversations/:id` embeds the agent on every message, which
+  /// is how a thread opened straight from that endpoint learns its model.
+  final Agent? agent;
+  final Map<String, dynamic> metadata;
+  final DateTime? createdAt;
+
+  factory Message.fromJson(Map<String, dynamic> json) => Message(
+    id: _id(json['id']),
+    role: (json['role'] as String?) ?? '',
+    content: (json['content'] as String?) ?? '',
+    conversationId: json['conversation_id'] == null
+        ? null
+        : _id(json['conversation_id']),
+    agentId: json['agent_id'] == null ? null : _id(json['agent_id']),
+    agent: json['agent'] is Map<String, dynamic>
+        ? Agent.fromJson(json['agent'] as Map<String, dynamic>)
+        : null,
+    metadata: json['metadata'] is Map<String, dynamic>
+        ? json['metadata'] as Map<String, dynamic>
+        : const {},
+    createdAt: _date(json['created_at']),
+  );
+
+  bool get isUser => role == 'user';
+  bool get isAssistant => role == 'assistant';
+
+  bool get isStreaming => metadata['streaming'] == true;
+}
+
+/// A UUID (or, defensively, any scalar) rendered as the string the API uses.
+String _id(Object? value) {
+  if (value is String) return value;
+  if (value == null) return '';
+  return value.toString();
 }
 
 bool _bool(Object? value) {

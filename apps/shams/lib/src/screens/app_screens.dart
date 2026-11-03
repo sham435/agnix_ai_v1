@@ -140,6 +140,9 @@ class HomeScreen extends StatelessWidget {
     required this.agents,
     required this.onRefresh,
     required this.onLogout,
+    required this.onOpenConversation,
+    required this.onNewChat,
+    required this.onChatWithAgent,
     super.key,
     this.origin,
   });
@@ -148,6 +151,16 @@ class HomeScreen extends StatelessWidget {
   final List<Agent> agents;
   final Future<void> Function() onRefresh;
   final Future<void> Function() onLogout;
+
+  /// Opens an existing thread.
+  final void Function(Conversation conversation) onOpenConversation;
+
+  /// Offers the agent list and starts a conversation with the chosen one.
+  final Future<void> Function() onNewChat;
+
+  /// Starts a conversation with a specific agent - the Agents section is the
+  /// natural place to pick a model, since the model lives on the agent.
+  final Future<void> Function(Agent agent) onChatWithAgent;
   final String? origin;
 
   @override
@@ -164,10 +177,15 @@ class HomeScreen extends StatelessWidget {
           ),
         ],
       ),
+      floatingActionButton: FloatingActionButton.extended(
+        onPressed: onNewChat,
+        icon: const Icon(Icons.add_comment_outlined),
+        label: const Text('New chat'),
+      ),
       body: RefreshIndicator(
         onRefresh: onRefresh,
         child: ListView(
-          padding: const EdgeInsets.only(bottom: 32),
+          padding: const EdgeInsets.only(bottom: 96),
           children: [
             if (origin != null)
               Padding(
@@ -187,6 +205,8 @@ class HomeScreen extends StatelessWidget {
                 leading: const Icon(Icons.forum_outlined),
                 title: Text(conversation.displayName),
                 subtitle: Text(conversation.agent?.name ?? conversation.status),
+                trailing: const Icon(Icons.chevron_right, size: 20),
+                onTap: () => onOpenConversation(conversation),
               ),
             _SectionHeader(title: 'Agents', count: agents.length),
             if (agents.isEmpty) const _EmptyHint('No agents in this space.'),
@@ -200,6 +220,7 @@ class HomeScreen extends StatelessWidget {
                 trailing: agent.isActive
                     ? null
                     : const Icon(Icons.pause_circle_outline, size: 18),
+                onTap: () => onChatWithAgent(agent),
               ),
           ],
         ),

@@ -4,6 +4,7 @@ import 'src/api/models.dart';
 import 'src/api/shams_api.dart';
 import 'src/config.dart';
 import 'src/screens/app_screens.dart';
+import 'src/screens/chat_screen.dart';
 
 void main() {
   runApp(ShamsApp(api: ShamsApi(baseUrl: apiBase)));
@@ -140,6 +141,52 @@ class _SessionGateState extends State<SessionGate> {
     setState(() => _stage = GateStage.signedOut);
   }
 
+  void _openConversation(Conversation conversation, {Agent? seedAgent}) {
+    Navigator.of(context)
+        .push(
+          MaterialPageRoute(
+            builder: (_) => ChatScreen(
+              api: widget.api,
+              conversationId: conversation.id,
+              title: conversation.displayName,
+              agent: seedAgent ?? conversation.effectiveAgent,
+            ),
+          ),
+        )
+        .then((_) => _loadHome());
+  }
+
+  Future<void> _newChat() async => _chatWithAgent(await _pickAgent());
+
+  /// Shows the agent list and returns the choice, or null if backed out.
+  ///
+  /// Choosing the agent is the model selection: the model lives on the agent
+  /// and a conversation's agent cannot be changed afterwards.
+  Future<Agent?> _pickAgent() async {
+    if (!mounted) return null;
+    return pickAgent(context, _agents);
+  }
+
+  Future<void> _chatWithAgent(Agent? agent) async {
+    if (agent == null) return;
+
+    Conversation created;
+    try {
+      created = await widget.api.createConversation(agentId: agent.id);
+    } on ApiException catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Could not start the chat: ${error.message}')),
+      );
+      return;
+    }
+
+    if (!mounted) return;
+    await _loadHome();
+    if (!mounted) return;
+    _openConversation(created, seedAgent: agent);
+  }
+
   @override
   Widget build(BuildContext context) {
     return switch (_stage) {
@@ -155,6 +202,9 @@ class _SessionGateState extends State<SessionGate> {
         agents: _agents,
         onRefresh: _loadHome,
         onLogout: _signOut,
+        onOpenConversation: _openConversation,
+        onNewChat: _newChat,
+        onChatWithAgent: _chatWithAgent,
         origin: _origin,
       ),
     };
