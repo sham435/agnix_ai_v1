@@ -1,0 +1,149 @@
+<%#
+  app/views/dev/processes/index.html.erb
+
+  The process table. Desktop: a wide `ps`-style table. Narrow screens: the same
+  rows as cards, because thirteen columns cannot fit 375px without pushing the
+  page itself into a horizontal scroll. Every figure comes from the transitions
+  recorded on the run row; "—" means that transition was never measured, which
+  is deliberately different from 0.
+-%>
+<%= render "layouts/chat_layout" do %>
+  <% counts = @table.counts %>
+  <% averages = @table.averages %>
+  <header class="sticky top-0 z-20 flex min-h-16 items-center justify-between gap-3 border-b border-border-subtle bg-sidebar/80 glass px-4">
+    <div class="flex items-center gap-2 min-w-0">
+      <span class="size-6 rounded-lg bg-accent/10 grid place-items-center text-accent-text shrink-0">
+        <svg class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12h4l3 8 4-16 3 8h4"/></svg>
+      </span>
+      <span class="text-[14px] font-medium text-fg">Process table</span>
+      <span class="text-[12px] text-fg-subtle truncate"><%= counts[:processes] %> run(s)</span>
+    </div>
+    <div class="flex items-center gap-3 shrink-0">
+      <span class="text-[12px] text-fg-subtle hidden sm:inline">
+        <%# The poll is driven by a Stimulus controller, never an inline handler. %>
+        <%= @table.live? ? "refreshing while a run is live" : "no live runs" %>
+      </span>
+      <%= link_to "Refresh", dev_processes_path,
+            class: "inline-flex min-h-11 items-center rounded-xl border border-border-subtle bg-panel px-3 text-[13px] text-fg-muted hover:text-fg hover:bg-hover transition" %>
+    </div>
+  </header>
+
+  <main class="flex-1 overflow-y-auto p-4 sm:p-6"
+        data-controller="refresh-interval"
+        data-refresh-interval-live-value="<%= @table.live? %>"
+        data-refresh-interval-interval-value="3000">
+    <div class="mx-auto max-w-[1400px] space-y-5">
+      <section class="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-7">
+        <% [ [ "Live", counts[:live] ], [ "Blocked", counts[:blocked] ],
+             [ "Exited", counts[:exited] ], [ "Failed", counts[:failed] ],
+             [ "Avg turnaround", format_ms(averages[:turnaround_ms]) ],
+             [ "Avg queue wait", format_ms(averages[:queue_ms]) ],
+             [ "Untracked", counts[:untracked] ] ].each do |label, value| %>
+          <div class="rounded-2xl bg-panel border border-border-subtle px-3 py-2">
+            <p class="text-[11px] text-fg-subtle uppercase tracking-wide"><%= label %></p>
+            <p class="text-[16px] font-medium text-fg tabular-nums"><%= value %></p>
+          </div>
+        <% end %>
+      </section>
+
+      <% if @table.by_resource.any? %>
+        <section class="rounded-2xl bg-panel border border-border-subtle p-4">
+          <h2 class="text-[13px] font-medium text-fg mb-3">Wall time spent blocked</h2>
+          <div class="space-y-2">
+            <% longest = @table.by_resource.values.max %>
+            <% @table.by_resource.each do |resource, ms| %>
+              <div class="flex items-center gap-3">
+                <span class="text-[12px] text-fg-muted w-56 shrink-0 truncate" title="<%= resource %>"><%= resource %></span>
+                <span class="h-2 rounded-full bg-accent/60 shrink-0 <%= wait_bar_class(ms, longest) %>"></span>
+                <span class="text-[12px] text-fg-subtle tabular-nums shrink-0"><%= format_ms(ms) %></span>
+              </div>
+            <% end %>
+          </div>
+        </section>
+      <% end %>
+
+      <%# ── desktop: the table ─────────────────────────────────────── %>
+      <section class="hidden md:block rounded-2xl bg-panel border border-border-subtle overflow-x-auto">
+        <table class="w-full text-[12px]">
+          <thead>
+            <tr class="border-b border-border-subtle text-fg-subtle">
+              <% [ "PID", "STATE", "WAITING ON", "COMMAND", "ARRIVED", "QUEUE", "CPU", "I/O", "I/O %", "BURSTS", "SWITCHES", "TURNAROUND", "EXIT" ].each do |heading| %>
+                <th class="text-left font-medium px-3 py-2 whitespace-nowrap"><%= heading %></th>
+              <% end %>
+            </tr>
+          </thead>
+          <tbody>
+            <% @table.rows.each do |row| %>
+              <tr class="border-b border-border-subtle last:border-0 hover:bg-hover transition">
+                <td class="px-3 py-2 whitespace-nowrap">
+                  <%= link_to row.pid,
+                        organization_agent_run_path(row.run.agent.organization, row.run.agent, row.run),
+                        class: "text-accent-text hover:underline font-medium" %>
+                </td>
+                <td class="px-3 py-2 whitespace-nowrap"><%= state_chip(row) %></td>
+                <td class="px-3 py-2 text-fg-muted whitespace-nowrap max-w-[220px] truncate" title="<%= row.waiting_on %>"><%= row.waiting_on || "—" %></td>
+                <td class="px-3 py-2 text-fg max-w-[280px] truncate" title="<%= row.command %>"><%= row.command %></td>
+                <td class="px-3 py-2 text-fg-subtle whitespace-nowrap"><%= row.arrival_at ? row.arrival_at.strftime("%H:%M:%S") : "—" %></td>
+                <td class="px-3 py-2 text-fg-muted tabular-nums whitespace-nowrap"><%= format_ms(row.queue_ms) %></td>
+                <td class="px-3 py-2 text-fg-muted tabular-nums whitespace-nowrap"><%= format_ms(row.cpu_ms) %></td>
+                <td class="px-3 py-2 text-fg-muted tabular-nums whitespace-nowrap"><%= format_ms(row.io_ms) %></td>
+                <td class="px-3 py-2 text-fg-subtle tabular-nums whitespace-nowrap"><%= row.io_share ? "#{row.io_share}%" : "—" %></td>
+                <td class="px-3 py-2 text-fg-subtle tabular-nums"><%= row.bursts || "—" %></td>
+                <td class="px-3 py-2 text-fg-subtle tabular-nums"><%= row.context_switches || "—" %></td>
+                <td class="px-3 py-2 text-fg tabular-nums whitespace-nowrap"><%= format_ms(row.turnaround_ms) %></td>
+                <td class="px-3 py-2 text-fg-muted max-w-[240px] truncate" title="<%= row.exit_note %>"><%= row.exit_note || "—" %></td>
+              </tr>
+            <% end %>
+          </tbody>
+        </table>
+      </section>
+
+      <%# ── narrow screens: the same rows, stacked ─────────────────── %>
+      <section class="md:hidden space-y-2">
+        <% @table.rows.each do |row| %>
+          <div class="rounded-2xl bg-panel border border-border-subtle p-3">
+            <div class="flex items-center justify-between gap-2 mb-2">
+              <div class="flex items-center gap-2 min-w-0">
+                <%= state_chip(row) %>
+                <%= link_to row.pid,
+                      organization_agent_run_path(row.run.agent.organization, row.run.agent, row.run),
+                      class: "text-[12px] text-accent-text hover:underline font-medium shrink-0" %>
+              </div>
+              <span class="text-[11px] text-fg-subtle shrink-0"><%= row.arrival_at ? row.arrival_at.strftime("%H:%M:%S") : "—" %></span>
+            </div>
+            <p class="text-[13px] text-fg mb-2"><%= truncate(row.command, length: 140) %></p>
+            <dl class="grid grid-cols-3 gap-y-1 text-[11px]">
+              <% [ [ "queue", format_ms(row.queue_ms) ], [ "cpu", format_ms(row.cpu_ms) ],
+                   [ "i/o", format_ms(row.io_ms) ], [ "bursts", row.bursts || "—" ],
+                   [ "switches", row.context_switches || "—" ],
+                   [ "turnaround", format_ms(row.turnaround_ms) ] ].each do |label, value| %>
+                <dt class="text-fg-subtle"><%= label %></dt>
+                <dd class="text-fg-muted tabular-nums text-right col-span-1"><%= value %></dd>
+              <% end %>
+            </dl>
+            <% if row.waiting_on.present? %>
+              <p class="mt-2 text-[11px] text-fg-subtle truncate">waiting on <span class="text-fg-muted"><%= row.waiting_on %></span></p>
+            <% end %>
+            <% if row.exit_note.present? %>
+              <p class="mt-1 text-[11px] text-fg-subtle">exit <span class="text-fg-muted"><%= row.exit_note %></span></p>
+            <% end %>
+          </div>
+        <% end %>
+      </section>
+
+      <% if @table.rows.empty? %>
+        <div class="text-center py-16">
+          <h2 class="text-lg font-semibold text-fg mb-2">No runs yet</h2>
+          <p class="text-fg-subtle">Send a message to an agent and its process will appear here.</p>
+        </div>
+      <% end %>
+
+      <p class="text-[11px] text-fg-subtle">
+        Times are UTC. A row that stays <span class="text-fg-muted">running</span> after its worker died is
+        an orphan, not a live process — the box was restarted mid-run.
+      </p>
+    </div>
+  </main>
+
+  <%= render "shared/sidebar_js" %>
+<% end %>

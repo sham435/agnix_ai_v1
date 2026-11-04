@@ -33,6 +33,7 @@ import ScheduledFormController from "controllers/scheduled_form_controller"
 import ImagesModalController from "controllers/images_modal_controller"
 import ProviderModelsController from "controllers/provider_models_controller"
 import AutoSubmitController from "controllers/auto_submit_controller"
+import RefreshIntervalController from "controllers/refresh_interval_controller"
 
 window.Stimulus = Application.start()
 window.Stimulus.register("chat", ChatController)
@@ -56,3 +57,4 @@ window.Stimulus.register("scheduled-form", ScheduledFormController)
 window.Stimulus.register("images-modal", ImagesModalController)
 window.Stimulus.register("provider-models", ProviderModelsController)
 window.Stimulus.register("auto-submit", AutoSubmitController)
+window.Stimulus.register("refresh-interval", RefreshIntervalController)

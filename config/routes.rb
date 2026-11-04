@@ -146,6 +146,14 @@ Rails.application.routes.draw do
   # Health check.
   get "up", to: "rails/health#show", as: :rails_health_check
 
+  # The agent process table — `ps` for runs. Drawn only on a local box: on
+  # production the route simply does not exist, and the controller guards
+  # again with Rails.env.local? so nothing here is reachable from outside.
+  # Placed above the static catch-all so that route can never swallow it.
+  if Rails.env.local?
+    get "dev/processes", to: "dev/processes#index", as: :dev_processes
+  end
+
   # Render error pages.
   get "/404", to: "errors#not_found"
   get "/500", to: "errors#internal_server_error"
