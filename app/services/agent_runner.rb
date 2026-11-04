@@ -509,31 +509,35 @@ class AgentRunner
         yield({ type: "status", phase: "connecting" })
       end
       final_result = with_blocked("provider:#{agent.provider}/#{agent.model}") do
-        client.stream_chat(messages: messages, tools: tools) do |piece, _full, _tcs, kind|
-          now_ms = (Process.clock_gettime(Process::CLOCK_MONOTONIC) * 1000).round
-          if kind == "reasoning"
-            # Never forward the model's private chain-of-thought. Emit a single
-            # "thinking" status, then at most one per THINKING_THROTTLE_MS, so the
-            # UI shows live progress without leaking reasoning text.
-            next if @thinking_announced && @last_status_ms && (now_ms - @last_status_ms) < THINKING_THROTTLE_MS
+        with_local_model_slot(agent.provider) do
+          client.stream_chat(messages: messages, tools: tools) do |piece, _full, _tcs, kind|
+            now_ms = (Process.clock_gettime(Process::CLOCK_MONOTONIC) * 1000).round
+            if kind == "reasoning"
+              # Never forward the model's private chain-of-thought. Emit a single
+              # "thinking" status, then at most one per THINKING_THROTTLE_MS, so the
+              # UI shows live progress without leaking reasoning text.
+              next if @thinking_announced && @last_status_ms && (now_ms - @last_status_ms) < THINKING_THROTTLE_MS
 
-            @thinking_announced = true
-            @last_status_ms = now_ms
-            yield({ type: "status", phase: "thinking" })
-          elsif piece && !piece.empty?
-            yield({ type: "status", phase: "generating" }) unless @generating_announced
-            @generating_announced = true
-            yield({ type: "content_delta", text: piece })
+              @thinking_announced = true
+              @last_status_ms = now_ms
+              yield({ type: "status", phase: "thinking" })
+            elsif piece && !piece.empty?
+              yield({ type: "status", phase: "generating" }) unless @generating_announced
+              @generating_announced = true
+              yield({ type: "content_delta", text: piece })
+            end
           end
         end
       end
       elapsed_ms = ((Process.clock_gettime(Process::CLOCK_MONOTONIC) - started) * 1000).round
-      Rails.logger.info "[LLM] provider=#{agent.provider} model=#{agent.model} latency_ms=#{elapsed_ms} tokens=#{final_result[:tokens]} stream=true"
+      log_provider_metrics(elapsed_ms: elapsed_ms, tokens: final_result[:tokens], stream: true)
       final_result
     else
-      result = with_blocked("provider:#{agent.provider}/#{agent.model}") { client.chat(messages: messages, tools: tools) }
+      result = with_blocked("provider:#{agent.provider}/#{agent.model}") do
+        with_local_model_slot(agent.provider) { client.chat(messages: messages, tools: tools) }
+      end
       elapsed_ms = ((Process.clock_gettime(Process::CLOCK_MONOTONIC) - started) * 1000).round
-      Rails.logger.info "[LLM] provider=#{agent.provider} model=#{agent.model} latency_ms=#{elapsed_ms} tokens=#{result[:tokens]} stream=false"
+      log_provider_metrics(elapsed_ms: elapsed_ms, tokens: result[:tokens], stream: false)
       result
     end
   rescue => e
@@ -561,6 +565,37 @@ class AgentRunner
     ensure
       @run_record.record_state!("running", note: @pcb_burst_label)
     end
+  end
+
+  # Serialize local-model generations through the process-wide gate; cloud
+  # providers run unguarded. The llama.cpp server behind bonsai/ollama has a
+  # single slot, so letting several agent jobs hit it at once only queues the
+  # extra requests until the adapter's read timeout trips - the mid-stream EOF
+  # on long turns. Making them wait for a slot instead is the whole point.
+  def with_local_model_slot(provider)
+    return yield unless Llm::LocalModelGate.local?(provider)
+
+    Llm::LocalModelGate.instance.acquire { yield }
+  end
+
+  # The [LLM] line, plus - for local providers only - a host sample (swap,
+  # memory pressure, llama-server RSS) so a slow generation can be diagnosed
+  # after the fact as "busy box" vs "slow model". Metrics must never be the
+  # reason a run fails, so the whole thing is guarded.
+  def log_provider_metrics(elapsed_ms:, tokens:, stream:)
+    line = "[LLM] provider=#{agent.provider} model=#{agent.model} " \
+           "latency_ms=#{elapsed_ms} tokens=#{tokens} stream=#{stream}"
+    sample = Llm::ResourceSampler.sample(provider: agent.provider, model: agent.model)
+    if sample.empty?
+      Rails.logger.info line
+    else
+      Rails.logger.info(
+        "#{line} swap_used_mb=#{sample[:swap_used_mb]} " \
+        "memory_free_pct=#{sample[:memory_free_pct]} llama_rss_mb=#{sample[:llama_rss_mb]}"
+      )
+    end
+  rescue StandardError => e
+    Rails.logger.warn "[LLM] metrics-log-failed #{e.class}: #{e.message}"
   end
 
   def build_client_for_agent

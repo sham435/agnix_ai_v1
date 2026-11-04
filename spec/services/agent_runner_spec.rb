@@ -322,6 +322,32 @@ RSpec.describe AgentRunner, type: :service do
     end
   end
 
+  # ── local-model serialization (single-slot llama server) ─────────────
+
+  describe "local-model gate wiring" do
+    subject(:runner) { described_class.new(agent: agent, conversation: conversation, user: user) }
+
+    before do
+      # The metrics logger would otherwise run real sysctl/ps probes on a mac.
+      allow(Llm::ResourceSampler).to receive(:sample).and_return({})
+      allow(client).to receive(:chat).and_return(content: "ok", tool_calls: [], tokens: 2)
+    end
+
+    it "routes a bonsai provider call through the gate" do
+      allow(agent).to receive(:provider).and_return("bonsai")
+      expect(Llm::LocalModelGate.instance).to receive(:acquire).and_call_original
+
+      runner.run("hi", stream: false)
+    end
+
+    it "does not gate a cloud provider call" do
+      allow(agent).to receive(:provider).and_return("anthropic")
+      expect(Llm::LocalModelGate.instance).not_to receive(:acquire)
+
+      runner.run("hi", stream: false)
+    end
+  end
+
   # ── #run — basic message (no mode, no tools) ─────────────────────────
 
   describe "#run" do
