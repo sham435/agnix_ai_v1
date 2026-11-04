@@ -37,13 +37,18 @@ module Llm
     SUCCESS_STATUSES = (200..299).freeze
     MAX_ERROR_BODY = 500
 
-    attr_reader :api_key, :model, :base_url, :top_p
+    attr_reader :api_key, :model, :base_url, :top_p, :chat_template_kwargs
 
-    def initialize(api_key:, model:, base_url: nil, top_p: nil)
+    # `chat_template_kwargs` is forwarded verbatim to the server as
+    # `chat_template_kwargs`, which llama.cpp injects into the model's Jinja
+    # chat template. It is nil unless a route needs a template variable - see
+    # Llm::Client#adapter, where Bonsai uses it to switch chain-of-thought off.
+    def initialize(api_key:, model:, base_url: nil, top_p: nil, chat_template_kwargs: nil)
       @api_key = api_key
       @model = model
       @base_url = base_url || BASE_URL
       @top_p = top_p
+      @chat_template_kwargs = chat_template_kwargs
     end
 
     def chat(messages:, tools:, temperature:, max_tokens:, top_p: nil, stream: false)
@@ -275,6 +280,9 @@ module Llm
         max_tokens: max_tokens
       }
       body[:top_p] = top_p unless top_p.nil?
+      # Only routes that asked for a template variable grow the body; everyone
+      # else sends exactly what they sent before this field existed.
+      body[:chat_template_kwargs] = chat_template_kwargs if chat_template_kwargs
 
       if tools.any?
         body[:tools] = tools.map do |tool|

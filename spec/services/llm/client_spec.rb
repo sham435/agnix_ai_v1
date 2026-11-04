@@ -82,6 +82,31 @@ RSpec.describe Llm::Client do
     expect(kwargs[:base_url]).to eq("http://127.0.0.1:8080/v1")
   end
 
+  # The template inside the Bonsai GGUF thinks unless told not to
+  # (`enable_thinking` undefined counts as true, `reasoning_effort` defaults to
+  # xhigh). Live measurement on a five-file request: 8192/8192 tokens streamed
+  # as reasoning_content, none as content, finish_reason "length" - an empty
+  # reply stored as a succeeded run. With thinking off the same request
+  # finished at 3112 tokens with 10,377 characters of answer.
+  it "builds every bonsai adapter with the chain of thought switched off" do
+    [ "bonsai-2-27b", "bonsai-27b", "claude-sonnet-4-6" ].each do |label|
+      kwargs = built_with do
+        bonsai_client(model: label).chat(messages: [ { role: "user", content: "hi" } ], tools: [])
+      end
+
+      expect(kwargs[:chat_template_kwargs]).to eq({ "enable_thinking" => false })
+    end
+  end
+
+  it "sends no chat template kwargs to routes that did not ask for one" do
+    kwargs = built_with do
+      described_class.new(provider: "openai", model: "gpt-4o", api_key: "sk-x")
+        .chat(messages: [ { role: "user", content: "hi" } ], tools: [])
+    end
+
+    expect(kwargs).not_to have_key(:chat_template_kwargs)
+  end
+
   it "does not touch bonsai routing for other providers" do
     kwargs = built_with do
       described_class.new(provider: "openai", model: "gpt-4o", api_key: "sk-x")

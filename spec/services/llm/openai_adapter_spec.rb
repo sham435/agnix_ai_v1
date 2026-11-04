@@ -102,6 +102,30 @@ RSpec.describe Llm::OpenaiAdapter do
     end
   end
 
+  describe "request body" do
+    # The field is llama.cpp-specific: it names Jinja template variables. Only
+    # a route that asks for one may grow the body, so shared OpenAI / OpenRouter
+    # / Gemini payloads stay exactly as they were.
+    it "sends chat_template_kwargs when the adapter was built with them" do
+      thinking_off = described_class.new(
+        api_key: "test-key", model: "bonsai-2-27b",
+        chat_template_kwargs: { "enable_thinking" => false }
+      )
+
+      body = thinking_off.send(:build_request_body,
+        [ { role: "user", content: "hi" } ], [], 1.0, 512, 0.95)
+
+      expect(body[:chat_template_kwargs]).to eq({ "enable_thinking" => false })
+    end
+
+    it "omits chat_template_kwargs entirely when the adapter was built without them" do
+      body = adapter.send(:build_request_body,
+        [ { role: "user", content: "hi" } ], [], 0.7, 512)
+
+      expect(body).not_to have_key(:chat_template_kwargs)
+    end
+  end
+
   describe "#stream_chat" do
     # Forward the caller's block so it receives each SSE data line, mimicking
     # HTTParty's stream_body block form.

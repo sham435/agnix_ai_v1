@@ -97,11 +97,26 @@ module Llm
       when "ollama"
         Llm::OllamaAdapter.new(api_key: api_key, model: model)
       when "bonsai"
+        # Disable the server-side chain of thought. The Jinja template shipped
+        # inside the Bonsai GGUF defaults to `enable_thinking` true at
+        # `reasoning_effort` xhigh, so on any task with real volume the model
+        # spends the ENTIRE completion budget on reasoning_content and never
+        # emits an answer. Measured on a five-file request: 8192/8192 tokens
+        # arrived as `reasoning_content`, zero as `content`, finish_reason
+        # "length", after 7m24s - and the thread stored an empty reply, which
+        # `stream_chat` was right to keep blank. With thinking off the same
+        # request answers in 3112 tokens, finish_reason "stop", 10,377 chars,
+        # 2m42s. `reasoning_effort: low` is NOT enough (same 900-token budget:
+        # still 900 reasoning deltas, still no answer).
+        # Cost of the switch: Bonsai turns lose their visible thinking phase and
+        # the deliberation xhigh buys for hard tool-selection steps; they gain
+        # an answer that lands inside the token budget at all.
         Llm::OpenaiAdapter.new(
           api_key: api_key,
           model: bonsai_model,
           base_url: bonsai_base_url,
-          top_p: top_p
+          top_p: top_p,
+          chat_template_kwargs: { "enable_thinking" => false }
         )
       when "opencode"
         Llm::OpenaiAdapter.new(
