@@ -348,6 +348,62 @@ RSpec.describe AgentRunner, type: :service do
     end
   end
 
+  # ── §3 context bounding: the tool transcript ─────────────────────────
+
+  describe "#build_tool_messages" do
+    subject(:runner) { described_class.new(agent: agent, conversation: conversation, user: user) }
+
+    # A tool result entry as the loop records it (see collect_tool_results).
+    def entry(id, name, payload)
+      { tool_call_id: id, tool_name: name, arguments: {}, result: payload }
+    end
+
+    it "keeps a tool message for every tool_call_id (protocol intact)" do
+      results = (1..(AgentRunner::TOOL_RESULT_WINDOW + 3)).map { |i| entry("id#{i}", "test_tool", { ok: i }) }
+
+      messages = runner.send(:build_tool_messages, results)
+
+      expect(messages.length).to eq(results.length)
+      expect(messages.map { |m| m[:tool_call_id] }).to eq(results.map { |r| r[:tool_call_id] })
+      expect(messages).to all(include(role: "tool"))
+    end
+
+    it "collapses results older than the window into a stub" do
+      results = (1..(AgentRunner::TOOL_RESULT_WINDOW + 2)).map { |i| entry("id#{i}", "writer", { ok: i }) }
+
+      messages = runner.send(:build_tool_messages, results)
+
+      window = AgentRunner::TOOL_RESULT_WINDOW
+      # Everything before the last `window` entries is collapsed.
+      messages.first(results.length - window).each do |msg|
+        expect(msg[:content]).to include("collapsed to save context")
+      end
+      # The most recent `window` entries carry real payload.
+      messages.last(window).each do |msg|
+        expect(msg[:content]).not_to include("collapsed to save context")
+        expect(msg[:content]).to include("\"ok\"")
+      end
+    end
+
+    it "caps an oversized recent payload with a truncation marker" do
+      big = { "data" => "x" * (AgentRunner::TOOL_RESULT_MAX_BYTES + 500) }
+      messages = runner.send(:build_tool_messages, [ entry("only", "reader", big) ])
+
+      content = messages.first[:content]
+      expect(content).to match(/\[truncated \d+ bytes\]\z/)
+      # The retained head never exceeds the configured byte budget.
+      expect(content.byteslice(0, AgentRunner::TOOL_RESULT_MAX_BYTES).bytesize)
+        .to eq(AgentRunner::TOOL_RESULT_MAX_BYTES)
+    end
+
+    it "leaves a small recent payload whole" do
+      messages = runner.send(:build_tool_messages, [ entry("only", "reader", { ok: true }) ])
+
+      expect(messages.first[:content]).to eq({ ok: true }.to_json)
+      expect(messages.first[:content]).not_to include("truncated")
+    end
+  end
+
   # ── #run — basic message (no mode, no tools) ─────────────────────────
 
   describe "#run" do

@@ -8,6 +8,16 @@ class AgentRunner
   MAX_ITERATIONS = 20
   BUILD_MAX_ITERATIONS = 30
   MAX_TOOL_CALLS_PER_TURN = 5
+  # Context bounding for the tool transcript. #build_messages re-sends every
+  # accumulated tool result on every iteration of a multi-step run, so a 5-10
+  # file build grows the prompt toward the model's context limit - exactly the
+  # regime where a long local turn starts to EOF. Two bounds keep it sane
+  # WITHOUT breaking the tool-call protocol (every tool_call_id still gets its
+  # own response message): only the last TOOL_RESULT_WINDOW results carry real
+  # payload, older ones collapse to a short stub, and even a "recent" payload
+  # is capped at TOOL_RESULT_MAX_BYTES.
+  TOOL_RESULT_WINDOW = Integer(ENV.fetch("TOOL_RESULT_WINDOW", 6))
+  TOOL_RESULT_MAX_BYTES = Integer(ENV.fetch("TOOL_RESULT_MAX_BYTES", 4000))
   OS_MODES = %w[auto_plan auto_build manual_plan manual_build].freeze
   CHAT_ATTACHMENT_TOOLS = %w[read_asset list_assets].freeze
   # Minimum spacing between repeated "thinking" status events (ms). Reasoning
@@ -610,15 +620,42 @@ class AgentRunner
       messages << msg
     end
 
-    tool_call_results.each do |result|
-      messages << {
+    messages.concat(build_tool_messages(tool_call_results))
+    messages
+  end
+
+  # One response message per tool call, always - the protocol requires a tool
+  # message for every tool_call_id the model emitted. Only the CONTENT is
+  # bounded: the most recent TOOL_RESULT_WINDOW results carry real (capped)
+  # payload, anything older collapses to a short stub so a long build does not
+  # re-send every file it wrote on every subsequent iteration.
+  def build_tool_messages(tool_call_results)
+    total = tool_call_results.length
+    tool_call_results.each_with_index.map do |result, idx|
+      recent = idx >= total - TOOL_RESULT_WINDOW
+      {
         role: "tool",
-        content: result[:result].to_json,
+        content: recent ? bound_payload(result[:result]) : stub_payload(result),
         tool_call_id: result[:tool_call_id]
       }
     end
+  end
 
-    messages
+  # Serialize a recent tool result and cap it. byteslice (not String#[]) so a
+  # truncated tail can never split a multi-byte character into mojibake.
+  def bound_payload(result)
+    json = result.to_json
+    return json if json.bytesize <= TOOL_RESULT_MAX_BYTES
+
+    json.byteslice(0, TOOL_RESULT_MAX_BYTES) +
+      "…[truncated #{json.bytesize - TOOL_RESULT_MAX_BYTES} bytes]"
+  end
+
+  # A collapsed older result: enough for the model to recall WHAT happened
+  # without re-reading the whole payload.
+  def stub_payload(result)
+    preview = result[:result].to_s[0, 160]
+    "[#{result[:tool_name]} result collapsed to save context: #{preview}…]"
   end
 
   def build_system_prompt
