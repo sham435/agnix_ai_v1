@@ -253,6 +253,61 @@ RSpec.describe Llm::OpenaiAdapter do
 
       expect(result[:finish_reason]).to eq("stop")
     end
+
+    # §4a: a build turn streams its tool-call arguments before any visible text,
+    # so an EOF part-way through the arguments forwarded nothing the caller will
+    # keep. That must be replayed, not failed - the whole turn is recoverable.
+    it "retries an EOF that lands while only tool-call arguments had streamed" do
+      calls = 0
+      tc_chunk = {
+        choices: [ { index: 0, delta: {
+          tool_calls: [ { index: 0, id: "call_1",
+                         function: { name: "run_command", arguments: "{'comm" } } ]
+        } } ]
+      }.to_json
+      ok_chunk = {
+        choices: [ { index: 0, delta: { content: "ok" }, finish_reason: "stop" } ]
+      }.to_json
+      allow(adapter).to receive(:sleep)
+      allow(HTTParty).to receive(:post) do |_url, _opts, &blk|
+        calls += 1
+        if calls == 1
+          # Accumulates tool_calls only - nothing visible is forwarded to the
+          # caller, so replaying regenerates the whole turn harmlessly.
+          blk&.call("data: #{tc_chunk}\n\n")
+          raise EOFError
+        end
+        blk&.call("data: #{ok_chunk}\n\n")
+        blk&.call("data: [DONE]\n\n")
+      end
+
+      result = adapter.stream_chat(messages: [ { role: "user", content: "hi" } ], tools: [],
+                                   temperature: 0.7, max_tokens: 100) { |_c, _f, _t| }
+
+      expect(calls).to eq(2)
+      expect(result[:content]).to eq("ok")
+    end
+
+    # Once real content has reached the caller, replaying would duplicate it, so
+    # the break is raised and the caller keeps the partial (§4b).
+    it "does not replay once visible content has already streamed" do
+      calls = 0
+      content_chunk = {
+        choices: [ { index: 0, delta: { content: "half a sentence" } } ]
+      }.to_json
+      allow(adapter).to receive(:sleep)
+      allow(HTTParty).to receive(:post) do |_url, _opts, &blk|
+        calls += 1
+        blk&.call("data: #{content_chunk}\n\n")
+        raise EOFError
+      end
+
+      expect do
+        adapter.stream_chat(messages: [ { role: "user", content: "hi" } ], tools: [],
+                            temperature: 0.7, max_tokens: 100) { |_c, _f, _t| }
+      end.to raise_error(Llm::OpenaiAdapter::LlmError)
+      expect(calls).to eq(1)
+    end
   end
 
   # A gateway outage used to look like a model that had nothing to say: the

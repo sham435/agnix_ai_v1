@@ -182,11 +182,21 @@ module Llm
           raise stream_error(stream_status, error_body)
         end
       rescue *TRANSIENT_ERRORS => e
-        # Only safe to retry before anything was streamed to the caller.
+        # Safe to replay only while NOTHING VISIBLE has been forwarded to the
+        # caller. The buffers are reset at the top of each attempt, so a retry
+        # regenerates the whole turn; if the caller already received content
+        # deltas it would append the replay on top of the partial (duplicate
+        # text). That is why the guard is keyed on full_content, NOT tool_calls:
+        # a build turn streams its tool-call arguments first and emits little or
+        # no visible content, so an EOF part-way through the arguments forwarded
+        # nothing the caller will keep. Retrying there recovers the whole turn
+        # instead of failing it - and a half-accumulated tool call is useless
+        # anyway (truncated JSON just errors in dispatch). Once real content has
+        # streamed we stop replaying and let the caller keep its partial (§4b).
         conn = CONNECTION_ERRORS.include?(e.class)
         max_attempts = conn ? (MAX_CONNECT_RETRIES + 1) : MAX_RETRIES
         backoff = conn ? CONNECT_BACKOFF : RETRY_BACKOFF
-        if full_content.empty? && tool_calls.empty? && attempt < max_attempts
+        if full_content.empty? && attempt < max_attempts
           Rails.logger.warn "[shams] stream retry #{attempt}/#{max_attempts} after #{e.class}: #{e.message.to_s[0, 120]}"
           sleep(backoff * attempt)
           retry

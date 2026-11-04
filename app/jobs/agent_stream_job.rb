@@ -316,15 +316,23 @@ class AgentStreamJob < ApplicationJob
     meta = fresh.metadata.is_a?(Hash) ? fresh.metadata.dup : {}
     meta.delete("streaming")
     meta["stream_started_at"] ||= Time.current.utc.iso8601
-    if fresh.content.to_s.empty?
+    content = fresh.content.to_s
+    if content.empty?
       meta["empty_response"] = true
     elsif @deltas.present?
       # Progress is written as it streams (see #record_delta), so a run that
       # stopped mid-answer leaves real words behind. They are not the answer,
       # and `retire_superseded_message` treats this row as one that failed.
+      # Append the SAME honest tail AgentRunner's rescue writes, so whichever
+      # path finalizes the row the reader sees one consistent "stopped here"
+      # marker rather than a reply that just breaks off mid-sentence. @deltas
+      # carries the last sub-second of text that throttled persistence had not
+      # yet written, so the recovered body is the fullest partial available.
       meta["error"] = [ reason.presence, "The reply stopped here." ].compact.join(" - ")
+      meta["stopped_short"] = true
+      content = "#{@deltas.join}#{AgentRunner::STOP_MARKER}" unless content.include?(AgentRunner::STOP_MARKER)
     end
-    fresh.update!(metadata: meta)
+    fresh.update!(content: content, metadata: meta)
   rescue StandardError, NameError => e
     Rails.logger.error "[AgentStreamJob] PLACEHOLDER-FINALIZE-ERROR #{e.class}: #{e.message}"
   end

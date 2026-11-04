@@ -219,11 +219,46 @@ RSpec.describe AgentStreamJob, type: :job do
 
       row = placeholder
       expect(row.streaming?).to be(false)
-      expect(row.content).to eq("Half an answer")
+      # §4c: the partial is recovered verbatim, then followed by the same honest
+      # tail AgentRunner's rescue writes - not a bare reply that breaks off
+      # mid-sentence, and not a generic apology that buries the real words.
+      expect(row.content).to eq("Half an answer#{AgentRunner::STOP_MARKER}")
       expect(row.metadata["error"]).to include("the model socket closed mid-stream")
       expect(row.metadata["error"]).to include("The reply stopped here.")
+      expect(row.metadata["stopped_short"]).to be(true)
       # An empty-body recovery marker would be a lie here: there are words.
       expect(row.metadata).not_to have_key("empty_response")
+    end
+
+    # The two error paths must agree and never compound. When AgentRunner's
+    # rescue (§4b) already finalized the placeholder - it wrote the partial with
+    # the marker and cleared the streaming flag - the job's failure finalize is
+    # a no-op: a row that is no longer "live" is left exactly as the runner set
+    # it, so the honest tail is never appended twice.
+    it "leaves a placeholder AgentRunner already finalized untouched (§4c idempotent)" do
+      stub_const("AgentStreamJob::PROGRESS_WRITE_INTERVAL", 0.0)
+      allow(runner).to receive(:run) do |_content, **_opts|
+        # Emulate §4b: the runner rescued the provider error itself, wrote the
+        # partial plus the shared marker and dropped the streaming flag...
+        row = conversation.messages.reload.where(role: "assistant").order(:created_at).last
+        row.update!(
+          content: "Half an answer#{AgentRunner::STOP_MARKER}",
+          metadata: { "error" => "provider reset", "stopped_short" => true }
+        )
+        # ...then re-raised so this job's rescue path also reaches its finalize.
+        raise "provider reset"
+      end
+
+      described_class.perform_now(
+        conversation_id: conversation.id, user_id: user.id, message_content: "Hi"
+      )
+
+      row = placeholder
+      # Exactly one marker - the finalize saw streaming was already gone and
+      # returned early rather than re-writing the row.
+      expect(row.content.scan(AgentRunner::STOP_MARKER).length).to eq(1)
+      expect(row.metadata["stopped_short"]).to be(true)
+      expect(row.metadata["error"]).to eq("provider reset")
     end
   end
 

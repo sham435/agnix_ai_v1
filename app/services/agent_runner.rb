@@ -32,6 +32,11 @@ class AgentRunner
   # Minimum spacing between repeated "thinking" status events (ms). Reasoning
   # models emit many tiny deltas; we forward a status heartbeat, not the text.
   THINKING_THROTTLE_MS = 250
+  # Honest tail appended when a streamed reply is cut short by a provider error
+  # (§4). Shared verbatim with AgentStreamJob's failure finalize so both error
+  # paths write the same sentence - neither buries the partial under a generic
+  # apology, and neither double-marks it.
+  STOP_MARKER = "\n\n…(reply stopped before finishing)".freeze
 
   attr_reader :agent, :conversation, :user, :source_message
 
@@ -525,15 +530,30 @@ class AgentRunner
       # the placeholder is replaced — provider errors must never leave a
       # perpetual "thinking" spinner or masquerade as a normal answer.
       yield({ type: "status", phase: "failed", error: e.message }) if block_given?
-      error_msg = "I encountered an error while processing your request."
+
+      # Preserve whatever actually streamed rather than burying it under a fixed
+      # apology. A build that got half its files written, or an answer that got
+      # half its sentences out, is worth keeping; append an honest marker so the
+      # reader knows the reply was cut short BY an error rather than finished.
+      # When nothing streamed there is no partial to keep, so we fall back to the
+      # plain error sentence. metadata["error"] carries the cause and
+      # "stopped_short" flags the truncation for the UI. The streaming job's
+      # finalize produces the identical shape (see AgentStreamJob), so the two
+      # error paths agree instead of one clobbering the other's partial.
+      generic = "I encountered an error while processing your request."
       if @streaming_message
-        streamed = @streaming_message.metadata.merge("error" => e.message)
+        partial = @streaming_message.reload.content.to_s
+        final_content = partial.strip.empty? ? generic : "#{partial}#{AgentRunner::STOP_MARKER}"
+        streamed = @streaming_message.metadata.merge("error" => e.message, "stopped_short" => true)
         streamed.delete("streaming")
-        @streaming_message.update!(content: error_msg, tokens: estimate_tokens(error_msg), metadata: streamed)
+        @streaming_message.update!(content: final_content, tokens: estimate_tokens(final_content), metadata: streamed)
       else
-        conversation.messages.create!(role: "assistant", content: error_msg, tokens: estimate_tokens(error_msg), metadata: { "error" => e.message })
+        final_content = generic
+        conversation.messages.create!(role: "assistant", content: final_content,
+          tokens: estimate_tokens(final_content),
+          metadata: { "error" => e.message, "stopped_short" => true })
       end
-      { content: error_msg, error: e.message, tool_calls: [], tokens: total_tokens,
+      { content: final_content, error: e.message, tool_calls: [], tokens: total_tokens,
         actions: tool_call_results.length }
     end
   end

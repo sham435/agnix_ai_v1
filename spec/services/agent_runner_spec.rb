@@ -778,6 +778,42 @@ RSpec.describe AgentRunner, type: :service do
         expect(result[:error]).to be_present
         expect(Run.last.status).to eq("failed")
       end
+
+      it "keeps the already-streamed partial on a placeholder instead of clobbering it (§4b)" do
+        placeholder = conversation.messages.create!(
+          role: "assistant", content: "Started writing the report", metadata: { "streaming" => true }
+        )
+        allow(client).to receive(:stream_chat).and_raise(Llm::OpenaiAdapter::LlmError.new("socket reset mid-stream"))
+
+        runner = described_class.new(agent: agent, conversation: conversation, user: user,
+                                     streaming_message: placeholder)
+        result = runner.run("write a long report", stream: true) { |_chunk| }
+
+        expect(result[:error]).to be_present
+        fresh = placeholder.reload
+        # The words that DID stream survive, followed by an honest marker - not a
+        # fixed apology that buries them.
+        expect(fresh.content).to eq("Started writing the report#{AgentRunner::STOP_MARKER}")
+        expect(fresh.metadata["error"]).to include("socket reset mid-stream")
+        expect(fresh.metadata["stopped_short"]).to be(true)
+        expect(fresh.metadata["streaming"]).to be_nil
+      end
+
+      it "falls back to the plain error sentence when nothing streamed yet" do
+        placeholder = conversation.messages.create!(
+          role: "assistant", content: "", metadata: { "streaming" => true }
+        )
+        allow(client).to receive(:stream_chat).and_raise(Llm::OpenaiAdapter::LlmError.new("provider down"))
+
+        runner = described_class.new(agent: agent, conversation: conversation, user: user,
+                                     streaming_message: placeholder)
+        runner.run("hi", stream: true) { |_chunk| }
+
+        fresh = placeholder.reload
+        expect(fresh.content).to eq("I encountered an error while processing your request.")
+        expect(fresh.metadata["error"]).to be_present
+        expect(fresh.metadata["streaming"]).to be_nil
+      end
     end
 
     # ── duplicate message guard ──────────────────────────────────────
