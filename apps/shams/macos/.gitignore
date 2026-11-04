@@ -5,3 +5,9 @@
 # Xcode-related
 **/dgph
 **/xcuserdata/
+# Derived data from an arm64-only `xcodebuild ... -derivedDataPath ./build`.
+# The default `flutter build macos` puts products in the repo-root /build/ (which
+# the top-level .gitignore already covers); driving xcodebuild directly for a
+# single arch - the only way it builds on macOS 26, where `lipo -verify_arch`
+# rejects a universal binary - writes them here instead.
+**/build/
