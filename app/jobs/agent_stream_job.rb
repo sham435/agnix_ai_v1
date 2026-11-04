@@ -22,6 +22,11 @@ class AgentStreamJob < ApplicationJob
   # Raised from the chunk callback when a run outlives its budget.
   class RunTimeout < StandardError; end
 
+  # Seconds between writes of the partial reply to the placeholder row. Long
+  # enough that a fast local stream costs a handful of writes per run, short
+  # enough that a client polling once a second watches the answer arrive.
+  PROGRESS_WRITE_INTERVAL = 1.0
+
   def perform(conversation_id:, user_id:, message_content: nil, channel: :web, phone_number: nil, resume_agent_run_id: nil, message_id: nil, request_id: nil, replaces_message_id: nil)
     @request_id = request_id.presence
     # Set by Conversations::RegenerateChat: the assistant row this run replaces.
@@ -94,8 +99,13 @@ class AgentStreamJob < ApplicationJob
     # where nothing is mid-flight and remembers the runner's bad news, so the
     # terminal frame below can tell the truth instead of announcing completion
     # for a run that failed.
+    #
+    # Content deltas are additionally accumulated and written back to the
+    # placeholder (see #persist_progress) because Action Cable is not the only
+    # reader of a conversation.
     on_chunk = lambda do |chunk|
       track_progress(chunk)
+      record_delta(streaming_msg, chunk)
       broadcast_chunk(conversation, streaming_msg.id, chunk)
     end
 
@@ -165,7 +175,7 @@ class AgentStreamJob < ApplicationJob
     # would otherwise leave the row "live" — a refresh would keep showing the
     # thinking indicator until the stale window elapsed. Finalize it now so
     # recovery is immediate and honest.
-    finalize_placeholder_if_streaming(streaming_msg)
+    finalize_placeholder_if_streaming(streaming_msg, reason: e.message)
 
     begin
       AgentAutoFixer.new(error: e, backtrace: e.backtrace.to_a, conversation: conversation).call
@@ -214,6 +224,40 @@ class AgentStreamJob < ApplicationJob
     raise RunTimeout, "This run kept going for #{(elapsed / 60).round} minutes without reaching an answer, so it was stopped."
   end
 
+  # Accumulate the reply this run is producing, so a client that cannot hear the
+  # Action Cable stream can still watch it arrive.
+  #
+  # The Flutter app has no socket: it polls `GET /api/v1/conversations/:id` and
+  # therefore only ever sees what is on the row. Before this, a five-minute
+  # answer was a blank placeholder for five minutes, and a run that died
+  # mid-stream left nothing behind at all.
+  def record_delta(message, chunk)
+    return unless chunk[:type] == "content_delta"
+
+    @deltas ||= []
+    @deltas << chunk[:text].to_s
+    persist_progress(message)
+  end
+
+  # Throttled write of the accumulated deltas. `update_column` on purpose: it
+  # skips validations and callbacks, so a progress write neither moves
+  # `updated_at` (the row is still being written - the timestamp belongs to the
+  # finished answer) nor fires the counter caches, and it cannot interfere with
+  # the single atomic final write AgentRunner makes at
+  # `@streaming_message.update!`.
+  #
+  # Losing a progress write must never lose the run, so anything the database
+  # throws here is a logging condition only.
+  def persist_progress(message)
+    now = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    return if @last_progress_write && (now - @last_progress_write) < PROGRESS_WRITE_INTERVAL
+
+    @last_progress_write = now
+    message.update_column(:content, @deltas.join)
+  rescue StandardError => e
+    Rails.logger.warn "[AgentStreamJob] PROGRESS-WRITE-FAILED conversation=#{message.conversation_id} #{e.class}: #{e.message}"
+  end
+
   # Record why a run did not succeed. The first verdict wins, so a precise
   # internal one (run_timeout) is never overwritten by the generic message the
   # runner echoes back afterwards.
@@ -231,10 +275,12 @@ class AgentStreamJob < ApplicationJob
   end
 
   # Drop the live "streaming" flag on a placeholder that is still marked live.
-  # Marks an empty body as `empty_response` so the finalized render shows an
-  # honest recovery state rather than a blank bubble. Never clobbers a real
-  # answer that already cleared the flag (guarded by `streaming?`).
-  def finalize_placeholder_if_streaming(message)
+  # Marks an empty body as `empty_response`, and a body carrying only part of an
+  # answer with `metadata["error"]` naming why it stopped, so the finalized
+  # render shows an honest recovery state rather than a blank bubble or a reply
+  # that quietly breaks off mid-sentence. Never clobbers a real answer that
+  # already cleared the flag (guarded by `streaming?`).
+  def finalize_placeholder_if_streaming(message, reason: nil)
     return unless message&.persisted?
 
     fresh = message.reload
@@ -243,7 +289,14 @@ class AgentStreamJob < ApplicationJob
     meta = fresh.metadata.is_a?(Hash) ? fresh.metadata.dup : {}
     meta.delete("streaming")
     meta["stream_started_at"] ||= Time.current.utc.iso8601
-    meta["empty_response"] = true if fresh.content.to_s.empty?
+    if fresh.content.to_s.empty?
+      meta["empty_response"] = true
+    elsif @deltas.present?
+      # Progress is written as it streams (see #record_delta), so a run that
+      # stopped mid-answer leaves real words behind. They are not the answer,
+      # and `retire_superseded_message` treats this row as one that failed.
+      meta["error"] = [ reason.presence, "The reply stopped here." ].compact.join(" - ")
+    end
     fresh.update!(metadata: meta)
   rescue StandardError, NameError => e
     Rails.logger.error "[AgentStreamJob] PLACEHOLDER-FINALIZE-ERROR #{e.class}: #{e.message}"
@@ -281,11 +334,12 @@ class AgentStreamJob < ApplicationJob
   def recover_unended_run(conversation, streaming_msg)
     return if conversation.nil?
 
-    finalize_placeholder_if_streaming(streaming_msg)
+    incomplete = "The response did not complete. Please try again."
+    finalize_placeholder_if_streaming(streaming_msg, reason: incomplete)
     payload = {
       type: "failed",
       code: "run_incomplete",
-      message: "The response did not complete. Please try again.",
+      message: incomplete,
       conversation_id: conversation.id
     }
     payload[:message_id] = streaming_msg&.id

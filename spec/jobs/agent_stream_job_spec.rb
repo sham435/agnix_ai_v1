@@ -165,6 +165,68 @@ RSpec.describe AgentStreamJob, type: :job do
     expect(status[:message_id]).to be_present
   end
 
+  # ── progress on the row, for clients that only read the REST API ──────
+  #
+  # Action Cable carries the deltas to a live browser. The Flutter client has no
+  # socket - it polls `GET /api/v1/conversations/:id`, which can only ever show
+  # what is on the row. So the job writes the partial reply back to the
+  # placeholder as it streams, and AgentRunner's final write replaces it in one
+  # atomic update.
+  describe "streamed progress on the placeholder row" do
+    def placeholder
+      conversation.messages.reload.where(role: "assistant").order(:created_at).last
+    end
+
+    def perform_with_deltas(texts)
+      allow(runner).to receive(:run) do |_content, **_opts, &blk|
+        texts.each { |text| blk&.call({ type: "content_delta", text: text }) }
+      end
+      described_class.perform_now(
+        conversation_id: conversation.id, user_id: user.id, message_content: "Hi"
+      )
+    end
+
+    it "keeps the row in step with the deltas it broadcasts" do
+      # Throttle disabled: every delta is written, so the row holds the answer
+      # as far as the run has got - and is still flagged as being written.
+      stub_const("AgentStreamJob::PROGRESS_WRITE_INTERVAL", 0.0)
+
+      perform_with_deltas([ "Hel", "lo there" ])
+
+      expect(placeholder.content).to eq("Hello there")
+      expect(placeholder.streaming?).to be(true)
+    end
+
+    it "writes no more than once per interval" do
+      # The default interval is 1s and these deltas arrive in one instant, so
+      # only the first reaches the database. The rest are not lost: they are
+      # broadcast immediately and the runner writes them with the final answer.
+      perform_with_deltas([ "Hel", "lo there", " and more" ])
+
+      expect(placeholder.content).to eq("Hel")
+    end
+
+    it "keeps the words a dead run wrote and names why it stopped" do
+      stub_const("AgentStreamJob::PROGRESS_WRITE_INTERVAL", 0.0)
+      allow(runner).to receive(:run) do |_content, **_opts, &blk|
+        blk&.call({ type: "content_delta", text: "Half an answer" })
+        raise "the model socket closed mid-stream"
+      end
+
+      described_class.perform_now(
+        conversation_id: conversation.id, user_id: user.id, message_content: "Hi"
+      )
+
+      row = placeholder
+      expect(row.streaming?).to be(false)
+      expect(row.content).to eq("Half an answer")
+      expect(row.metadata["error"]).to include("the model socket closed mid-stream")
+      expect(row.metadata["error"]).to include("The reply stopped here.")
+      # An empty-body recovery marker would be a lie here: there are words.
+      expect(row.metadata).not_to have_key("empty_response")
+    end
+  end
+
   it "surfaces a provider failure as a 'failed' frame, not a fake completion" do
     allow(runner).to receive(:run) do |_content, **_opts, &blk|
       blk&.call({ type: "status", phase: "connecting" })
