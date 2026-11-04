@@ -10,10 +10,14 @@ import '../api/shams_api.dart';
 ///
 /// The server answers `messages#create` as soon as the user row is saved and
 /// writes the assistant reply from `AgentStreamJob`, so a client that wants the
-/// answer has to keep looking. Polling stops when no message is still flagged
-/// `metadata["streaming"]`, when the screen goes away, or after
-/// [_maxWait] - the last one because a job that died mid-run would otherwise
-/// leave the screen spinning forever.
+/// answer has to keep looking. Polling stops when the reply has arrived and is
+/// no longer flagged `metadata["streaming"]`, when the screen goes away, or
+/// after [_maxWait] - the last one because a job that died mid-run would
+/// otherwise leave the screen spinning forever.
+///
+/// Note the second half of that first condition. `AgentStreamJob` creates the
+/// streaming placeholder *after* the POST has already returned, so "no
+/// placeholder in this read" is not the same as "no reply is coming".
 const Duration _pollInterval = Duration(milliseconds: 1200);
 const Duration _maxWait = Duration(minutes: 10);
 
@@ -56,6 +60,23 @@ class _ChatScreenState extends State<ChatScreen> {
   Timer? _poll;
   Stopwatch? _waiting;
 
+  /// True between "this client posted a turn" and "the answer to that turn is
+  /// on screen".
+  ///
+  /// `_conversation.awaitingReply` cannot cover this window on its own: the
+  /// placeholder it looks for is created by `AgentStreamJob`, which starts
+  /// after the POST has already returned. Measured live on 2026-11-04 - a "hi"
+  /// sent at 23:17:19 produced exactly one `GET /api/v1/conversations/:id`,
+  /// which read the conversation before the job had written anything, so
+  /// `awaitingReply` was false, no poll was armed, and the 171-character reply
+  /// the agent stored at 23:17:4x was never shown.
+  bool _expectReply = false;
+
+  /// The newest assistant message this screen had seen when the turn was
+  /// posted, so a later read can tell "the reply to my turn" apart from "the
+  /// reply to the turn before it".
+  String? _baselineAssistantId;
+
   @override
   void initState() {
     super.initState();
@@ -92,9 +113,38 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
-  /// Starts or stops the poll depending on whether a placeholder is still open.
+  /// The newest assistant row in the thread, or null if there is none.
+  ///
+  /// `AgentStreamJob` writes the placeholder and the finished answer to the
+  /// *same* row, so this id is stable across the streaming transition and is
+  /// safe to use as "have I moved past what I already knew?".
+  String? _newestAssistantId(Conversation conversation) {
+    for (final message in conversation.messages.reversed) {
+      if (message.isAssistant) return message.id;
+    }
+    return null;
+  }
+
+  /// Starts or stops the poll depending on whether a reply is still outstanding.
+  ///
+  /// Two things can mean "still outstanding": the server's own placeholder
+  /// (`awaitingReply`) and this client's unpaid-for turn ([_expectReply]). The
+  /// second one exists because the first can be late - see [_expectReply].
   void _trackWait(Conversation conversation) {
-    if (!conversation.awaitingReply) {
+    if (conversation.awaitingReply) {
+      // The placeholder is visible, so the server is now the authority on when
+      // the turn is over; the optimistic flag has done its job.
+      _expectReply = false;
+    } else if (_expectReply) {
+      final newest = _newestAssistantId(conversation);
+      if (newest != null && newest != _baselineAssistantId) {
+        // An assistant row this screen has not seen before, with no streaming
+        // flag: the job ran between two reads and the answer is already final.
+        _expectReply = false;
+      }
+    }
+
+    if (!conversation.awaitingReply && !_expectReply) {
       _poll?.cancel();
       _poll = null;
       _waiting = null;
@@ -124,6 +174,15 @@ class _ChatScreenState extends State<ChatScreen> {
     });
   }
 
+  /// Whether an answer to a turn in this thread is still outstanding.
+  ///
+  /// Unions the server's own signal (a message flagged `metadata["streaming"]`)
+  /// with this client's expectation, and is what the composer lock, the
+  /// "Agent is thinking" row and the poll all key off - so they cannot disagree
+  /// about whether a second turn may be posted.
+  bool get _replyOutstanding =>
+      (_conversation?.awaitingReply ?? false) || _expectReply;
+
   Future<void> _send() async {
     final content = _controller.text.trim();
     // `awaitingReply` is the important half of this guard. The composer used to
@@ -131,15 +190,20 @@ class _ChatScreenState extends State<ChatScreen> {
     // agent's answer exists, so a second tap started a second `AgentStreamJob`
     // on the same conversation: measured live, one message sent twice 64 s
     // apart produced two runs, and the first stored an empty reply.
-    if (content.isEmpty ||
-        _sending ||
-        (_conversation?.awaitingReply ?? false)) {
+    if (content.isEmpty || _sending || _replyOutstanding) {
       return;
     }
 
     setState(() {
       _sending = true;
       _error = null;
+      // Take the baseline from what this screen currently knows, then hand the
+      // turn over to the poll: the placeholder may not exist by the time the
+      // read after this POST lands.
+      _baselineAssistantId = _conversation == null
+          ? null
+          : _newestAssistantId(_conversation!);
+      _expectReply = true;
     });
 
     try {
@@ -148,7 +212,11 @@ class _ChatScreenState extends State<ChatScreen> {
       await _load();
     } on ApiException catch (error) {
       if (!mounted) return;
-      setState(() => _error = error.message);
+      // The user row was not saved, so there is genuinely no answer to wait for.
+      setState(() {
+        _error = error.message;
+        _expectReply = false;
+      });
     } finally {
       if (mounted) setState(() => _sending = false);
     }
@@ -174,7 +242,7 @@ class _ChatScreenState extends State<ChatScreen> {
     final theme = Theme.of(context);
     final conversation = _conversation;
     final messages = conversation?.messages ?? const <Message>[];
-    final awaiting = conversation?.awaitingReply ?? false;
+    final awaiting = _replyOutstanding;
     final agent = conversation?.effectiveAgent ?? widget.agent;
 
     return Scaffold(

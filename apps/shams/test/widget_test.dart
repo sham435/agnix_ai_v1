@@ -312,6 +312,65 @@ void main() {
     expect(postedTurns(transport), 1);
   });
 
+  testWidgets('a reply is still followed up when the placeholder was not '
+      'visible in the read after the send', (tester) async {
+    final transport = FakeTransport({
+      ...signedInRoutes,
+      'POST /api/v1/conversations/$conversationId/messages': [
+        json(201, messageCreatedPayload),
+      ],
+      // The sequence that used to lose an answer: the thread, then a read taken
+      // while `AgentStreamJob` has not written this turn's row yet, then the
+      // placeholder, then the finished reply.
+      'GET /api/v1/conversations/$conversationId': [
+        json(200, _roadmap),
+        json(200, turnPostedPayload),
+        json(200, _pending),
+        json(200, _answered),
+      ],
+    });
+    await tester.pumpWidget(appFor(transport));
+    await tester.pumpAndSettle();
+    await signIn(tester);
+    await tester.tap(find.text('Roadmap'));
+    await tester.pumpAndSettle();
+
+    await tester.enterText(find.byType(TextField), 'Rails 8.2?');
+    await tester.tap(find.byIcon(Icons.send));
+    await tester.pump();
+    await tester.pump();
+    await tester.pump();
+
+    // `turnPostedPayload` flags nothing as streaming. Treating that as "no
+    // answer is coming" is the bug - the job had simply not written the row
+    // yet, and the reply landed seconds later into a screen that had stopped
+    // looking.
+    expect(
+      find.text('Agent is thinking'),
+      findsOneWidget,
+      reason: 'a turn this client just posted is waited on even before the '
+          'server creates the placeholder',
+    );
+    expect(tester.widget<TextField>(find.byType(TextField)).enabled, isFalse);
+
+    // Keep polling: the placeholder shows up on the next read.
+    await tester.pump(_pollTick);
+    await tester.pump();
+    expect(find.text('Agent is thinking'), findsOneWidget);
+
+    await tester.pump(_pollTick);
+    await tester.pump();
+
+    expect(find.text('Rails 8.2 is out.'), findsOneWidget);
+    expect(find.text('Agent is thinking'), findsNothing);
+    expect(tester.widget<TextField>(find.byType(TextField)).enabled, isTrue);
+
+    final polls = transport.sent.where(
+      (request) => request.uri.path == '/api/v1/conversations/$conversationId',
+    );
+    expect(polls, hasLength(4));
+  });
+
   testWidgets('a failed turn shows the reason the server recorded', (
     tester,
   ) async {

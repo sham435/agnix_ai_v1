@@ -61,6 +61,10 @@ const userId = '2e98fc38-25f6-4161-a55f-cf39d720080f';
 const userMessageId = '3e4670af-eb59-4dca-969d-a52b6725700d';
 const assistantMessageId = '7c1f4f6e-2b41-4d1a-9f0c-1c2e5a7b8d90';
 
+/// A second user turn, for the payloads that model "a turn has just been
+/// posted into a thread that already has history".
+const followUpMessageId = '1a2b3c4d-5e6f-4a0b-8c9d-0e1f2a3b4c5d';
+
 const _agentJson =
     '{"id":"$agentId","name":"Shams AI","slug":"shams-ai","description":null,'
     '"system_prompt":"be helpful","model":"bonsai-227b","provider":"openai",'
@@ -89,6 +93,36 @@ const _userMessageJson =
     '"metadata":{},"created_at":"2026-10-06T10:00:00.000Z",'
     '"updated_at":"2026-10-06T10:00:00.000Z"}';
 
+/// The `GET /api/v1/conversations/:id` envelope around an already-rendered
+/// list of message payloads.
+String _conversationJson(String title, List<String> messages) =>
+    '{"id":"$conversationId","user_id":"$userId","agent_id":"$agentId",'
+    '"status":"active","title":${jsonEncode(title)},'
+    '"created_at":"2026-10-06T10:00:00.000Z",'
+    '"updated_at":"2026-10-06T10:00:01.000Z",'
+    '"messages":[${messages.join(',')}]}';
+
+/// One assistant row. `AgentStreamJob` writes the placeholder and the finished
+/// answer to the same row, so the id stays put across the streaming transition.
+String _assistantJson({
+  bool streaming = true,
+  String reply = '',
+  String? error,
+}) {
+  final metadata = jsonEncode({
+    if (streaming) 'streaming': true,
+    if (streaming) 'request_id': 'b21d0c5f-3f0d-4d6d-9b1a-2f7e6a5b4c3d',
+    if (error != null) 'error': error,
+  });
+
+  return '{"id":"$assistantMessageId","conversation_id":"$conversationId",'
+      '"role":"assistant","content":${jsonEncode(reply)},"tokens":null,'
+      '"tool_calls":[],"metadata":$metadata,'
+      '"created_at":"2026-10-06T10:00:00.500Z",'
+      '"updated_at":"2026-10-06T10:00:02.000Z",'
+      '"agent":$_agentJson}';
+}
+
 /// `GET /api/v1/conversations/:id`. While `AgentStreamJob` is still working the
 /// assistant row is an empty placeholder carrying `metadata.streaming`; the job
 /// clears that flag when the answer lands, which is what the chat screen polls
@@ -98,25 +132,38 @@ String conversationDetailPayload({
   String reply = '',
   String? error,
   String title = 'hi',
-}) {
-  final metadata = jsonEncode({
-    if (streaming) 'streaming': true,
-    if (streaming) 'request_id': 'b21d0c5f-3f0d-4d6d-9b1a-2f7e6a5b4c3d',
-    if (error != null) 'error': error,
-  });
+}) => _conversationJson(
+  title,
+  <String>[
+    _userMessageJson,
+    _assistantJson(streaming: streaming, reply: reply, error: error),
+  ],
+);
 
-  return '{"id":"$conversationId","user_id":"$userId","agent_id":"$agentId",'
-      '"status":"active","title":${jsonEncode(title)},'
-      '"created_at":"2026-10-06T10:00:00.000Z",'
-      '"updated_at":"2026-10-06T10:00:01.000Z",'
-      '"messages":[$_userMessageJson,'
-      '{"id":"$assistantMessageId","conversation_id":"$conversationId",'
-      '"role":"assistant","content":${jsonEncode(reply)},"tokens":null,'
-      '"tool_calls":[],"metadata":$metadata,'
-      '"created_at":"2026-10-06T10:00:00.500Z",'
-      '"updated_at":"2026-10-06T10:00:02.000Z",'
-      '"agent":$_agentJson}]}';
-}
+/// The second user turn, i.e. the one a test posts through the composer.
+const _followUpMessageJson =
+    '{"id":"$followUpMessageId","conversation_id":"$conversationId",'
+    '"role":"user","content":"Rails 8.2?","tokens":null,"tool_calls":[],'
+    '"metadata":{},"created_at":"2026-10-06T10:01:00.000Z",'
+    '"updated_at":"2026-10-06T10:01:00.000Z"}';
+
+/// `GET /api/v1/conversations/:id` read in the gap right after
+/// `messages#create` returns: the new user row is saved, the turns before it
+/// are untouched, and `AgentStreamJob` has not created this turn's assistant
+/// row yet - so nothing in the payload carries `metadata["streaming"]` even
+/// though a reply is definitely still coming.
+///
+/// The chat screen used to read this state once, conclude nothing was pending,
+/// and never look again; measured live on 2026-11-04, the reply landed ~20 s
+/// later and the app never showed it.
+final String turnPostedPayload = _conversationJson(
+  'Roadmap',
+  <String>[
+    _userMessageJson,
+    _assistantJson(streaming: false, reply: 'Earlier answer.'),
+    _followUpMessageJson,
+  ],
+);
 
 /// `POST /api/v1/conversations/:id/messages` - the saved user row plus the
 /// server's own note that the reply is still being generated.
