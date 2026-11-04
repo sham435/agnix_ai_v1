@@ -766,4 +766,117 @@ RSpec.describe AgentRunner, type: :service do
       expect(runner.send(:iteration_budget)).to eq(AgentRunner::BUILD_MAX_ITERATIONS)
     end
   end
+
+  # ── process control block ──────────────────────────────────────────
+
+  describe "the run's process control block" do
+    def recorded(run_record = Run.last)
+      run_record.metadata.dig("pcb", "states").map { |s| [ s["state"], s["note"] ] }
+    end
+
+    it "charges the provider round-trip as I/O wait on the model it called" do
+      allow(client).to receive(:chat)
+        .and_return(content: "Hello!", tool_calls: [], tokens: 15)
+
+      described_class.new(agent: agent, conversation: conversation, user: user)
+        .run("Hello, how are you?", stream: false)
+
+      # running (the loop opens) -> blocked on the model -> running (handled the
+      # answer) -> exited. The provider wait is the only interval outside the
+      # process's own control, and that is exactly what the trace shows.
+      expect(recorded).to eq([
+        [ "running", nil ],
+        [ "blocked", "provider:anthropic/claude-sonnet-4-6" ],
+        [ "running", "iteration 1" ],
+        [ "exited", "completed" ]
+      ])
+      expect(Run.last.pcb_summary["blocked_by"].keys).to eq([ "provider:anthropic/claude-sonnet-4-6" ])
+    end
+
+    it "records a tool call as its own blocked interval, labelled by iteration" do
+      allow(agent).to receive(:enabled_tools).and_return([ "calculator" ])
+      call_index = 0
+      allow(client).to receive(:chat) do
+        call_index += 1
+        if call_index == 1
+          { content: "", tokens: 5,
+            tool_calls: [ { id: "c1", type: "function",
+                            function: { name: "calculator", arguments: '{"expression":"2+2"}' } } ] }
+        else
+          { content: "4", tool_calls: [], tokens: 3 }
+        end
+      end
+
+      described_class.new(agent: agent, conversation: conversation, user: user)
+        .run("What is 2+2?", stream: false)
+
+      expect(recorded).to eq([
+        [ "running", nil ],
+        [ "blocked", "provider:anthropic/claude-sonnet-4-6" ],
+        [ "running", "iteration 1" ],
+        [ "blocked", "tool:calculator" ],
+        [ "running", "iteration 1" ],
+        [ "blocked", "provider:anthropic/claude-sonnet-4-6" ],
+        [ "running", "iteration 2" ],
+        [ "exited", "completed" ]
+      ])
+
+      summary = Run.last.pcb_summary
+      expect(summary["blocked_by"].keys).to contain_exactly(
+        "provider:anthropic/claude-sonnet-4-6", "tool:calculator"
+      )
+      # Every hand-off between the process and a resource it waited on.
+      expect(summary["context_switches"]).to eq(7)
+    end
+
+    it "measures the queue wait from the stamps the job handed down" do
+      allow(client).to receive(:chat).and_return(content: "hi", tool_calls: [], tokens: 1)
+      arrival = Time.utc(2026, 11, 4, 17, 53, 20)
+
+      # A worker that picked the job up 2.5 seconds after the turn landed.
+      described_class.new(
+        agent: agent, conversation: conversation, user: user,
+        arrival_at: arrival, dispatched_at: arrival + 2.5
+      ).run("hi", stream: false)
+
+      expect(recorded.first(3).map(&:first)).to eq(%w[new ready running])
+      summary = Run.last.pcb_summary
+      expect(summary["queue_ms"]).to eq(2500)
+      expect(summary["arrival_at"]).to eq(arrival)
+      # The run cannot start answering before the turn it answers arrived.
+      expect(summary["start_ms"]).to be > 2500
+    end
+
+    it "records the reason a failed run really failed for" do
+      allow(client).to receive(:chat).and_raise(StandardError, "boom")
+
+      described_class.new(agent: agent, conversation: conversation, user: user)
+        .run("Trigger error", stream: false)
+
+      summary = Run.last.pcb_summary
+      expect(summary["exit_note"]).to eq("failed: boom")
+      expect(summary["current_state"]).to eq("exited")
+      # Computed, not missing: a stubbed provider raises within a millisecond, so
+      # the value itself is meaningless here - nil would mean the EXITED
+      # transition was never found.
+      expect(summary["turnaround_ms"]).not_to be_nil
+    end
+
+    it "says plainly when the loop ran out of iterations instead of answering" do
+      allow(agent).to receive(:enabled_tools).and_return([ "calculator" ])
+      endless = { content: "", tokens: 1,
+                  tool_calls: [ { id: "c1", type: "function",
+                                  function: { name: "calculator", arguments: '{"expression":"1"}' } } ] }
+      allow(client).to receive(:chat).and_return(endless)
+
+      result = described_class.new(agent: agent, conversation: conversation, user: user)
+        .run("Loop forever", stream: false)
+
+      expect(result[:incomplete]).to be(true)
+      # This path writes the run row as succeeded, so the EXITED note is the only
+      # place the exhausted budget survives.
+      expect(Run.last.pcb_summary["exit_note"])
+        .to eq("exited the loop at the iteration cap (#{AgentRunner::MAX_ITERATIONS})")
+    end
+  end
 end

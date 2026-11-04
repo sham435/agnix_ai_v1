@@ -556,4 +556,57 @@ RSpec.describe AgentStreamJob, type: :job do
         .to eq("Hello there")
     end
   end
+
+  # ── process control block: the stamps only the job knows ───────────
+
+  describe "the run's arrival and dispatch stamps" do
+    def runner_kwargs
+      captured = {}
+      allow(AgentRunner).to receive(:new) do |**kwargs|
+        captured.replace(kwargs)
+        runner
+      end
+      captured
+    end
+
+    it "hands the turn's arrival and this worker's pickup time to the runner" do
+      captured = runner_kwargs
+      user_message.update_column(:created_at, Time.utc(2026, 11, 4, 17, 53, 20))
+
+      perform_stream(message_id: user_message.id)
+
+      # The run row is created inside the loop and can see neither stamp, so the
+      # queue wait (READY-NEW) is only measurable because the job passes them in.
+      expect(captured[:arrival_at]).to eq(user_message.reload.created_at)
+      expect(captured[:dispatched_at]).to be_within(5).of(Time.current)
+    end
+
+    it "takes the arrival from the newest user turn when only content was given" do
+      captured = runner_kwargs
+      older = create(:message, conversation: conversation, role: "user", content: "Earlier")
+      older.update_column(:created_at, Time.utc(2026, 11, 4, 17, 0, 0))
+      newest = create(:message, conversation: conversation, role: "user", content: "Hi")
+      newest.update_column(:created_at, Time.utc(2026, 11, 4, 17, 5, 0))
+
+      # Conversations::StartChat posts the turn and enqueues with message_content
+      # only - no message_id - and that is the normal dashboard flow.
+      described_class.perform_now(
+        conversation_id: conversation.id, user_id: user.id, message_content: "Hi"
+      )
+
+      expect(captured[:arrival_at]).to eq(newest.reload.created_at)
+    end
+
+    it "still runs when the arrival cannot be resolved at all" do
+      captured = runner_kwargs
+      conversation.messages.delete_all
+
+      described_class.perform_now(
+        conversation_id: conversation.id, user_id: user.id, message_content: "Hi"
+      )
+
+      expect(captured[:arrival_at]).to be_nil
+      expect(captured[:dispatched_at]).to be_present
+    end
+  end
 end

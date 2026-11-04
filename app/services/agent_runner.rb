@@ -16,7 +16,8 @@ class AgentRunner
 
   attr_reader :agent, :conversation, :user, :source_message
 
-  def initialize(agent:, conversation:, user:, streaming_message: nil, source_message: nil)
+  def initialize(agent:, conversation:, user:, streaming_message: nil, source_message: nil,
+                 arrival_at: nil, dispatched_at: nil)
     @agent = agent
     @conversation = conversation
     @user = user
@@ -25,6 +26,13 @@ class AgentRunner
     # metadata may carry a per-message tool selection which narrows — never
     # widens — the agent's configured tools.
     @source_message = source_message
+    # Process-control-block stamps from BEFORE this run existed: when the user
+    # turn landed (arrival) and when a worker actually took the job
+    # (dispatch). AgentStreamJob knows both, the Run row does not, and
+    # queue wait is only measurable if it is handed over. nil for a runner
+    # driven directly (specs, ScheduledTasks::RunJob) — see Run.seed_pcb_metadata.
+    @pcb_arrival_at = arrival_at
+    @pcb_dispatched_at = dispatched_at
   end
 
   def run(user_message, stream: true, &block)
@@ -374,8 +382,18 @@ class AgentRunner
       conversation_id: conversation.id,
       input: { query: user_message },
       status: "running",
-      started_at: Time.current
+      started_at: Time.current,
+      metadata: Run.seed_pcb_metadata(
+        arrival_at: @pcb_arrival_at,
+        dispatched_at: @pcb_dispatched_at,
+        started_at: Time.current
+      )
     )
+    # Every provider call and every tool invocation below records its own
+    # BLOCKED/RUNNING transition on this row. It is an instance variable
+    # precisely because those happen in nested methods, which have no other way
+    # to know which process they belong to.
+    @run_record = run_record
 
     conversation.generate_title if conversation.messages.where(role: "user").count == 1
 
@@ -384,6 +402,10 @@ class AgentRunner
 
     begin
       iteration_budget.times do |iteration|
+        # Which burst this iteration is: the RUNNING transition that follows each
+        # blocked interval carries it, so the trace reads iteration 1 -> provider
+        # wait -> iteration 2 -> tool wait -> … instead of an anonymous ping-pong.
+        @pcb_burst_label = "iteration #{iteration + 1}"
         messages = build_messages(tool_call_results)
         tool_schemas = build_tool_schemas
 
@@ -447,7 +469,7 @@ class AgentRunner
       else
         conversation.messages.create!(role: "assistant", content: fallback_content, tokens: estimate_tokens(fallback_content), metadata: { "error" => "max_iterations" })
       end
-      run_record.finish!(output: fallback_content, tokens_used: total_tokens)
+      run_record.finish!(output: fallback_content, tokens_used: total_tokens, exit_note: "exited the loop at the iteration cap (#{iteration_budget})")
       { content: fallback_content, tool_calls: [], tokens: total_tokens,
         actions: tool_call_results.length, incomplete: true }
 
@@ -486,28 +508,30 @@ class AgentRunner
         @connecting_announced = true
         yield({ type: "status", phase: "connecting" })
       end
-      final_result = client.stream_chat(messages: messages, tools: tools) do |piece, _full, _tcs, kind|
-        now_ms = (Process.clock_gettime(Process::CLOCK_MONOTONIC) * 1000).round
-        if kind == "reasoning"
-          # Never forward the model's private chain-of-thought. Emit a single
-          # "thinking" status, then at most one per THINKING_THROTTLE_MS, so the
-          # UI shows live progress without leaking reasoning text.
-          next if @thinking_announced && @last_status_ms && (now_ms - @last_status_ms) < THINKING_THROTTLE_MS
+      final_result = with_blocked("provider:#{agent.provider}/#{agent.model}") do
+        client.stream_chat(messages: messages, tools: tools) do |piece, _full, _tcs, kind|
+          now_ms = (Process.clock_gettime(Process::CLOCK_MONOTONIC) * 1000).round
+          if kind == "reasoning"
+            # Never forward the model's private chain-of-thought. Emit a single
+            # "thinking" status, then at most one per THINKING_THROTTLE_MS, so the
+            # UI shows live progress without leaking reasoning text.
+            next if @thinking_announced && @last_status_ms && (now_ms - @last_status_ms) < THINKING_THROTTLE_MS
 
-          @thinking_announced = true
-          @last_status_ms = now_ms
-          yield({ type: "status", phase: "thinking" })
-        elsif piece && !piece.empty?
-          yield({ type: "status", phase: "generating" }) unless @generating_announced
-          @generating_announced = true
-          yield({ type: "content_delta", text: piece })
+            @thinking_announced = true
+            @last_status_ms = now_ms
+            yield({ type: "status", phase: "thinking" })
+          elsif piece && !piece.empty?
+            yield({ type: "status", phase: "generating" }) unless @generating_announced
+            @generating_announced = true
+            yield({ type: "content_delta", text: piece })
+          end
         end
       end
       elapsed_ms = ((Process.clock_gettime(Process::CLOCK_MONOTONIC) - started) * 1000).round
       Rails.logger.info "[LLM] provider=#{agent.provider} model=#{agent.model} latency_ms=#{elapsed_ms} tokens=#{final_result[:tokens]} stream=true"
       final_result
     else
-      result = client.chat(messages: messages, tools: tools)
+      result = with_blocked("provider:#{agent.provider}/#{agent.model}") { client.chat(messages: messages, tools: tools) }
       elapsed_ms = ((Process.clock_gettime(Process::CLOCK_MONOTONIC) - started) * 1000).round
       Rails.logger.info "[LLM] provider=#{agent.provider} model=#{agent.model} latency_ms=#{elapsed_ms} tokens=#{result[:tokens]} stream=false"
       result
@@ -515,6 +539,28 @@ class AgentRunner
   rescue => e
     Rails.logger.error "LLM call failed: #{e.class} #{e.message}"
     raise
+  end
+
+  # Wait on something outside this process, and say so on its control block.
+  #
+  # The interval is bounded by the call we can actually observe — one provider
+  # round-trip, one tool invocation — so it is reported as I/O wait against the
+  # named resource rather than as a per-socket-read figure we cannot see from
+  # Ruby. The RUNNING transition that follows carries the iteration label, which
+  # is what turns a flat list of timestamps into an interleaving trace: the
+  # number of these pairs IS the run's context-switch count.
+  #
+  # `ensure`, because a tool that raises still returns the run to RUNNING (the
+  # loop catches it and keeps going) and the trace must not end mid-air.
+  def with_blocked(note)
+    return yield unless @run_record
+
+    begin
+      @run_record.record_state!("blocked", note: note)
+      yield
+    ensure
+      @run_record.record_state!("running", note: @pcb_burst_label)
+    end
   end
 
   def build_client_for_agent
@@ -630,7 +676,10 @@ class AgentRunner
         tool_call_id = tool_call["id"] || tool_call[:id] || SecureRandom.hex(16)
 
         started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
-        result = dispatch_tool_call(tool_name, args)
+        # A tool call is the process waiting on something outside itself, so it
+        # is charged as I/O against the named resource — exactly what a real
+        # process does when it blocks on a device.
+        result = with_blocked("tool:#{tool_name}") { dispatch_tool_call(tool_name, args) }
         elapsed_ms = ((Process.clock_gettime(Process::CLOCK_MONOTONIC) - started) * 1000).round
 
         Rails.logger.info(

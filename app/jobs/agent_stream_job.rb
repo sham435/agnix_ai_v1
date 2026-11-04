@@ -28,6 +28,12 @@ class AgentStreamJob < ApplicationJob
   PROGRESS_WRITE_INTERVAL = 1.0
 
   def perform(conversation_id:, user_id:, message_content: nil, channel: :web, phone_number: nil, resume_agent_run_id: nil, message_id: nil, request_id: nil, replaces_message_id: nil)
+    # The instant a worker started this job: the READY transition. Nothing else
+    # records it — the run row is not created until the runner opens its loop,
+    # so without this stamp the queue wait (how long the user's turn sat
+    # unclaimed) is unmeasurable, which is exactly the number that separates a
+    # busy box from a slow model.
+    @pcb_dispatched_at = Time.current
     @request_id = request_id.presence
     # Set by Conversations::RegenerateChat: the assistant row this run replaces.
     # It survives until this run produces a real answer (see
@@ -92,7 +98,12 @@ class AgentStreamJob < ApplicationJob
       conversation: conversation,
       user: user,
       streaming_message: streaming_msg,
-      source_message: source_message
+      source_message: source_message,
+      # The run row is created deeper inside the loop and cannot know when the
+      # turn arrived or when this job was picked up, so the job — which knows
+      # both — hands them down. See Run.seed_pcb_metadata.
+      arrival_at: pcb_arrival_at(conversation, source_message),
+      dispatched_at: @pcb_dispatched_at
     )
 
     # Every chunk is a progress checkpoint: #track_progress enforces the budget
@@ -195,6 +206,22 @@ class AgentStreamJob < ApplicationJob
   # Flip the terminal latch so `ensure` knows a completed/failed frame went out.
   def mark_terminal
     @terminal_broadcasted = true
+  end
+
+  # When this turn arrived — the NEW transition of the run that is about to be
+  # created. The persisted user Message IS the arrival record, so nothing new has
+  # to be stamped. Callers that hand over only `message_content` (the dashboard
+  # start-chat flow, WhatsApp, scheduled tasks) still have that row by the time
+  # the job runs, and the newest user turn in the conversation is it: the
+  # assistant placeholder is written after it, never before.
+  def pcb_arrival_at(conversation, source_message)
+    return source_message.created_at if source_message&.user_message?
+
+    conversation.messages.where(role: "user").order(:created_at).last&.created_at
+  rescue StandardError, NameError => e
+    # Arrival is a nicety; a run without its queue wait is still a run.
+    Rails.logger.warn "[AgentStreamJob] PCB-ARRIVAL-FAILED #{e.class}: #{e.message}"
+    nil
   end
 
   # Seconds this run has been alive, on the monotonic clock. Separate method so
