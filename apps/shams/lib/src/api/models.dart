@@ -135,6 +135,8 @@ class Message {
     this.agent,
     this.metadata = const {},
     this.createdAt,
+    this.updatedAt,
+    this.tokens,
   });
 
   final String id;
@@ -148,6 +150,19 @@ class Message {
   final Agent? agent;
   final Map<String, dynamic> metadata;
   final DateTime? createdAt;
+
+  /// When this row was last written.
+  ///
+  /// For an assistant row this is the moment the answer became final, and it
+  /// can be trusted as one: `AgentRunner`'s last write is the only `update!`
+  /// that ever touches the row after the placeholder exists, while the partial
+  /// text `AgentStreamJob` streams in goes through `update_column`, which by
+  /// design does not move `updated_at`. So "asked at / finished at" comes from
+  /// data the server already sends instead of a clock the client guessed.
+  final DateTime? updatedAt;
+
+  /// Tokens this turn cost, when the server recorded it.
+  final int? tokens;
 
   factory Message.fromJson(Map<String, dynamic> json) => Message(
     id: _id(json['id']),
@@ -164,12 +179,26 @@ class Message {
         ? json['metadata'] as Map<String, dynamic>
         : const {},
     createdAt: _date(json['created_at']),
+    updatedAt: _date(json['updated_at']),
+    tokens: json['tokens'] is int ? json['tokens'] as int : null,
   );
 
   bool get isUser => role == 'user';
   bool get isAssistant => role == 'assistant';
 
   bool get isStreaming => metadata['streaming'] == true;
+
+  /// Whether anything has been written to this row yet.
+  ///
+  /// `AgentStreamJob` persists the partial answer into the placeholder as the
+  /// model produces it, so an assistant row goes through three real states and
+  /// the transcript has to tell two of them apart: created but empty (nothing
+  /// to show but the wait), filling in (show the words, keep the indicator),
+  /// and finished (show the words, show when it ended).
+  bool get hasBody => content.trim().isNotEmpty;
+
+  /// When this answer stopped being a placeholder, or null if it still is one.
+  DateTime? get completedAt => isStreaming ? null : updatedAt;
 
   /// Why this turn failed, whenever the server recorded a cause.
   ///

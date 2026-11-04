@@ -35,6 +35,14 @@ dependencies:
   # Use with the CupertinoIcons class for iOS style icons.
   cupertino_icons: ^1.0.8
   cookie_jar: ^4.0.9
+  # 1.3.0 renders Markdown through `flutter_math_fork`, which compiles against
+  # the Flutter pinned on this machine (3.35.3). 1.3.1+ swapped to
+  # `val_latex_flutter`, whose `MathWidget` calls `SemanticsService
+  # .sendAnnouncement` - an API that does not exist until a newer Flutter, so
+  # every 1.3.1+ build fails to compile here even though the package advertises
+  # `flutter: >=3.35.0`. Pinned exactly: `^1.3.0` would resolve to the 1.3.4
+  # that breaks.
+  gpt_markdown: 1.3.0
 
 dev_dependencies:
   flutter_test:

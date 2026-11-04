@@ -108,6 +108,7 @@ String _assistantJson({
   bool streaming = true,
   String reply = '',
   String? error,
+  int? tokens,
 }) {
   final metadata = jsonEncode({
     if (streaming) 'streaming': true,
@@ -116,10 +117,11 @@ String _assistantJson({
   });
 
   return '{"id":"$assistantMessageId","conversation_id":"$conversationId",'
-      '"role":"assistant","content":${jsonEncode(reply)},"tokens":null,'
+      '"role":"assistant","content":${jsonEncode(reply)},'
+      '"tokens":${tokens ?? 'null'},'
       '"tool_calls":[],"metadata":$metadata,'
       '"created_at":"2026-10-06T10:00:00.500Z",'
-      '"updated_at":"2026-10-06T10:00:02.000Z",'
+      '"updated_at":"2026-10-06T10:00:23.000Z",'
       '"agent":$_agentJson}';
 }
 
@@ -131,12 +133,18 @@ String conversationDetailPayload({
   bool streaming = true,
   String reply = '',
   String? error,
+  int? tokens,
   String title = 'hi',
 }) => _conversationJson(
   title,
   <String>[
     _userMessageJson,
-    _assistantJson(streaming: streaming, reply: reply, error: error),
+    _assistantJson(
+      streaming: streaming,
+      reply: reply,
+      error: error,
+      tokens: tokens,
+    ),
   ],
 );
 

@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:gpt_markdown/gpt_markdown.dart';
 
 import 'src/api/models.dart';
 import 'src/api/shams_api.dart';
@@ -16,15 +17,42 @@ class ShamsApp extends StatelessWidget {
 
   final ShamsApi api;
 
+  static const _seed = Color(0xFF1D4ED8);
+
+  /// The Markdown look the assistant transcript renders with.
+  ///
+  /// `GptMarkdown` reads this from the ambient theme, so every reply shares one
+  /// definition of a heading, a link, inline `code`. The only thing pinned here
+  /// is that links and inline code follow the seed colour instead of the
+  /// package's default blue/red, so a reply never fights the app's palette.
+  static GptMarkdownThemeData _markdown(Brightness brightness) {
+    final scheme = ColorScheme.fromSeed(
+      seedColor: _seed,
+      brightness: brightness,
+    );
+    return GptMarkdownThemeData(
+      brightness: brightness,
+      linkColor: scheme.primary,
+      linkHoverColor: scheme.primary,
+      inlineCode: InlineCodeStyle(
+        backgroundColor: scheme.surfaceContainerHighest,
+        color: scheme.onSurface,
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
-    const seed = Color(0xFF1D4ED8);
+    const seed = _seed;
     return MaterialApp(
       title: 'Shams',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(seedColor: seed),
         useMaterial3: true,
+        extensions: [
+          _markdown(Brightness.light),
+        ],
       ),
       darkTheme: ThemeData(
         brightness: Brightness.dark,
@@ -33,6 +61,9 @@ class ShamsApp extends StatelessWidget {
           brightness: Brightness.dark,
         ),
         useMaterial3: true,
+        extensions: [
+          _markdown(Brightness.dark),
+        ],
       ),
       home: SessionGate(api: api),
     );

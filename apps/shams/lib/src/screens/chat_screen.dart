@@ -4,6 +4,8 @@ import 'package:flutter/material.dart';
 
 import '../api/models.dart';
 import '../api/shams_api.dart';
+import '../widgets/chat_composer.dart';
+import '../widgets/transcript.dart';
 
 /// How often the chat screen re-reads the conversation while a reply is being
 /// generated, and the hard stop for that polling.
@@ -20,6 +22,12 @@ import '../api/shams_api.dart';
 /// placeholder in this read" is not the same as "no reply is coming".
 const Duration _pollInterval = Duration(milliseconds: 1200);
 const Duration _maxWait = Duration(minutes: 10);
+
+/// How close to the bottom counts as "still following the conversation".
+///
+/// The transcript only auto-scrolls while the reader is inside this margin, so
+/// scrolling up to re-read an earlier turn is never fought by a new poll.
+const double _bottomTolerance = 120;
 
 /// A conversation: the transcript, a thinking indicator while the agent works,
 /// and a composer.
@@ -60,6 +68,13 @@ class _ChatScreenState extends State<ChatScreen> {
   Timer? _poll;
   Stopwatch? _waiting;
 
+  /// Whether the reader is parked at the bottom of the transcript.
+  ///
+  /// Starts true so the first load lands on the newest turn; a poll that adds
+  /// text then keeps the view pinned there, while a reader who has scrolled up
+  /// is left where they are and offered a jump-back pill instead.
+  bool _atBottom = true;
+
   /// True between "this client posted a turn" and "the answer to that turn is
   /// on screen".
   ///
@@ -80,15 +95,25 @@ class _ChatScreenState extends State<ChatScreen> {
   @override
   void initState() {
     super.initState();
+    _scroll.addListener(_onScroll);
     _load();
   }
 
   @override
   void dispose() {
     _poll?.cancel();
+    _scroll.removeListener(_onScroll);
     _scroll.dispose();
     _controller.dispose();
     super.dispose();
+  }
+
+  void _onScroll() {
+    if (!_scroll.hasClients) return;
+    final position = _scroll.position;
+    final distance = position.maxScrollExtent - position.pixels;
+    final near = distance <= _bottomTolerance;
+    if (near != _atBottom) setState(() => _atBottom = near);
   }
 
   Future<void> _load({bool keepError = false}) async {
@@ -100,7 +125,7 @@ class _ChatScreenState extends State<ChatScreen> {
         _loading = false;
         if (!keepError) _error = null;
       });
-      _stickToBottom();
+      _followBottom();
       _trackWait(conversation);
     } on ApiException catch (error) {
       if (!mounted) return;
@@ -128,7 +153,7 @@ class _ChatScreenState extends State<ChatScreen> {
   /// Starts or stops the poll depending on whether a reply is still outstanding.
   ///
   /// Two things can mean "still outstanding": the server's own placeholder
-  /// (`awaitingReply`) and this client's unpaid-for turn ([_expectReply]). The
+  /// (`awaitingReply`) and this client's expectation ([_expectReply]). The
   /// second one exists because the first can be late - see [_expectReply].
   void _trackWait(Conversation conversation) {
     if (conversation.awaitingReply) {
@@ -170,6 +195,8 @@ class _ChatScreenState extends State<ChatScreen> {
         }
         return;
       }
+      // Repaint the elapsed counter even before the fetch resolves, so a slow
+      // turn visibly ticks instead of looking frozen.
       _load(keepError: true);
     });
   }
@@ -178,7 +205,7 @@ class _ChatScreenState extends State<ChatScreen> {
   ///
   /// Unions the server's own signal (a message flagged `metadata["streaming"]`)
   /// with this client's expectation, and is what the composer lock, the
-  /// "Agent is thinking" row and the poll all key off - so they cannot disagree
+  /// "Agent is working" row and the poll all key off - so they cannot disagree
   /// about whether a second turn may be posted.
   bool get _replyOutstanding =>
       (_conversation?.awaitingReply ?? false) || _expectReply;
@@ -197,6 +224,9 @@ class _ChatScreenState extends State<ChatScreen> {
     setState(() {
       _sending = true;
       _error = null;
+      // A turn this client is posting is worth following to the bottom, even
+      // if the reader had scrolled up to look at something else.
+      _atBottom = true;
       // Take the baseline from what this screen currently knows, then hand the
       // turn over to the poll: the placeholder may not exist by the time the
       // read after this POST lands.
@@ -222,9 +252,22 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
-  void _stickToBottom() {
+  /// Keeps the view on the newest turn - but only if the reader was already
+  /// there. Jumping the scroll for someone who scrolled up is the exact thing
+  /// a live-updating transcript must not do.
+  void _followBottom() {
+    if (!_atBottom) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToEnd());
+  }
+
+  void _scrollToEnd() {
     if (!_scroll.hasClients) return;
     _scroll.jumpTo(_scroll.position.maxScrollExtent);
+  }
+
+  void _jumpToLatest() {
+    setState(() => _atBottom = true);
+    _scrollToEnd();
   }
 
   /// The thread's own title, else the agent it runs on, else what the caller
@@ -245,6 +288,13 @@ class _ChatScreenState extends State<ChatScreen> {
     final awaiting = _replyOutstanding;
     final agent = conversation?.effectiveAgent ?? widget.agent;
 
+    // Once a streaming row is filling in, the answer itself is the progress
+    // indicator - the separate "working" line would only duplicate it.
+    final last = messages.isEmpty ? null : messages.last;
+    final streamingWithBody =
+        last != null && last.isAssistant && last.isStreaming && last.hasBody;
+    final showWaitingRow = awaiting && !streamingWithBody;
+
     return Scaffold(
       appBar: AppBar(
         toolbarHeight: 68,
@@ -261,7 +311,7 @@ class _ChatScreenState extends State<ChatScreen> {
                 '${agent.name} · ${agent.subtitle}',
                 overflow: TextOverflow.ellipsis,
                 style: theme.textTheme.bodySmall?.copyWith(
-                  color: theme.colorScheme.outline,
+                  color: theme.colorScheme.onSurfaceVariant,
                 ),
               ),
           ],
@@ -276,16 +326,22 @@ class _ChatScreenState extends State<ChatScreen> {
                   ? const Center(child: CircularProgressIndicator())
                   : messages.isEmpty && !awaiting
                   ? _EmptyThread(origin: widget.api.origin)
-                  : ListView.builder(
-                      controller: _scroll,
-                      padding: const EdgeInsets.fromLTRB(12, 12, 12, 4),
-                      itemCount: messages.length + (awaiting ? 1 : 0),
-                      itemBuilder: (context, index) {
-                        if (index >= messages.length) {
-                          return const _ThinkingRow();
-                        }
-                        return _Bubble(message: messages[index]);
-                      },
+                  : SelectionArea(
+                      // One SelectionArea over the whole thread: text inside a
+                      // code fence, a heading or a list stays selectable, and
+                      // the copy affordance is shared rather than per-bubble.
+                      child: ListView.builder(
+                        controller: _scroll,
+                        // Extra bottom padding keeps the last bubble clear of
+                        // the composer and the jump pill.
+                        padding: const EdgeInsets.fromLTRB(12, 12, 12, 16),
+                        itemCount: messages.length + (showWaitingRow ? 1 : 0),
+                        itemBuilder: (context, index) => _centered(
+                          index >= messages.length
+                              ? TypingIndicator(elapsed: _waiting?.elapsed)
+                              : _turnFor(messages[index]),
+                        ),
+                      ),
                     ),
             ),
           ),
@@ -299,98 +355,41 @@ class _ChatScreenState extends State<ChatScreen> {
                 ),
               ),
             ),
-          _Composer(
+          ChatComposer(
             controller: _controller,
             busy: _sending || awaiting,
             onSubmit: _send,
           ),
         ],
       ),
+      // The jump-back affordance only when a reply is arriving and the reader
+      // is not looking at it.
+      floatingActionButton:
+          awaiting && !_atBottom
+              ? FloatingActionButton.extended(
+                  onPressed: _jumpToLatest,
+                  icon: const Icon(Icons.keyboard_arrow_down),
+                  label: const Text('New turn - jump to latest'),
+                )
+              : null,
     );
   }
+
+  Widget _turnFor(Message message) =>
+      message.isUser ? UserTurn(message: message) : AssistantTurn(message: message);
+
+  /// Caps the reading measure on wide windows (desktop) without touching a
+  /// phone's full width, and keeps the bubbles centred rather than flush-left
+  /// in a sea of whitespace.
+  Widget _centered(Widget child) => Center(
+    child: ConstrainedBox(
+      constraints: const BoxConstraints(maxWidth: 720),
+      child: child,
+    ),
+  );
 }
 
-class _Bubble extends StatelessWidget {
-  const _Bubble({required this.message});
-
-  final Message message;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final user = message.isUser;
-    final detail = message.errorDetail;
-
-    return Align(
-      alignment: user ? Alignment.centerRight : Alignment.centerLeft,
-      child: Container(
-        margin: const EdgeInsets.symmetric(vertical: 4),
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-        constraints: const BoxConstraints(maxWidth: 640),
-        decoration: BoxDecoration(
-          color: user
-              ? theme.colorScheme.primaryContainer
-              : theme.colorScheme.surfaceContainerHighest,
-          borderRadius: BorderRadius.circular(14),
-        ),
-        child: Column(
-          crossAxisAlignment: user
-              ? CrossAxisAlignment.end
-              : CrossAxisAlignment.start,
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            SelectableText(
-              message.content.isEmpty ? '…' : message.content,
-              style: theme.textTheme.bodyMedium,
-            ),
-            // The stored sentence is deliberately generic, so a failed turn is
-            // otherwise unreadable: "I encountered an error" tells you nothing
-            // while `metadata["error"]` already says `x-api-key header is
-            // required`. Selectable, because the whole point is being able to
-            // hand the exact provider message to someone who can fix it.
-            if (detail != null) ...[
-              const SizedBox(height: 6),
-              SelectableText(
-                detail,
-                style: theme.textTheme.bodySmall?.copyWith(
-                  color: theme.colorScheme.error,
-                ),
-              ),
-            ],
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _ThinkingRow extends StatelessWidget {
-  const _ThinkingRow();
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(4, 8, 4, 8),
-      child: Row(
-        children: [
-          const SizedBox.square(
-            dimension: 14,
-            child: CircularProgressIndicator(strokeWidth: 2),
-          ),
-          const SizedBox(width: 10),
-          Text(
-            'Agent is thinking',
-            style: theme.textTheme.bodySmall?.copyWith(
-              color: theme.colorScheme.outline,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
+/// The placeholder shown for a conversation that has no turns yet.
 class _EmptyThread extends StatelessWidget {
   const _EmptyThread({required this.origin});
 
@@ -407,71 +406,12 @@ class _EmptyThread extends StatelessWidget {
             'No messages yet. Say something.\n\nConnected to $origin',
             textAlign: TextAlign.center,
             style: theme.textTheme.bodyMedium?.copyWith(
-              color: theme.colorScheme.outline,
+              color: theme.colorScheme.onSurfaceVariant,
+              height: 1.6,
             ),
           ),
         ),
       ],
-    );
-  }
-}
-
-/// The message field and its send button.
-///
-/// `busy` means "no new turn may be posted" - either this client's own POST is
-/// in flight, or the agent is still writing the reply to the turn before.
-class _Composer extends StatelessWidget {
-  const _Composer({
-    required this.controller,
-    required this.busy,
-    required this.onSubmit,
-  });
-
-  final TextEditingController controller;
-  final bool busy;
-  final Future<void> Function() onSubmit;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    return SafeArea(
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(12, 4, 12, 12),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.end,
-          children: [
-            Expanded(
-              child: TextField(
-                controller: controller,
-                enabled: !busy,
-                minLines: 1,
-                maxLines: 6,
-                textInputAction: TextInputAction.send,
-                onSubmitted: (_) => onSubmit(),
-                decoration: InputDecoration(
-                  hintText: 'Message',
-                  filled: true,
-                  fillColor: theme.colorScheme.surfaceContainerHighest,
-                  border: const OutlineInputBorder(
-                    borderRadius: BorderRadius.all(Radius.circular(14)),
-                    borderSide: BorderSide.none,
-                  ),
-                ),
-              ),
-            ),
-            const SizedBox(width: 8),
-            FilledButton(
-              onPressed: busy ? null : onSubmit,
-              child: busy
-                  ? const SizedBox.square(
-                      dimension: 16,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
-                  : const Icon(Icons.send),
-            ),
-          ],
-        ),
-      ),
     );
   }
 }
