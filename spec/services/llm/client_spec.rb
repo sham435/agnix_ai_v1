@@ -227,4 +227,34 @@ RSpec.describe Llm::Client do
       expect(kwargs[:model]).to eq("recursive/flint-v1.0:free")
     end
   end
+
+  # §2: per-turn generation budgets. The client forwards a per-call
+  # max_tokens override to the adapter when a caller asks for a smaller window
+  # (plan turns, intermediate tool-selection turns), and otherwise sends the
+  # configured cap so the final answer keeps the full budget.
+  describe "per-call max_tokens override" do
+    def recording_adapter
+      adapter = Object.new
+      def adapter.chat(messages:, tools:, temperature:, max_tokens:, top_p:, stream:); { max_tokens: max_tokens }; end
+      def adapter.stream_chat(messages:, tools:, temperature:, max_tokens:, top_p:); { max_tokens: max_tokens }; end
+      allow(Llm::OpenaiAdapter).to receive(:new).and_return(adapter)
+      adapter
+    end
+
+    it "uses the override when one is given" do
+      recording_adapter
+      client = described_class.new(provider: "openai", model: "gpt-4o", api_key: "sk-x", max_tokens: 8192)
+
+      expect(client.chat(messages: [], tools: [], max_tokens: 1024)[:max_tokens]).to eq(1024)
+      expect(client.stream_chat(messages: [], tools: [], max_tokens: 2048)[:max_tokens]).to eq(2048)
+    end
+
+    it "falls back to the configured cap when no override is given" do
+      recording_adapter
+      client = described_class.new(provider: "openai", model: "gpt-4o", api_key: "sk-x", max_tokens: 8192)
+
+      expect(client.chat(messages: [], tools: [])[:max_tokens]).to eq(8192)
+      expect(client.stream_chat(messages: [], tools: [])[:max_tokens]).to eq(8192)
+    end
+  end
 end

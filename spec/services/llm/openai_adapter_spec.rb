@@ -227,6 +227,32 @@ RSpec.describe Llm::OpenaiAdapter do
       expect(kinds).to eq([ "reasoning", "content" ])
       expect(pieces).to eq([ "thinking hard", "Hi" ])
     end
+
+    it "surfaces finish_reason 'length' so a truncated reply is not read as complete" do
+      stub_stream([
+        { choices: [ { index: 0, delta: { content: "once upon" } } ] }.to_json,
+        { choices: [ { index: 0, delta: {}, finish_reason: "length" } ] }.to_json,
+        { choices: [], usage: { completion_tokens: 128 } }.to_json
+      ])
+
+      result = adapter.stream_chat(messages: [ { role: "user", content: "hi" } ], tools: [],
+                                   temperature: 0.7, max_tokens: 100) { |_c, _f, _t| }
+
+      expect(result[:content]).to eq("once upon")
+      expect(result[:finish_reason]).to eq("length")
+    end
+
+    it "defaults finish_reason to 'stop' when the stream never reports one" do
+      stub_stream([
+        { choices: [ { index: 0, delta: { content: "done" } } ] }.to_json,
+        { choices: [], usage: { completion_tokens: 2 } }.to_json
+      ])
+
+      result = adapter.stream_chat(messages: [ { role: "user", content: "hi" } ], tools: [],
+                                   temperature: 0.7, max_tokens: 100) { |_c, _f, _t| }
+
+      expect(result[:finish_reason]).to eq("stop")
+    end
   end
 
   # A gateway outage used to look like a model that had nothing to say: the

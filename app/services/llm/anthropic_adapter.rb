@@ -39,6 +39,7 @@ module Llm
       saw_sse = false
       stream_status = nil
       error_body = +""
+      finish_reason = nil
 
       response = HTTParty.post("#{BASE_URL}/messages",
         headers: headers,
@@ -101,7 +102,11 @@ module Llm
             when "content_block_stop"
               # Tool call finished.
             when "message_delta"
-              # Final metadata.
+              # Final metadata: the terminal stop_reason lives here. "max_tokens"
+              # means the reply was cut off at the cap - normalize it to "length"
+              # so the runner's truncation check is provider-agnostic.
+              stop_reason = event.dig("delta", "stop_reason")
+              finish_reason = stop_reason == "max_tokens" ? "length" : stop_reason if stop_reason
             end
           rescue JSON::ParserError
             next
@@ -138,6 +143,11 @@ module Llm
           raise LlmError, "Anthropic API error: #{detail}"
         end
 
+        # A complete message carries its own terminal stop_reason at the top
+        # level; keep it so a buffered truncated reply is flagged too.
+        stop_reason = parsed["stop_reason"] if parsed.is_a?(Hash)
+        finish_reason = stop_reason == "max_tokens" ? "length" : stop_reason if stop_reason
+
         Array(parsed&.dig("content")).each do |part|
           case part["type"]
           when "text"
@@ -156,7 +166,8 @@ module Llm
         end
       end
 
-      { content: full_content, tool_calls: tool_calls, tokens: estimate_tokens(full_content) }
+      { content: full_content, tool_calls: tool_calls,
+        tokens: estimate_tokens(full_content), finish_reason: finish_reason || "stop" }
     end
 
     def sync_chat(messages:, tools:, temperature:, max_tokens:, top_p: nil, **)

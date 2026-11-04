@@ -27,12 +27,16 @@ module Llm
 
     # Send a chat completion request.
     # Returns: { content: String, tokens: Integer, finish_reason: String }
-    def chat(messages:, tools: [], stream: false)
+    # `max_tokens:` is a per-call override of the client's configured budget -
+    # a cheap tool-selection or plan turn asks for less than the agent's full
+    # cap so a single-slot local server never reserves/wastes the whole window,
+    # while the final answer leaves it nil and keeps the configured cap.
+    def chat(messages:, tools: [], stream: false, max_tokens: nil)
       adapter.send(:chat,
         messages: messages,
         tools: tools,
         temperature: temperature,
-        max_tokens: max_tokens,
+        max_tokens: max_tokens || self.max_tokens,
         top_p: top_p,
         stream: stream
       )
@@ -40,12 +44,12 @@ module Llm
 
     # Streaming chat via Action Cable.
     # Yields chunks as they arrive.
-    def stream_chat(messages:, tools: [], &block)
+    def stream_chat(messages:, tools: [], max_tokens: nil, &block)
       adapter.send(:stream_chat,
         messages: messages,
         tools: tools,
         temperature: temperature,
-        max_tokens: max_tokens,
+        max_tokens: max_tokens || self.max_tokens,
         top_p: top_p,
         &block
       )

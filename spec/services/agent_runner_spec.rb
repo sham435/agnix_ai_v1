@@ -348,6 +348,90 @@ RSpec.describe AgentRunner, type: :service do
     end
   end
 
+  # ── §2b/§2c: a truncated reply is honest, not a silent success ───────
+
+  describe "truncated reply detection" do
+    subject(:runner) { described_class.new(agent: agent, conversation: conversation, user: user) }
+
+    before { allow(Llm::ResourceSampler).to receive(:sample).and_return({}) }
+
+    it "flags a finish_reason=length answer as incomplete and keeps the partial" do
+      allow(client).to receive(:chat).and_return(
+        { content: "the beginning of a long answer", tool_calls: [], tokens: 4000, finish_reason: "length" }
+      )
+
+      result = runner.run("tell me a lot", stream: false)
+
+      expect(result[:incomplete]).to be(true)
+      expect(result[:truncated]).to be(true)
+      # The words that DID stream are preserved, not replaced by an apology.
+      expect(result[:content]).to eq("the beginning of a long answer")
+
+      msg = conversation.messages.where(role: "assistant").last
+      expect(msg.content).to eq("the beginning of a long answer")
+      expect(msg.metadata["truncated"]).to be(true)
+      expect(msg.metadata["empty_response"]).to be_nil
+    end
+
+    it "still reports a finish_reason=stop answer as complete" do
+      allow(client).to receive(:chat).and_return(
+        { content: "all done", tool_calls: [], tokens: 10, finish_reason: "stop" }
+      )
+
+      result = runner.run("quick one", stream: false)
+
+      expect(result[:incomplete]).to be_nil
+      expect(result[:content]).to eq("all done")
+      expect(conversation.messages.where(role: "assistant").last.metadata["truncated"]).to be_nil
+    end
+  end
+
+  # ── §2a: per-turn generation budgets ────────────────────────────────
+
+  describe "per-turn max_tokens budget" do
+    subject(:runner) { described_class.new(agent: agent, conversation: conversation, user: user) }
+
+    before { allow(Llm::ResourceSampler).to receive(:sample).and_return({}) }
+
+    it "leaves the first turn uncapped when tools are present" do
+      allow(agent).to receive(:enabled_tools).and_return([ "calculator" ])
+      seen = []
+      allow(client).to receive(:chat) do |**kwargs|
+        seen << kwargs
+        if seen.length == 1
+          { content: nil, tool_calls: [ { id: "c1", function: { name: "calculator", arguments: '{"expression":"1+1"}' } } ], tokens: 5, finish_reason: "tool_calls" }
+        else
+          { content: "two", tool_calls: [], tokens: 3, finish_reason: "stop" }
+        end
+      end
+      allow(Agents::ToolRegistry).to receive(:execute).and_return({ ok: true })
+
+      runner.run("add one plus one", stream: false)
+
+      expect(seen.first).not_to have_key(:max_tokens)
+    end
+
+    it "bounds a middle tool-selection turn with the step budget" do
+      allow(agent).to receive(:enabled_tools).and_return([ "calculator" ])
+      seen = []
+      allow(client).to receive(:chat) do |**kwargs|
+        seen << kwargs
+        if seen.length <= 2
+          { content: nil, tool_calls: [ { id: "c#{seen.length}", function: { name: "calculator", arguments: '{"expression":"1+1"}' } } ], tokens: 5, finish_reason: "tool_calls" }
+        else
+          { content: "done", tool_calls: [], tokens: 3, finish_reason: "stop" }
+        end
+      end
+      allow(Agents::ToolRegistry).to receive(:execute).and_return({ ok: true })
+
+      runner.run("keep computing", stream: false)
+
+      # iteration 0: uncapped; iteration 1: a middle tool turn -> step budget.
+      expect(seen[0]).not_to have_key(:max_tokens)
+      expect(seen[1][:max_tokens]).to eq(AgentRunner::TOOL_STEP_MAX_TOKENS)
+    end
+  end
+
   # ── §3 context bounding: the tool transcript ─────────────────────────
 
   describe "#build_tool_messages" do
@@ -722,7 +806,8 @@ RSpec.describe AgentRunner, type: :service do
     it "delegates to agent.llm_client and returns the raw content" do
       expect(agent).to receive(:llm_client).and_return(client)
       expect(client).to receive(:chat)
-        .with(messages: [ hash_including(role: "user", content: "Build a thing") ])
+        .with(messages: [ hash_including(role: "user", content: "Build a thing") ],
+              max_tokens: AgentRunner::PLAN_MAX_TOKENS)
         .and_return(content: '["Step one"]', tool_calls: [], tokens: 5)
 
       expect(runner.send(:chat_for_plan, "Build a thing")).to eq('["Step one"]')

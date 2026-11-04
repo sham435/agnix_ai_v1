@@ -33,6 +33,7 @@ module Llm
       body[:options][:top_p] = top_p unless top_p.nil?
 
       full_content = +""
+      done_reason = nil
       response = HTTParty.post("#{BASE_URL}/api/chat",
         headers: { "Content-Type" => "application/json" },
         body: body.to_json,
@@ -43,6 +44,10 @@ module Llm
         chunk.to_s.each_line do |line|
           begin
             data = JSON.parse(line)
+            # The terminal frame carries done:true plus a done_reason ("stop",
+            # "length", "eos"). "length" means the reply hit num_predict, so
+            # capture it - otherwise a cut-off answer reads as complete.
+            done_reason = data["done_reason"] if data["done_reason"]
             content = data.dig("message", "content")
             if content
               full_content << content
@@ -54,7 +59,8 @@ module Llm
         end
       end
 
-      { content: full_content, tool_calls: [], tokens: estimate_tokens(full_content) }
+      { content: full_content, tool_calls: [], tokens: estimate_tokens(full_content),
+        finish_reason: done_reason || "stop" }
     end
 
     def sync_chat(messages:, tools:, temperature:, max_tokens:, top_p: nil, **)

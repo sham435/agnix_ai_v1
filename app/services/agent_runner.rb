@@ -18,6 +18,15 @@ class AgentRunner
   # is capped at TOOL_RESULT_MAX_BYTES.
   TOOL_RESULT_WINDOW = Integer(ENV.fetch("TOOL_RESULT_WINDOW", 6))
   TOOL_RESULT_MAX_BYTES = Integer(ENV.fetch("TOOL_RESULT_MAX_BYTES", 4000))
+  # Per-turn generation budgets (§2). One max_tokens governed every call before:
+  # the same 8192 was reserved for the plan, for each intermediate tool-selection
+  # turn, and for the final answer. On a single-slot local server that inflates
+  # worst-case generation time (and thus the chance a 600s read timeout trips).
+  # A plan is a short JSON array; a tool-selection turn is a small tool_calls
+  # object plus a one-line narration - neither needs the full cap. The final
+  # answer keeps the agent's configured max_tokens (override nil). Env-tunable.
+  PLAN_MAX_TOKENS = Integer(ENV.fetch("PLAN_MAX_TOKENS", 1024))
+  TOOL_STEP_MAX_TOKENS = Integer(ENV.fetch("TOOL_STEP_MAX_TOKENS", 2048))
   OS_MODES = %w[auto_plan auto_build manual_plan manual_build].freeze
   CHAT_ATTACHMENT_TOOLS = %w[read_asset list_assets].freeze
   # Minimum spacing between repeated "thinking" status events (ms). Reasoning
@@ -261,7 +270,7 @@ class AgentRunner
   end
 
   def chat_for_plan(prompt)
-    resp = agent.llm_client.chat(messages: [ { role: "user", content: prompt } ])
+    resp = agent.llm_client.chat(messages: [ { role: "user", content: prompt } ], max_tokens: PLAN_MAX_TOKENS)
     resp[:content].to_s
   rescue => e
     Rails.logger.warn "Plan generation failed: #{e.class} #{e.message}"
@@ -419,7 +428,14 @@ class AgentRunner
         messages = build_messages(tool_call_results)
         tool_schemas = build_tool_schemas
 
-        response = chat_with_agent_model(messages, tool_schemas, stream: stream, &block)
+        # Generation budget for THIS turn (§2). Only intermediate tool-selection
+        # turns are bounded: tools present, not the first turn (which for a plain
+        # chat IS the answer), and not the last permitted turn (which is allowed
+        # the full cap so a legitimate closing reply is not cut off). Everything
+        # else passes nil and keeps the agent's configured max_tokens.
+        turn_budget = TOOL_STEP_MAX_TOKENS if tool_schemas.any? && iteration > 0 && iteration < iteration_budget - 1
+
+        response = chat_with_agent_model(messages, tool_schemas, stream: stream, max_tokens: turn_budget, &block)
 
         total_tokens += response[:tokens] || 0
 
@@ -435,6 +451,14 @@ class AgentRunner
           final_meta.delete("streaming")
           final_meta["empty_response"] = true if content.empty?
 
+          # finish_reason "length" means the model hit max_tokens mid-sentence:
+          # the reply is cut off, NOT complete. Keep the partial text (do not
+          # discard it) but flag it and record the run as incomplete rather than
+          # a clean success - the "truncated but succeeded" defect (§2c). It is
+          # then honestly resumable instead of silently shipped.
+          truncated = response[:finish_reason].to_s == "length"
+          final_meta["truncated"] = true if truncated
+
           if @streaming_message
             @streaming_message.update!(content: content, tokens: response[:tokens] || 0, metadata: final_meta)
             assistant_msg = @streaming_message
@@ -448,6 +472,16 @@ class AgentRunner
           end
 
           create_memory(user_message, content) if content.present?
+
+          if truncated
+            run_record.finish!(output: content, tokens_used: total_tokens,
+              exit_note: "reply truncated at the max_tokens cap (finish_reason=length)")
+            return {
+              content: content, tool_calls: [], tokens: total_tokens,
+              actions: tool_call_results.length, incomplete: true, truncated: true,
+              messages: conversation.messages.to_a
+            }
+          end
 
           run_record.finish!(output: content, tokens_used: total_tokens)
 
@@ -504,7 +538,7 @@ class AgentRunner
     end
   end
 
-  def chat_with_agent_model(messages, tools, stream:, &block)
+  def chat_with_agent_model(messages, tools, stream:, max_tokens: nil, &block)
     client = build_client_for_agent
     started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
 
@@ -520,7 +554,7 @@ class AgentRunner
       end
       final_result = with_blocked("provider:#{agent.provider}/#{agent.model}") do
         with_local_model_slot(agent.provider) do
-          client.stream_chat(messages: messages, tools: tools) do |piece, _full, _tcs, kind|
+          client.stream_chat(**provider_opts(messages, tools, max_tokens)) do |piece, _full, _tcs, kind|
             now_ms = (Process.clock_gettime(Process::CLOCK_MONOTONIC) * 1000).round
             if kind == "reasoning"
               # Never forward the model's private chain-of-thought. Emit a single
@@ -544,7 +578,7 @@ class AgentRunner
       final_result
     else
       result = with_blocked("provider:#{agent.provider}/#{agent.model}") do
-        with_local_model_slot(agent.provider) { client.chat(messages: messages, tools: tools) }
+        with_local_model_slot(agent.provider) { client.chat(**provider_opts(messages, tools, max_tokens)) }
       end
       elapsed_ms = ((Process.clock_gettime(Process::CLOCK_MONOTONIC) - started) * 1000).round
       log_provider_metrics(elapsed_ms: elapsed_ms, tokens: result[:tokens], stream: false)
@@ -610,6 +644,16 @@ class AgentRunner
 
   def build_client_for_agent
     agent.llm_client
+  end
+
+  # Keyword args for a provider call. max_tokens is only included when a
+  # caller asked for a specific per-turn budget; leaving it out makes the client
+  # fall back to the agent's configured cap (and keeps the call shape the
+  # existing client stubs in the specs expect).
+  def provider_opts(messages, tools, max_tokens)
+    opts = { messages: messages, tools: tools }
+    opts[:max_tokens] = max_tokens if max_tokens
+    opts
   end
 
   def build_messages(tool_call_results)

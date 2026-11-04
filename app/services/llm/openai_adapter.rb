@@ -69,6 +69,7 @@ module Llm
       reasoning = +""
       tool_calls = []
       usage_tokens = nil
+      finish_reason = nil
       attempt = 0
 
       begin
@@ -78,6 +79,7 @@ module Llm
         reasoning = +""
         tool_calls = []
         usage_tokens = nil
+        finish_reason = nil
         stream_status = nil
         error_body = +""
 
@@ -121,6 +123,14 @@ module Llm
 
               choice = event.dig("choices", 0)
               next unless choice
+
+              # llama.cpp and OpenAI-style gateways carry the terminal reason on
+              # the last choices[0] event - "stop" for a natural end, "length"
+              # when the completion hit max_tokens. Without capturing it a
+              # truncated answer is indistinguishable from a finished one, so
+              # the runner reports a cut-off reply as a success (the
+              # "truncated but succeeded" defect). Keep the last non-nil value.
+              finish_reason = choice["finish_reason"] if choice["finish_reason"]
 
               delta = choice["delta"] || {}
 
@@ -191,8 +201,13 @@ module Llm
       # agent returned no text. Substituting the chain of thought here is what
       # used to paste private reasoning into the answer bubble as if it were
       # the reply, so it deliberately does not happen.
+      #
+      # finish_reason stays "stop" when the transport never reported a terminal
+      # reason (a stub, or a gateway that omits it), so callers only ever see an
+      # explicit "length" when the completion genuinely hit the max_tokens cap.
       { content: full_content, tool_calls: tool_calls,
-        tokens: usage_tokens || estimate_tokens(full_content) }
+        tokens: usage_tokens || estimate_tokens(full_content),
+        finish_reason: finish_reason || "stop" }
     end
 
     def sync_chat(messages:, tools:, temperature:, max_tokens:, top_p: nil, **)
