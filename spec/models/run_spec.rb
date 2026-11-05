@@ -84,6 +84,22 @@ RSpec.describe Run, type: :model do
 
       expect(states(created).map { |s| s["state"] }).to eq(%w[new ready running])
     end
+
+    it "tags the run with the turn's request_id so a retry can find it (§6)" do
+      metadata = described_class.seed_pcb_metadata(
+        arrival_at: nil, dispatched_at: nil, started_at: stamp(0), request_id: "req-42"
+      )
+
+      expect(metadata["request_id"]).to eq("req-42")
+    end
+
+    it "omits the request_id entirely when the run is not tied to a turn" do
+      metadata = described_class.seed_pcb_metadata(
+        arrival_at: nil, dispatched_at: nil, started_at: stamp(0)
+      )
+
+      expect(metadata).not_to have_key("request_id")
+    end
   end
 
   describe "#record_state!" do
@@ -247,6 +263,106 @@ RSpec.describe Run, type: :model do
       expect(stored(create(:run, metadata: { "legacy" => true })).pcb_summary).to eq(
         "recorded" => false, "states" => 0
       )
+    end
+  end
+
+  # §6 build resume: the tool-action checkpoint a re-delivered run consults to
+  # skip writes an earlier attempt of the same turn already completed.
+  describe "tool-action checkpoint" do
+    let(:conversation) { create(:conversation, user: create(:user), agent: run.agent) }
+
+    def checkpoint(record = run)
+      stored(record).metadata["tool_checkpoint"]
+    end
+
+    describe "#record_tool_action!" do
+      it "appends a compact, persisted entry per action" do
+        run.record_tool_action!("write_file", key: "k1", ok: true, note: "/app/a.rb 1234B")
+
+        expect(checkpoint).to eq([
+          { "tool" => "write_file", "key" => "k1", "ok" => true, "note" => "/app/a.rb 1234B" }
+        ])
+      end
+
+      it "collapses a re-recorded key to one entry carrying the latest outcome" do
+        run.record_tool_action!("write_file", key: "k1", ok: false)
+        run.record_tool_action!("write_file", key: "k1", ok: true, note: "/app/a.rb")
+
+        recorded = checkpoint
+        expect(recorded.size).to eq(1)
+        expect(recorded.first["ok"]).to be(true)
+      end
+
+      it "leaves the PCB and the rest of the metadata alone" do
+        run.record_state!("running", at: stamp(0))
+        run.record_tool_action!("scaffold", key: "k2", ok: true)
+
+        fresh = stored
+        expect(fresh.metadata.dig("pcb", "states").size).to eq(1)
+        expect(fresh.metadata["tool_checkpoint"].first["tool"]).to eq("scaffold")
+      end
+
+      it "never costs the run over a failed checkpoint write" do
+        allow(run).to receive(:update_column)
+          .and_raise(ActiveRecord::StatementInvalid.new("boom"))
+
+        expect { run.record_tool_action!("write_file", key: "k", ok: true) }.not_to raise_error
+      end
+
+      it "does not hop the conversation up the sidebar" do
+        live = create(:run, conversation: conversation, metadata: {})
+        before = conversation.reload.updated_at
+
+        live.record_tool_action!("write_file", key: "k", ok: true)
+
+        expect(conversation.reload.updated_at).to eq(before)
+      end
+    end
+
+    describe "readers" do
+      it "exposes the turn id and the checkpoint list" do
+        created = Run.create!(
+          agent: run.agent, conversation: conversation, input: { query: "hi" }, status: "running",
+          metadata: Run.seed_pcb_metadata(
+            arrival_at: nil, dispatched_at: nil, started_at: stamp(0), request_id: "req-9"
+          )
+        )
+        created.record_tool_action!("write_file", key: "k", ok: true)
+
+        expect(stored(created).request_id).to eq("req-9")
+        expect(stored(created).tool_checkpoint.size).to eq(1)
+      end
+    end
+
+    describe ".completed_action_keys" do
+      it "gathers only successful actions across runs sharing the request_id" do
+        create(:run, conversation: conversation, metadata: { "request_id" => "req-1", "tool_checkpoint" => [
+          { "tool" => "write_file", "key" => "a", "ok" => true },
+          { "tool" => "write_file", "key" => "b", "ok" => false }
+        ] })
+        create(:run, conversation: conversation, metadata: { "request_id" => "req-1", "tool_checkpoint" => [
+          { "tool" => "scaffold", "key" => "c", "ok" => true }
+        ] })
+
+        keys = Run.completed_action_keys(conversation_id: conversation.id, request_id: "req-1")
+
+        expect(keys).to be_a(Set)
+        expect(keys.to_a).to match_array(%w[a c])
+      end
+
+      it "ignores other turns and other conversations" do
+        create(:run, conversation: conversation, metadata: { "request_id" => "other",
+          "tool_checkpoint" => [ { "tool" => "write_file", "key" => "x", "ok" => true } ] })
+        create(:run,
+          conversation: create(:conversation, user: create(:user), agent: run.agent),
+          metadata: { "request_id" => "req-1", "tool_checkpoint" => [ { "tool" => "write_file", "key" => "y", "ok" => true } ] })
+
+        expect(Run.completed_action_keys(conversation_id: conversation.id, request_id: "req-1")).to be_empty
+      end
+
+      it "is empty when the turn carries no id" do
+        expect(Run.completed_action_keys(conversation_id: conversation.id, request_id: nil)).to be_empty
+      end
     end
   end
 end

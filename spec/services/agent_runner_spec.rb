@@ -1082,4 +1082,107 @@ RSpec.describe AgentRunner, type: :service do
         .to eq("exited the loop at the iteration cap (#{AgentRunner::MAX_ITERATIONS})")
     end
   end
+
+  # ── build resume: the default loop skips completed writes on a re-delivery ──
+  describe "build resume (tool-action checkpoint)" do
+    let(:write_args) { '{"path":"/app/a.rb","content":"hi"}' }
+    let(:write_call) do
+      { content: nil, tokens: 3,
+        tool_calls: [ { id: "c1", type: "function",
+                        function: { name: "write_file", arguments: write_args } } ] }
+    end
+    let(:done_call) { { content: "wrote it", tool_calls: [], tokens: 2 } }
+
+    it "records a successful write on the run's checkpoint (§6)" do
+      allow(agent).to receive(:enabled_tools).and_return([ "write_file" ])
+      allow(Agents::ToolRegistry).to receive(:execute)
+        .and_return({ ok: true, path: "/app/a.rb", bytes_written: 10 })
+      allow(client).to receive(:chat).and_return(write_call, done_call)
+
+      described_class.new(agent: agent, conversation: conversation, user: user,
+                          request_id: "req-1").run("go", stream: false)
+
+      entry = Run.last.tool_checkpoint.first
+      expect(entry["tool"]).to eq("write_file")
+      expect(entry["ok"]).to be(true)
+      expect(entry["note"]).to include("/app/a.rb")
+    end
+
+    it "skips a write an earlier attempt of the same turn already completed (§6)" do
+      allow(agent).to receive(:enabled_tools).and_return([ "write_file" ])
+      calls = 0
+      allow(Agents::ToolRegistry).to receive(:execute) do
+        calls += 1
+        { ok: true, path: "/app/a.rb", bytes_written: 10 }
+      end
+
+      first = described_class.new(agent: agent, conversation: conversation, user: user, request_id: "req-2")
+      allow(client).to receive(:chat).and_return(write_call, done_call)
+      first.run("go", stream: false)
+      expect(calls).to eq(1)
+
+      # A re-delivery replays the turn; the completed write must not run again,
+      # but the model still gets a success for its tool_call_id and answers.
+      second = described_class.new(agent: agent, conversation: conversation, user: user, request_id: "req-2")
+      allow(client).to receive(:chat).and_return(write_call, done_call)
+      result = second.run("go", stream: false)
+
+      expect(calls).to eq(1)
+      expect(result[:content]).to eq("wrote it")
+    end
+
+    it "re-runs a write whose earlier attempt failed rather than skipping it (§6)" do
+      allow(agent).to receive(:enabled_tools).and_return([ "write_file" ])
+      calls = 0
+      allow(Agents::ToolRegistry).to receive(:execute) do
+        calls += 1
+        { ok: false, error: "disk full", path: "/app/a.rb" }
+      end
+      allow(client).to receive(:chat).and_return(write_call, done_call)
+
+      described_class.new(agent: agent, conversation: conversation, user: user, request_id: "req-3").run("go", stream: false)
+      allow(client).to receive(:chat).and_return(write_call, done_call)
+      described_class.new(agent: agent, conversation: conversation, user: user, request_id: "req-3").run("go", stream: false)
+
+      expect(calls).to eq(2)
+    end
+
+    it "still re-executes a recorded non-write tool - only the allowlist is skipped (§6)" do
+      allow(agent).to receive(:enabled_tools).and_return([ "calculator" ])
+      calc = { content: nil, tokens: 3,
+               tool_calls: [ { id: "c1", type: "function",
+                               function: { name: "calculator", arguments: '{"expression":"2+2"}' } } ] }
+      done = { content: "four", tool_calls: [], tokens: 2 }
+      calls = 0
+      allow(Agents::ToolRegistry).to receive(:execute) do
+        calls += 1
+        { result: 4 }
+      end
+
+      allow(client).to receive(:chat).and_return(calc, done)
+      described_class.new(agent: agent, conversation: conversation, user: user, request_id: "req-4").run("go", stream: false)
+      allow(client).to receive(:chat).and_return(calc, done)
+      described_class.new(agent: agent, conversation: conversation, user: user, request_id: "req-4").run("go", stream: false)
+
+      # A calculator result may be stale, so it is never elided on resume.
+      expect(calls).to eq(2)
+    end
+
+    it "re-runs every write when the run carries no turn id (§6 - direct runner)" do
+      allow(agent).to receive(:enabled_tools).and_return([ "write_file" ])
+      calls = 0
+      allow(Agents::ToolRegistry).to receive(:execute) do
+        calls += 1
+        { ok: true, path: "/app/a.rb", bytes_written: 10 }
+      end
+      allow(client).to receive(:chat).and_return(write_call, done_call)
+
+      described_class.new(agent: agent, conversation: conversation, user: user).run("go", stream: false)
+      allow(client).to receive(:chat).and_return(write_call, done_call)
+      described_class.new(agent: agent, conversation: conversation, user: user).run("go", stream: false)
+
+      # No request_id -> nothing to resume from -> the write runs each time.
+      expect(calls).to eq(2)
+    end
+  end
 end

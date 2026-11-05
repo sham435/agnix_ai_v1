@@ -99,11 +99,15 @@ class AgentStreamJob < ApplicationJob
       user: user,
       streaming_message: streaming_msg,
       source_message: source_message,
-      # The run row is created deeper inside the loop and cannot know when the
-      # turn arrived or when this job was picked up, so the job — which knows
-      # both — hands them down. See Run.seed_pcb_metadata.
+      # Process-control-block stamps from BEFORE this run existed: the run row
+      # cannot know when the turn arrived or when this worker took the job, so
+      # the job — which knows both — hands them down. See Run.seed_pcb_metadata.
       arrival_at: pcb_arrival_at(conversation, source_message),
-      dispatched_at: @pcb_dispatched_at
+      dispatched_at: @pcb_dispatched_at,
+      # The turn correlation id. A re-delivery re-runs with the same id, which
+      # lets the runner find an earlier attempt's completed writes and skip them
+      # instead of duplicating files (§6 build resume).
+      request_id: @request_id
     )
 
     # Every chunk is a progress checkpoint: #track_progress enforces the budget

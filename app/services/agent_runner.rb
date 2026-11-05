@@ -38,14 +38,27 @@ class AgentRunner
   # apology, and neither double-marks it.
   STOP_MARKER = "\n\n…(reply stopped before finishing)".freeze
 
+  # §6 build resume: only these durable, overwriting filesystem writes are both
+  # checkpointed and skipped when a re-delivered run of the same turn finds them
+  # already completed. Re-running a completed write_file/scaffold is pure waste
+  # and the source of "duplicate files"; a read or a calculation is cheap to
+  # redo and a run_command may carry side effects we must never silently elide,
+  # so everything else always executes even when its outcome is still recorded.
+  RESUMABLE_WRITE_TOOLS = %w[write_file scaffold].freeze
+
   attr_reader :agent, :conversation, :user, :source_message
 
   def initialize(agent:, conversation:, user:, streaming_message: nil, source_message: nil,
-                 arrival_at: nil, dispatched_at: nil)
+                 arrival_at: nil, dispatched_at: nil, request_id: nil)
     @agent = agent
     @conversation = conversation
     @user = user
     @streaming_message = streaming_message
+    # The turn's correlation id, handed down by AgentStreamJob. A re-delivered
+    # build run replays with the SAME id, which is how §6 lets the retry find an
+    # earlier attempt's completed writes and skip them. nil for a runner driven
+    # directly (specs, ScheduledTasks::RunJob) - no id, nothing to resume from.
+    @request_id = request_id.presence
     # The persisted user Message that triggered this run (when known). Its
     # metadata may carry a per-message tool selection which narrows — never
     # widens — the agent's configured tools.
@@ -410,7 +423,8 @@ class AgentRunner
       metadata: Run.seed_pcb_metadata(
         arrival_at: @pcb_arrival_at,
         dispatched_at: @pcb_dispatched_at,
-        started_at: Time.current
+        started_at: Time.current,
+        request_id: @request_id
       )
     )
     # Every provider call and every tool invocation below records its own
@@ -418,6 +432,14 @@ class AgentRunner
     # precisely because those happen in nested methods, which have no other way
     # to know which process they belong to.
     @run_record = run_record
+    # §6 build resume: gather the tool actions any EARLIER attempt of this same
+    # turn already finished successfully (matched by request_id). #process_tool_calls
+    # consults this set to skip re-running completed filesystem writes. Empty
+    # when the turn has no id, so a first attempt or a direct runner re-executes
+    # everything exactly as before.
+    @resume_action_keys = Run.completed_action_keys(
+      conversation_id: conversation.id, request_id: @request_id
+    )
 
     conversation.generate_title if conversation.messages.where(role: "user").count == 1
 
@@ -811,6 +833,23 @@ class AgentRunner
         end
         tool_call_id = tool_call["id"] || tool_call[:id] || SecureRandom.hex(16)
 
+        # §6 build resume: a re-delivered run of the same turn (matched by
+        # request_id) must not re-write files an earlier attempt already wrote.
+        # Recognise the completed write, hand the model a synthetic success for
+        # its tool_call_id (the protocol still needs a response per call), and
+        # skip the dispatch. Everything outside the resumable-write allowlist -
+        # or whose earlier attempt did not cleanly succeed - runs normally.
+        if resumable_action?(tool_name, args)
+          Rails.logger.info("[ToolCall] tool=#{tool_name} conv=#{conversation.id} resumed=true")
+          results << {
+            tool_call_id: tool_call_id,
+            tool_name: tool_name,
+            arguments: args,
+            result: { ok: true, resumed: true, note: "already completed in an earlier attempt" }
+          }
+          next
+        end
+
         started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
         # A tool call is the process waiting on something outside itself, so it
         # is charged as I/O against the named resource — exactly what a real
@@ -821,6 +860,11 @@ class AgentRunner
         Rails.logger.info(
           "[ToolCall] tool=#{tool_name} conv=#{conversation.id} user=#{user.id} latency_ms=#{elapsed_ms} error=#{false}"
         )
+
+        # Persist the outcome so a retry of this turn can skip it (§6). Guarded
+        # inside the model, so a checkpoint that cannot be written never fails
+        # the run.
+        record_tool_checkpoint(tool_name, args, result)
 
         results << {
           tool_call_id: tool_call_id,
@@ -848,6 +892,76 @@ class AgentRunner
     end
 
     results
+  end
+
+  # ── §6 build resume helpers ────────────────────────────────────────
+  #
+  # Is this action one a re-delivered run of the same turn should skip? Only a
+  # durable write on the allowlist whose exact call already succeeded in an
+  # earlier attempt of the same request_id. Every other call - a read, a
+  # calculation, an arbitrary command, or a write that previously errored -
+  # runs again, because eliding THOSE could drop side effects the user expects.
+  def resumable_action?(tool_name, args)
+    return false if @resume_action_keys.nil? || @resume_action_keys.empty?
+    return false unless RESUMABLE_WRITE_TOOLS.include?(tool_name.to_s)
+
+    @resume_action_keys.include?(action_key(tool_name, args))
+  end
+
+  # Write this action's outcome to the run's checkpoint so the NEXT attempt can
+  # consult it. The model itself is guarded, so a checkpoint that cannot be
+  # persisted is logged and swallowed - instrumentation must never fail a run.
+  def record_tool_checkpoint(tool_name, args, result)
+    return unless @run_record
+
+    @run_record.record_tool_action!(
+      tool_name,
+      key: action_key(tool_name, args),
+      ok: action_succeeded?(result),
+      note: checkpoint_note(tool_name, result)
+    )
+  rescue StandardError => e
+    Rails.logger.warn "[ToolCall] checkpoint-skipped tool=#{tool_name} #{e.class}: #{e.message}"
+  end
+
+  # A stable signature for one call: the tool name plus its arguments, with keys
+  # stringified and sorted so the same logical call always hashes the same - even
+  # if a retry's JSON differs in key order or symbol-vs-string form.
+  def action_key(tool_name, args)
+    Digest::SHA256.hexdigest("#{tool_name}\u0000#{canonical_json(args)}")
+  end
+
+  def canonical_json(value)
+    case value
+    when Hash
+      value.map { |k, v| [ k.to_s, v ] }.sort_by { |k, _v| k }
+        .then { |pairs| "{" + pairs.map { |k, v| "#{k.to_json}:#{canonical_json(v)}" }.join(",") + "}" }
+    when Array
+      "[" + value.map { |v| canonical_json(v) }.join(",") + "]"
+    else
+      value.to_json
+    end
+  end
+
+  # Did the tool actually succeed? A hash carrying an error is not a success, and
+  # an explicit ok:false is not a success - so such an action is re-run, not
+  # skipped, and re-attempted rather than treated as done.
+  def action_succeeded?(result)
+    return false unless result.is_a?(Hash)
+    return false if result[:error].present? || result["error"].present?
+
+    ok = result.key?(:ok) ? result[:ok] : result["ok"]
+    ok != false
+  end
+
+  # A compact, human-readable trace line (path + byte count for a write) stored
+  # with the checkpoint; never relied on for matching, only for diagnosis.
+  def checkpoint_note(tool_name, result)
+    return tool_name.to_s unless result.is_a?(Hash)
+
+    path = result[:path] || result["path"]
+    bytes = result[:bytes_written] || result["bytes_written"]
+    [ path.presence, (bytes ? "#{bytes}B" : nil) ].compact.join(" ").presence || tool_name.to_s
   end
 
   def create_memory(user_message, assistant_response)

@@ -57,7 +57,7 @@ class Run < ApplicationRecord
   # the RUNNING transition. Absent stamps are simply not recorded — a runner
   # used outside `AgentStreamJob` gets a run that starts at RUNNING, which is
   # honest rather than an invented queue time.
-  def self.seed_pcb_metadata(arrival_at:, dispatched_at:, started_at:, base: {})
+  def self.seed_pcb_metadata(arrival_at:, dispatched_at:, started_at:, base: {}, request_id: nil)
     states = []
     states << pcb_entry("new", arrival_at) if arrival_at
     states << pcb_entry("ready", dispatched_at) if dispatched_at
@@ -67,7 +67,13 @@ class Run < ApplicationRecord
       "dispatched_at" => dispatched_at&.utc&.iso8601(3),
       "states" => states
     }.compact
-    (base.is_a?(Hash) ? base : {}).merge("pcb" => pcb)
+    seeded = (base.is_a?(Hash) ? base : {}).merge("pcb" => pcb)
+    # The turn's correlation id. A retried enqueue re-runs with the SAME
+    # request_id, so this is the key that lets a later attempt find the earlier
+    # one's completed tool actions and skip already-written files (§6). Omitted
+    # when absent so a run with no turn id keeps its historic metadata shape.
+    seeded["request_id"] = request_id.to_s if request_id.present?
+    seeded
   end
 
   def self.pcb_entry(state, at, note = nil)
@@ -154,6 +160,71 @@ class Run < ApplicationRecord
   rescue StandardError => e
     Rails.logger.warn "[Run] PCB-RECORD-FAILED id=#{id} state=#{name} #{e.class}: #{e.message}"
     self
+  end
+
+  # ── Tool-action checkpoint (build resume, §6) ──────────────────────
+  #
+  # The OS plan path resumes by skipping todos already `done`; the default
+  # `execute_tool_loop` had no such memory, so a re-delivered job re-ran every
+  # write_file from scratch — the "repeated builds produce duplicate files or
+  # redo finished work" gap. Each executed action is recorded here so a retry,
+  # correlated by the turn's `request_id`, can skip writes it already completed.
+  #
+  # Stored on metadata["tool_checkpoint"] as an array of compact entries:
+  #   { "tool" => "write_file", "key" => "<sha256 of tool+arguments>",
+  #     "ok" => true, "note" => "/abs/path 1234B" }
+  #
+  # Same discipline as #record_state!: read-modify-write under a row lock inside
+  # a savepoint, `update_column` (a bookkeeping write must not `touch` the
+  # conversation nor re-validate a mid-flight row), and every database error
+  # logged and swallowed — a checkpoint is resume aid and observability, never
+  # the reason a run fails.
+  def record_tool_action!(tool, key:, ok:, note: nil)
+    entry = { "tool" => tool.to_s, "key" => key.to_s, "ok" => ok ? true : false }
+    entry["note"] = note.to_s[0, 200] if note.present?
+    with_lock do
+      transaction(requires_new: true) do
+        fresh = metadata.is_a?(Hash) ? metadata.dup : {}
+        list = Array(fresh["tool_checkpoint"]).dup
+        # Idempotent by key: a retried delivery that re-records the same action
+        # replaces its earlier entry rather than growing the list unboundedly.
+        list.reject! { |existing| existing.is_a?(Hash) && existing["key"] == entry["key"] }
+        list << entry
+        fresh["tool_checkpoint"] = list
+        update_column(:metadata, fresh)
+      end
+    end
+    self
+  rescue StandardError => e
+    Rails.logger.warn "[Run] TOOL-CHECKPOINT-FAILED id=#{id} tool=#{tool} #{e.class}: #{e.message}"
+    self
+  end
+
+  # The turn correlation id this run was created with, when any.
+  def request_id
+    metadata.is_a?(Hash) ? metadata["request_id"] : nil
+  end
+
+  # This run's recorded tool actions, oldest first.
+  def tool_checkpoint
+    metadata.is_a?(Hash) ? Array(metadata["tool_checkpoint"]) : []
+  end
+
+  # Keys of tool actions that already COMPLETED SUCCESSFULLY for this turn,
+  # gathered across every run sharing `request_id` in the conversation. A retry
+  # passes the same id, so files an earlier attempt wrote are recognised here and
+  # skipped. Empty when the turn carries no id — nothing to resume from.
+  def self.completed_action_keys(conversation_id:, request_id:)
+    return Set.new if request_id.blank?
+
+    where(conversation_id: conversation_id)
+      .where("metadata->>'request_id' = ?", request_id.to_s)
+      .pluck(:metadata)
+      .flat_map { |m| m.is_a?(Hash) ? Array(m["tool_checkpoint"]) : [] }
+      .select { |entry| entry.is_a?(Hash) && entry["ok"] }
+      .map { |entry| entry["key"].to_s }
+      .reject(&:empty?)
+      .to_set
   end
 
   # The recorded timeline, oldest first, with `at` parsed back into a Time.

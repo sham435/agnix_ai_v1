@@ -616,6 +616,27 @@ RSpec.describe AgentStreamJob, type: :job do
       expect(captured[:dispatched_at]).to be_within(5).of(Time.current)
     end
 
+    it "hands the turn's request_id to the runner so a re-delivery can resume (§6)" do
+      captured = runner_kwargs
+
+      described_class.perform_now(
+        conversation_id: conversation.id, user_id: user.id, message_content: "Hi",
+        request_id: "req-77"
+      )
+
+      expect(captured[:request_id]).to eq("req-77")
+    end
+
+    it "passes no request_id when the enqueue carried none (§6)" do
+      captured = runner_kwargs
+
+      described_class.perform_now(
+        conversation_id: conversation.id, user_id: user.id, message_content: "Hi"
+      )
+
+      expect(captured[:request_id]).to be_nil
+    end
+
     it "takes the arrival from the newest user turn when only content was given" do
       captured = runner_kwargs
       older = create(:message, conversation: conversation, role: "user", content: "Earlier")
