@@ -7,6 +7,10 @@ require "rails_helper"
 RSpec.describe Llm::AnthropicAdapter do
   let(:adapter) { described_class.new(api_key: "test-key", model: "claude-sonnet-4-6") }
 
+  # The adapter now replays transient failures with a backoff; keep that out of
+  # the spec's real clock so retry cases stay fast and deterministic.
+  before { allow(adapter).to receive(:sleep) }
+
   # Mimic HTTParty's stream_body block: hand the whole response body to the
   # adapter in one chunk.
   def stub_body(body)
@@ -171,6 +175,175 @@ RSpec.describe Llm::AnthropicAdapter do
 
       expect(result[:content]).to eq("Hello there!")
       expect(pieces).to eq([ "Hello there!" ])
+    end
+  end
+
+  # The provider's failure is now a typed error, not just prose: `code` names the
+  # cause and `retryable` says whether redelivery can help. Classification must
+  # catch the credit case even when Anthropic files it as a generic 400, because
+  # that is exactly how an out-of-credit key surfaces.
+  describe "typed provider errors" do
+    def stream(&blk)
+      adapter.stream_chat(messages: [ { role: "user", content: "hi" } ], tools: [],
+                          temperature: 0.7, max_tokens: 20, &blk)
+    end
+
+    it "files a spending ceiling that arrives as a 400 invalid_request_error as credit, not a generic rejection" do
+      stub_body({ type: "error",
+                  error: { type: "invalid_request_error",
+                           message: "Your credit balance is too low to access the Anthropic API." } }.to_json)
+
+      expect { stream { |_t, *_| } }
+        .to raise_error(Llm::AnthropicAdapter::LlmError) do |e|
+        expect(e.code).to eq(:provider_credit_insufficient)
+        expect(e.retryable?).to be(false)
+        expect(e.message).to match(/credit balance is too low/)
+      end
+    end
+
+    it "labels a bad key as authentication failure and does not retry it" do
+      stub_stream_fragments([ stream_fragment("", 401) ])
+
+      expect { stream { |_t, *_| } }
+        .to raise_error(Llm::AnthropicAdapter::LlmError) { |e|
+          expect(e.code).to eq(:provider_authentication_failed)
+          expect(e.retryable?).to be(false)
+        }
+      expect(HTTParty).to have_received(:post).once
+    end
+
+    it "marks throttling retryable and burns the full retry budget first" do
+      stub_stream_fragments(
+        [ stream_fragment(%({"type":"error","error":{"type":"rate_limit_error","message":"Slow down"}}), 429) ],
+        returns: double(code: "429", headers: {})
+      )
+
+      expect { stream { |_t, *_| } }
+        .to raise_error(Llm::AnthropicAdapter::LlmError) { |e|
+          expect(e.code).to eq(:provider_rate_limited)
+          expect(e.retryable?).to be(true)
+        }
+      expect(HTTParty).to have_received(:post).exactly(described_class::MAX_RETRIES).times
+    end
+
+    it "labels a capacity overload retryable" do
+      stub_stream_fragments([
+        stream_fragment(%({"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}), 529)
+      ])
+
+      expect { stream { |_t, *_| } }
+        .to raise_error(Llm::AnthropicAdapter::LlmError) { |e|
+          expect(e.code).to eq(:provider_overloaded)
+          expect(e.retryable?).to be(true)
+        }
+    end
+
+    it "prefers the provider's structured error.type over the raw status bucket" do
+      stub_stream_fragments([
+        stream_fragment(%({"type":"error","error":{"type":"permission_error","message":"Not allowed to use this model."}}), 403)
+      ])
+
+      expect { stream { |_t, *_| } }
+        .to raise_error(Llm::AnthropicAdapter::LlmError) { |e|
+          expect(e.code).to eq(:provider_permission_denied)
+          expect(e.retryable?).to be(false)
+          expect(e.status).to eq(403)
+        }
+    end
+  end
+
+  describe "sync_chat typed errors" do
+    def sync!
+      adapter.sync_chat(messages: [ { role: "user", content: "hi" } ], tools: [],
+                        temperature: 0.7, max_tokens: 20)
+    end
+
+    it "types a retryable server fault" do
+      response = double(code: 500, success?: false, headers: {},
+                        body: %({"type":"error","error":{"type":"api_error","message":"Internal"}}))
+      allow(HTTParty).to receive(:post).and_return(response)
+
+      expect { sync! }
+        .to raise_error(Llm::AnthropicAdapter::LlmError) { |e|
+          expect(e.code).to eq(:provider_unavailable)
+          expect(e.retryable?).to be(true)
+          expect(e.message).to include("500")
+        }
+    end
+
+    it "does not retry a permanent rejection" do
+      response = double(code: 400, success?: false, headers: {},
+                        body: %({"type":"error","error":{"type":"invalid_request_error","message":"Bad params"}}))
+      allow(HTTParty).to receive(:post).and_return(response)
+
+      expect { sync! }
+        .to raise_error(Llm::AnthropicAdapter::LlmError) { |e|
+          expect(e.code).to eq(:provider_request_rejected)
+          expect(e.retryable?).to be(false)
+        }
+      expect(HTTParty).to have_received(:post).once
+    end
+  end
+
+  describe "retry behaviour" do
+    def stream(&blk)
+      adapter.stream_chat(messages: [ { role: "user", content: "hi" } ], tools: [],
+                          temperature: 0.7, max_tokens: 20, &blk)
+    end
+
+    it "replays a transient failure and succeeds when the next attempt streams" do
+      calls = 0
+      allow(HTTParty).to receive(:post) do |_url, _opts, &blk|
+        calls += 1
+        if calls == 1
+          blk&.call(stream_fragment("", 529))
+          double(code: "529")
+        else
+          ok = { type: "content_block_delta", delta: { type: "text_delta", text: "recovered" } }.to_json
+          blk&.call(stream_fragment("data: #{ok}\n\n", 200))
+          double(code: "200")
+        end
+      end
+
+      pieces = []
+      result = stream { |text, *_| pieces << text }
+
+      expect(calls).to eq(2)
+      expect(result[:content]).to eq("recovered")
+      expect(pieces).to eq([ "recovered" ])
+    end
+
+    it "classifies a refused connection as unreachable and fails fast (one quick replay only)" do
+      allow(HTTParty).to receive(:post).and_raise(Errno::ECONNREFUSED)
+
+      expect { stream { |_t, *_| } }
+        .to raise_error(Llm::AnthropicAdapter::LlmError) { |e|
+          expect(e.code).to eq(:provider_unreachable)
+          expect(e.retryable?).to be(true)
+        }
+      expect(HTTParty).to have_received(:post).exactly(described_class::MAX_CONNECT_RETRIES + 1).times
+    end
+
+    it "classifies a read timeout as a timeout" do
+      allow(HTTParty).to receive(:post).and_raise(Net::ReadTimeout)
+
+      expect { stream { |_t, *_| } }
+        .to raise_error(Llm::AnthropicAdapter::LlmError) { |e|
+          expect(e.code).to eq(:provider_timeout)
+        }
+    end
+
+    it "never replays an attempt that already streamed content (no user-visible duplication)" do
+      calls = 0
+      allow(HTTParty).to receive(:post) do |_url, _opts, &blk|
+        calls += 1
+        chunk = { type: "content_block_delta", delta: { type: "text_delta", text: "Hi " } }.to_json
+        blk&.call(stream_fragment("data: #{chunk}\n\n", 200))
+        raise EOFError
+      end
+
+      expect { stream { |_t, *_| } }.to raise_error(Llm::AnthropicAdapter::LlmError)
+      expect(calls).to eq(1)
     end
   end
 end
