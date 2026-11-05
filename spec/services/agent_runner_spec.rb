@@ -799,6 +799,38 @@ RSpec.describe AgentRunner, type: :service do
         expect(fresh.metadata["streaming"]).to be_nil
       end
 
+      it "surfaces a typed provider error's cause on the chunk, result, and metadata (§A)" do
+        placeholder = conversation.messages.create!(
+          role: "assistant", content: "", metadata: { "streaming" => true }
+        )
+        credit = Llm::AnthropicAdapter::LlmError.new(
+          "Anthropic API error: Your credit balance is too low.",
+          code: :provider_credit_insufficient, retryable: false, status: 402
+        )
+        allow(client).to receive(:stream_chat).and_raise(credit)
+
+        chunks = []
+        runner = described_class.new(agent: agent, conversation: conversation, user: user,
+                                     streaming_message: placeholder)
+        result = runner.run("hi", stream: true) { |chunk| chunks << chunk }
+
+        expect(result[:error_code]).to eq("provider_credit_insufficient")
+        expect(result[:retryable]).to be(false)
+        expect(chunks).to include(hash_including(type: "status", phase: "failed",
+                                                 error_code: "provider_credit_insufficient"))
+        expect(placeholder.reload.metadata["error_code"]).to eq("provider_credit_insufficient")
+      end
+
+      it "leaves error_code absent for an untyped error so generic handling is preserved" do
+        allow(client).to receive(:chat).and_raise(Llm::OpenaiAdapter::LlmError.new("provider down"))
+
+        runner = described_class.new(agent: agent, conversation: conversation, user: user)
+        result = runner.run("hi", stream: false)
+
+        expect(result[:error]).to be_present
+        expect(result).not_to have_key(:error_code)
+      end
+
       it "falls back to the plain error sentence when nothing streamed yet" do
         placeholder = conversation.messages.create!(
           role: "assistant", content: "", metadata: { "streaming" => true }

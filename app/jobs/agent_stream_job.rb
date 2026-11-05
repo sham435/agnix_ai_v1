@@ -172,7 +172,7 @@ class AgentStreamJob < ApplicationJob
         html: %(<div class="text-red-600 dark:text-red-400 text-sm p-3 rounded-lg border border-red-500/20 bg-red-500/5">Agent error: #{ERB::Util.html_escape(e.message)}</div>)
       )
 
-      failed = { type: "failed", code: e.is_a?(RunTimeout) ? "run_timeout" : "provider_error", message: e.message, conversation_id: conversation.id }
+      failed = { type: "failed", code: provider_error_code(e), message: e.message, conversation_id: conversation.id }
       note_failure(e.message, code: failed[:code])
       failed[:message_id] = @streaming_msg_id if @streaming_msg_id
       failed[:request_id] = @request_id if @request_id
@@ -190,7 +190,7 @@ class AgentStreamJob < ApplicationJob
     # would otherwise leave the row "live" — a refresh would keep showing the
     # thinking indicator until the stale window elapsed. Finalize it now so
     # recovery is immediate and honest.
-    finalize_placeholder_if_streaming(streaming_msg, reason: e.message)
+    finalize_placeholder_if_streaming(streaming_msg, reason: e.message, code: typed_error_code(e))
 
     begin
       AgentAutoFixer.new(error: e, backtrace: e.backtrace.to_a, conversation: conversation).call
@@ -244,7 +244,7 @@ class AgentStreamJob < ApplicationJob
   # a second, unrelated exception (and re-enter that rescue).
   def track_progress(chunk)
     if chunk[:type] == "status" && (chunk[:phase] == "failed" || chunk[:error].present?)
-      note_failure(chunk[:error])
+      note_failure(chunk[:error], code: (chunk[:error_code] || "provider_error"))
       return
     end
 
@@ -296,12 +296,29 @@ class AgentStreamJob < ApplicationJob
     @run_failure ||= { code: code, message: message.presence || "The agent run reported a failure." }
   end
 
+  # The terminal frame's machine-readable cause. A typed provider error carries
+  # its own code (e.g. provider_credit_insufficient); a run timeout stays
+  # run_timeout; anything unclassified stays the generic provider_error.
+  def provider_error_code(error)
+    return "run_timeout" if error.is_a?(RunTimeout)
+    return error.code.to_s if typed_error_code(error)
+    "provider_error"
+  end
+
+  # Only a typed provider error has a specific code. nil for run_timeout and for
+  # adapters that raise an untyped error, so we never invent a provider cause.
+  def typed_error_code(error)
+    error.respond_to?(:code) ? error.code&.to_s : nil
+  end
+
   # AgentRunner rescues provider errors, writes an honest error state into the
   # placeholder and returns the bad news in its result hash instead of raising.
   # Capturing that verdict is what lets this job announce `failed` rather than
   # pretending the run completed.
   def remember_outcome(result)
-    note_failure(result[:error]) if result.is_a?(Hash) && result[:error].present?
+    if result.is_a?(Hash) && result[:error].present?
+      note_failure(result[:error], code: (result[:error_code] || "provider_error"))
+    end
     result
   end
 
@@ -311,7 +328,7 @@ class AgentStreamJob < ApplicationJob
   # render shows an honest recovery state rather than a blank bubble or a reply
   # that quietly breaks off mid-sentence. Never clobbers a real answer that
   # already cleared the flag (guarded by `streaming?`).
-  def finalize_placeholder_if_streaming(message, reason: nil)
+  def finalize_placeholder_if_streaming(message, reason: nil, code: nil)
     return unless message&.persisted?
 
     fresh = message.reload
@@ -334,6 +351,7 @@ class AgentStreamJob < ApplicationJob
       # yet written, so the recovered body is the fullest partial available.
       meta["error"] = [ reason.presence, "The reply stopped here." ].compact.join(" - ")
       meta["stopped_short"] = true
+      meta["error_code"] = code.to_s if code.present?
       content = "#{@deltas.join}#{AgentRunner::STOP_MARKER}" unless content.include?(AgentRunner::STOP_MARKER)
     end
     fresh.update!(content: content, metadata: meta)

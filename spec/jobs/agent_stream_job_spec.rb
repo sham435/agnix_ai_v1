@@ -279,6 +279,22 @@ RSpec.describe AgentStreamJob, type: :job do
     expect(failed[:conversation_id]).to eq(conversation.id)
   end
 
+  it "names the typed provider cause in the failed frame (§A wiring)" do
+    credit = Llm::AnthropicAdapter::LlmError.new(
+      "Anthropic API error: Your credit balance is too low.",
+      code: :provider_credit_insufficient, retryable: false, status: 402
+    )
+    allow(runner).to receive(:run) do |_content, **_opts, &_blk|
+      raise credit
+    end
+    payloads = broadcasted_payloads
+
+    described_class.perform_now(conversation_id: conversation.id, user_id: user.id, message_content: "Hi")
+
+    failed = payloads.find { |p| p[:type] == "failed" }
+    expect(failed[:code]).to eq("provider_credit_insufficient")
+  end
+
   # ── assistant_started bridge + request_id correlation (spec §2) ──────
 
   def perform_with_request_and_chunks(rid)

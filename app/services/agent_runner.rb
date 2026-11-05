@@ -551,7 +551,14 @@ class AgentRunner
       # Tell the browser to stop the indicator and show a failed state BEFORE
       # the placeholder is replaced — provider errors must never leave a
       # perpetual "thinking" spinner or masquerade as a normal answer.
-      yield({ type: "status", phase: "failed", error: e.message }) if block_given?
+      # When the provider raised a typed error (see Llm::AnthropicAdapter), carry
+      # its machine-readable cause (`error_code`, `retryable`) alongside the human
+      # message so the failed status chunk, the persisted message metadata, and the
+      # result the job inspects all name the SAME reason. An out-of-credit key then
+      # surfaces as provider_credit_insufficient instead of a generic provider_error
+      # - and the retryable flag tells the caller whether redelivery can help.
+      annotations = error_annotations(e)
+      yield({ type: "status", phase: "failed", error: e.message }.merge(annotations)) if block_given?
 
       # Preserve whatever actually streamed rather than burying it under a fixed
       # apology. A build that got half its files written, or an answer that got
@@ -563,21 +570,33 @@ class AgentRunner
       # finalize produces the identical shape (see AgentStreamJob), so the two
       # error paths agree instead of one clobbering the other's partial.
       generic = "I encountered an error while processing your request."
+      meta_annotations = annotations.transform_keys(&:to_s)
       if @streaming_message
         partial = @streaming_message.reload.content.to_s
         final_content = partial.strip.empty? ? generic : "#{partial}#{AgentRunner::STOP_MARKER}"
-        streamed = @streaming_message.metadata.merge("error" => e.message, "stopped_short" => true)
+        streamed = @streaming_message.metadata
+          .merge("error" => e.message, "stopped_short" => true)
+          .merge(meta_annotations)
         streamed.delete("streaming")
         @streaming_message.update!(content: final_content, tokens: estimate_tokens(final_content), metadata: streamed)
       else
         final_content = generic
         conversation.messages.create!(role: "assistant", content: final_content,
           tokens: estimate_tokens(final_content),
-          metadata: { "error" => e.message, "stopped_short" => true })
+          metadata: { "error" => e.message, "stopped_short" => true }.merge(meta_annotations))
       end
       { content: final_content, error: e.message, tool_calls: [], tokens: total_tokens,
-        actions: tool_call_results.length }
+        actions: tool_call_results.length }.merge(annotations)
     end
+  end
+
+  # Symbol-keyed { error_code:, retryable: } for a typed provider error (see
+  # Llm::AnthropicAdapter::LlmError); {} for anything untyped, so OpenAI/local
+  # adapters and non-LLM failures keep their existing generic handling.
+  def error_annotations(error)
+    return {} unless error.respond_to?(:code) && error.code
+    { error_code: error.code.to_s,
+      retryable: (error.respond_to?(:retryable?) ? !!error.retryable? : nil) }
   end
 
   def chat_with_agent_model(messages, tools, stream:, max_tokens: nil, &block)
