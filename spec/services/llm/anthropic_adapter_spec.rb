@@ -197,7 +197,7 @@ RSpec.describe Llm::AnthropicAdapter do
         .to raise_error(Llm::AnthropicAdapter::LlmError) do |e|
         expect(e.code).to eq(:provider_credit_insufficient)
         expect(e.retryable?).to be(false)
-        expect(e.message).to match(/credit balance is too low/)
+        expect(e.message).to include("credit balance is too low")
       end
     end
 
@@ -344,6 +344,98 @@ RSpec.describe Llm::AnthropicAdapter do
 
       expect { stream { |_t, *_| } }.to raise_error(Llm::AnthropicAdapter::LlmError)
       expect(calls).to eq(1)
+    end
+
+    it "does not mark a transport failure that already streamed as replayable (§A honesty)" do
+      # The replay was skipped because text reached the user, so claiming the
+      # error is retryable would invite a higher layer to re-run it and duplicate
+      # the reply. The flag must be false once content has streamed.
+      allow(HTTParty).to receive(:post) do |_url, _opts, &blk|
+        chunk = { type: "content_block_delta", delta: { type: "text_delta", text: "Hi " } }.to_json
+        blk&.call(stream_fragment("data: #{chunk}\n\n", 200))
+        raise EOFError
+      end
+
+      expect { stream { |_t, *_| } }
+        .to raise_error(Llm::AnthropicAdapter::LlmError) { |e|
+          expect(e.code).to eq(:provider_unavailable)
+          expect(e.retryable?).to be(false)
+        }
+      expect(HTTParty).to have_received(:post).once
+    end
+
+    it "downgrades a retryable HTTP error that arrived mid-stream after content streamed" do
+      # A gateway that streams a 200 delta and THEN flips to a 500 would otherwise
+      # surface a retryable error, even though the turn is unreplayable.
+      delta = { type: "content_block_delta", delta: { type: "text_delta", text: "Hello " } }.to_json
+      stub_stream_fragments([
+        stream_fragment("data: #{delta}\n\n", 200),
+        stream_fragment(%({"type":"error","error":{"type":"api_error","message":"boom"}}), 500)
+      ], returns: double(code: "500"))
+
+      expect { stream { |_t, *_| } }
+        .to raise_error(Llm::AnthropicAdapter::LlmError) { |e|
+          expect(e.code).to eq(:provider_unavailable)
+          expect(e.retryable?).to be(false)
+        }
+      expect(HTTParty).to have_received(:post).once
+    end
+  end
+
+  # The provider's Retry-After is a suggestion we should obey, capped at our own
+  # ceiling - not silently dropped, which would turn a polite 60s wait into three
+  # retries inside ~6s and deepen the throttle.
+  describe "Retry-After handling" do
+    def stream(&blk)
+      adapter.stream_chat(messages: [ { role: "user", content: "hi" } ], tools: [],
+                          temperature: 0.7, max_tokens: 20, &blk)
+    end
+
+    it "caps a hint above the ceiling rather than reverting to fast retries" do
+      stub_stream_fragments(
+        [ stream_fragment(%({"type":"error","error":{"type":"rate_limit_error","message":"Slow down"}}), 429) ],
+        returns: double(code: "429", headers: { "retry-after" => "60" })
+      )
+
+      expect { stream { |_t, *_| } }.to raise_error(Llm::AnthropicAdapter::LlmError)
+      expect(adapter).to have_received(:sleep)
+        .with(described_class::RETRY_AFTER_MAX).twice
+    end
+
+    it "sleeps a hint under the ceiling verbatim" do
+      stub_stream_fragments(
+        [ stream_fragment(%({"type":"error","error":{"type":"rate_limit_error","message":"Slow down"}}), 429) ],
+        returns: double(code: "429", headers: { "retry-after" => "5" })
+      )
+
+      expect { stream { |_t, *_| } }.to raise_error(Llm::AnthropicAdapter::LlmError)
+      expect(adapter).to have_received(:sleep).with(5).twice
+    end
+  end
+
+  # An out-of-credit key surfaces as a 400; if its message runs longer than the
+  # display cap the classifier must still see the full body, or it misfiles a
+  # permanent billing fault as a generic request rejection.
+  describe "classification robustness" do
+    def stream(&blk)
+      adapter.stream_chat(messages: [ { role: "user", content: "hi" } ], tools: [],
+                          temperature: 0.7, max_tokens: 20, &blk)
+    end
+
+    it "sniffs the credit cause from an error body larger than the display cap" do
+      filler = "detail " * 120 # > MAX_ERROR_BODY so the display buffer would truncate
+      body = { type: "error",
+               error: { type: "invalid_request_error",
+                        message: "#{filler}Your credit balance is too low to access the Anthropic API." } }.to_json
+      expect(body.bytesize).to be > described_class::MAX_ERROR_BODY
+
+      stub_stream_fragments([ stream_fragment(body, 400) ], returns: double(code: "400"))
+
+      expect { stream { |_t, *_| } }
+        .to raise_error(Llm::AnthropicAdapter::LlmError) { |e|
+          expect(e.code).to eq(:provider_credit_insufficient)
+          expect(e.retryable?).to be(false)
+        }
     end
   end
 end

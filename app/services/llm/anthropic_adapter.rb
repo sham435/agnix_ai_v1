@@ -14,6 +14,14 @@ module Llm
     SUCCESS_STATUSES = (200..299).freeze
     MAX_ERROR_BODY = 500
 
+    # We keep more of the error body than we show. MAX_ERROR_BODY bounds the
+    # single-line reason echoed into the raised message, but classification
+    # (parsing error.type and the credit sniff) needs the provider's full JSON,
+    # which can run past that display window. Retaining up to this many bytes
+    # for parsing keeps an out-of-credit 400 from being misfiled as a generic
+    # rejection just because its message happened to be long.
+    ERROR_CLASSIFY_LIMIT = 2_048
+
     # Transient-failure resilience, mirroring Llm::OpenaiAdapter. A brief
     # capacity/timeout blip (429/5xx, socket reset) is worth replaying with a
     # short backoff, but a permanent rejection (bad key, empty credit, oversized
@@ -113,14 +121,17 @@ module Llm
           sleep(backoff_for(e) * attempt)
           retry
         end
-        raise provider_error(e)
+        # If text already reached the consumer we deliberately did not replay,
+        # so the error must not claim replay would help either - a downstream
+        # that honors retryable? would re-run the turn and duplicate the reply.
+        raise provider_error(e, retryable: !streamed_any)
       rescue LlmError => e
         if e.retryable? && !streamed_any && attempt < MAX_RETRIES
           Rails.logger.warn "[shams] anthropic stream retry #{attempt}/#{MAX_RETRIES} after HTTP #{e.status} #{e.code}"
           sleep(retry_wait(e, attempt))
           retry
         end
-        raise e
+        raise(streamed_any ? non_replayable(e) : e)
       end
     end
 
@@ -152,7 +163,7 @@ module Llm
         if status
           stream_status = status
           unless SUCCESS_STATUSES.cover?(status)
-            error_body << chunk.to_s if error_body.bytesize < MAX_ERROR_BODY
+            error_body << chunk.to_s if error_body.bytesize < ERROR_CLASSIFY_LIMIT
             next
           end
         end
@@ -449,15 +460,28 @@ module Llm
     # A transport failure has no HTTP status at all. "Nothing is listening"
     # (refused / host unreachable / DNS) fails fast as :provider_unreachable; a
     # timeout is :provider_timeout; anything else is a generic transient
-    # :provider_unavailable. All are retryable - the wrapper decides the budget.
-    def provider_error(e)
+    # :provider_unavailable. These are retryable by default, but the streaming
+    # wrapper forces retryable: false once content reached the consumer, since a
+    # replay would duplicate what the user already saw.
+    def provider_error(e, retryable: true)
       code =
         if connection_error?(e) then :provider_unreachable
         elsif timed_out?(e) then :provider_timeout
         else :provider_unavailable
         end
       LlmError.new("Anthropic request failed (#{e.class}): #{e.message.to_s[0, 200]}",
-        code: code, retryable: true)
+        code: code, retryable: retryable)
+    end
+
+    # Re-issue a retryable error as terminal: the code still names the cause, but
+    # retryable? is flipped to false so no higher layer replays a turn that
+    # already streamed content (which would duplicate the visible reply).
+    def non_replayable(error)
+      return error unless error.retryable?
+
+      LlmError.new(error.message, code: error.code, retryable: false,
+        status: error.status, provider_error_type: error.provider_error_type,
+        retry_after: error.retry_after)
     end
 
     def connection_error?(e)
@@ -478,10 +502,13 @@ module Llm
       connection_error?(e) ? CONNECT_BACKOFF : RETRY_BACKOFF
     end
 
-    # Honour the provider's Retry-After on a rate limit when it is a sane delay;
-    # otherwise fall back to linear backoff so a 429 storm can't spin instantly.
+    # Honour the provider's Retry-After on a rate limit, capped at RETRY_AFTER_MAX
+    # so a long request never sleeps past our patience. A hint above the ceiling
+    # is still respected at the ceiling (we do NOT fall back to fast retries, which
+    # would only deepen a 429); with no usable hint we back off linearly.
     def retry_wait(e, attempt)
-      return e.retry_after if e.retry_after&.positive? && e.retry_after <= RETRY_AFTER_MAX
+      hint = e.retry_after
+      return [ hint, RETRY_AFTER_MAX ].min if hint&.positive?
       RETRY_BACKOFF * attempt
     end
 
