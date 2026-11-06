@@ -438,4 +438,158 @@ RSpec.describe Llm::AnthropicAdapter do
         }
     end
   end
+
+  # These examples close the retry/error-handling branches that had no coverage:
+  # the whole sync_chat transport path, the coarse status-class fallbacks in
+  # classify, and the defensive edges around Retry-After, status parsing, and
+  # malformed SSE. Each asserts real behavior (classification, retry budget, or
+  # the absence of a retry), not just that a line executed.
+  describe "retry & error-path branch coverage" do
+    def stream(&blk)
+      adapter.stream_chat(messages: [ { role: "user", content: "hi" } ], tools: [],
+                          temperature: 0.7, max_tokens: 20, &blk)
+    end
+
+    def sync!
+      adapter.sync_chat(messages: [ { role: "user", content: "hi" } ], tools: [],
+                        temperature: 0.7, max_tokens: 20)
+    end
+
+    it "routes #chat to the streaming path and forwards deltas to the block" do
+      delta = { type: "content_block_delta", delta: { type: "text_delta", text: "hi" } }.to_json
+      stub_body("data: #{delta}\n\n")
+
+      pieces = []
+      result = adapter.chat(messages: [ { role: "user", content: "q" } ], tools: [],
+                            temperature: 0.7, max_tokens: 10, stream: true) { |t, *_| pieces << t }
+
+      expect(result[:content]).to eq("hi")
+      expect(result[:finish_reason]).to eq("stop")
+      expect(pieces).to eq([ "hi" ])
+    end
+
+    it "routes #chat to the sync path" do
+      allow(HTTParty).to receive(:post).and_return(
+        double(code: 200, success?: true, body: { content: [ { type: "text", text: "pong" } ] }.to_json)
+      )
+
+      result = adapter.chat(messages: [ { role: "user", content: "q" } ], tools: [],
+                            temperature: 0.7, max_tokens: 10, stream: false)
+
+      expect(result[:content]).to eq("pong")
+    end
+
+    it "replays a sync transport blip through the full budget, then fails as transient" do
+      allow(HTTParty).to receive(:post).and_raise(Errno::ECONNRESET)
+
+      expect { sync! }
+        .to raise_error(Llm::AnthropicAdapter::LlmError) { |e|
+          expect(e.code).to eq(:provider_unavailable)
+          expect(e.retryable?).to be(true)
+          expect(e.message).to include("Errno::ECONNRESET")
+        }
+      expect(HTTParty).to have_received(:post).exactly(described_class::MAX_RETRIES).times
+    end
+
+    it "fast-fails a sync connection refusal after one quick replay" do
+      allow(HTTParty).to receive(:post).and_raise(Errno::ECONNREFUSED)
+
+      expect { sync! }
+        .to raise_error(Llm::AnthropicAdapter::LlmError) { |e|
+          expect(e.code).to eq(:provider_unreachable)
+        }
+      expect(HTTParty).to have_received(:post).exactly(described_class::MAX_CONNECT_RETRIES + 1).times
+    end
+
+    it "classifies an unmapped 5xx as a retryable server fault" do
+      stub_stream_fragments([ stream_fragment("server exploded", 599) ], returns: double(code: "599"))
+
+      expect { stream { |_t, *_| } }
+        .to raise_error(Llm::AnthropicAdapter::LlmError) { |e|
+          expect(e.code).to eq(:provider_unavailable)
+          expect(e.retryable?).to be(true)
+        }
+      expect(HTTParty).to have_received(:post).exactly(described_class::MAX_RETRIES).times
+    end
+
+    it "classifies an unmapped 4xx as a permanent rejection and never retries" do
+      stub_stream_fragments([ stream_fragment("unavailable for legal reasons", 451) ], returns: double(code: "451"))
+
+      expect { stream { |_t, *_| } }
+        .to raise_error(Llm::AnthropicAdapter::LlmError) { |e|
+          expect(e.code).to eq(:provider_request_rejected)
+          expect(e.retryable?).to be(false)
+        }
+      expect(HTTParty).to have_received(:post).once
+    end
+
+    it "falls through to a transient default for an unknown provider error type" do
+      stub_body({ type: "error", error: { type: "mystery_error", message: "unrecognized" } }.to_json)
+
+      expect { stream { |_t, *_| } }
+        .to raise_error(Llm::AnthropicAdapter::LlmError) { |e|
+          expect(e.code).to eq(:provider_unavailable)
+          expect(e.retryable?).to be(true)
+        }
+      expect(HTTParty).to have_received(:post).exactly(described_class::MAX_RETRIES).times
+    end
+
+    it "ignores a non-numeric Retry-After and backs off linearly" do
+      stub_stream_fragments(
+        [ stream_fragment(%({"type":"error","error":{"type":"rate_limit_error","message":"Slow down"}}), 429) ],
+        returns: double(code: "429", headers: { "retry-after" => "soon" })
+      )
+
+      expect { stream { |_t, *_| } }.to raise_error(Llm::AnthropicAdapter::LlmError)
+      expect(adapter).to have_received(:sleep).with(described_class::RETRY_BACKOFF).at_least(:once)
+    end
+
+    it "never sleeps zero just because Retry-After said so" do
+      stub_stream_fragments(
+        [ stream_fragment(%({"type":"error","error":{"type":"rate_limit_error","message":"Slow down"}}), 429) ],
+        returns: double(code: "429", headers: { "retry-after" => "0" })
+      )
+
+      expect { stream { |_t, *_| } }.to raise_error(Llm::AnthropicAdapter::LlmError)
+      expect(adapter).not_to have_received(:sleep).with(0)
+      expect(adapter).to have_received(:sleep).with(described_class::RETRY_BACKOFF).at_least(:once)
+    end
+
+    it "treats a non-numeric response code as an unknown status, not a failure" do
+      stub_stream_fragments([ stream_fragment("data: {}\n\n", "OK") ], returns: double(code: "OK"))
+
+      expect { stream { |_t, *_| } }.not_to raise_error
+    end
+
+    it "skips a malformed SSE line and keeps streaming the well-formed ones" do
+      good = { type: "content_block_delta", delta: { type: "text_delta", text: "kept" } }.to_json
+      stub_body("data: {not valid json\n\ndata: #{good}\n\n")
+
+      result = stream { |_t, *_| }
+      expect(result[:content]).to eq("kept")
+    end
+
+    it "normalizes a max_tokens stop reason to length so truncation stays provider-agnostic" do
+      sse = [
+        { type: "content_block_delta", delta: { type: "text_delta", text: "half" } }.to_json,
+        { type: "message_delta", delta: { stop_reason: "max_tokens" } }.to_json
+      ].map { |e| "data: #{e}\n\n" }.join
+      stub_body(sse)
+
+      result = stream { |_t, *_| }
+      expect(result[:finish_reason]).to eq("length")
+    end
+
+    it "stops buffering an error body once it passes the classification cap" do
+      huge = "x" * (described_class::ERROR_CLASSIFY_LIMIT + 1_000)
+      stub_stream_fragments([ stream_fragment(huge, 400), stream_fragment("tail", 400) ],
+                            returns: double(code: "400"))
+
+      expect { stream { |_t, *_| } }
+        .to raise_error(Llm::AnthropicAdapter::LlmError) { |e|
+          expect(e.code).to eq(:provider_request_rejected)
+        }
+      expect(HTTParty).to have_received(:post).once
+    end
+  end
 end

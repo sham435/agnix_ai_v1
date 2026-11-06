@@ -92,9 +92,11 @@ module Llm
       @model = model
     end
 
-    def chat(messages:, tools:, temperature:, max_tokens:, top_p: nil, stream: false)
+    def chat(messages:, tools:, temperature:, max_tokens:, top_p: nil, stream: false, &block)
       if stream
-        stream_chat(messages: messages, tools: tools, temperature: temperature, max_tokens: max_tokens, top_p: top_p)
+        # The block only means something on the streaming path: stream_chat yields
+        # deltas as they arrive, while sync_chat returns one finished response.
+        stream_chat(messages: messages, tools: tools, temperature: temperature, max_tokens: max_tokens, top_p: top_p, &block)
       else
         sync_chat(messages: messages, tools: tools, temperature: temperature, max_tokens: max_tokens, top_p: top_p)
       end
