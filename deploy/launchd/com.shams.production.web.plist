@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Template only — NOT installed. To activate supervision (Phase 2, by explicit
+  operator action):
+    cp deploy/launchd/com.shams.production.web.plist ~/Library/LaunchAgents/
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.shams.production.web.plist
+  Requires ~/.config/shams/production.env and ~/.config/shams/production-web.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.shams.production.web</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/sham4/.config/shams/production-web</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+    <key>StandardOutPath</key>
+    <string>/Users/sham4/bonsai227b-shamsai/shamsai/shams/log/production-puma.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/sham4/bonsai227b-shamsai/shamsai/shams/log/production-puma.log</string>
+</dict>
+</plist>

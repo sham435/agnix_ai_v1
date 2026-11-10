@@ -1,0 +1,29 @@
+#!/bin/bash
+set -euo pipefail
+
+# Container entrypoint: prepare the primary database, then ensure the separate
+# secondary-role databases (Solid Queue / Solid Cable / Solid Cache) exist and
+# carry their schemas. The secondaries are schema-only installs (db/<role>_schema.rb,
+# no migrations), so the schema is loaded only when the database has no solid_*
+# tables yet — routine restarts never touch an already-populated secondary.
+
+if [ -f ./bin/rails ]; then
+  ./bin/rails db:prepare
+
+  for role in queue cable cache; do
+    urlvar="$(echo "$role" | tr '[:lower:]' '[:upper:]')_DATABASE_URL"
+    url="${!urlvar:-}"
+    if [ -z "$url" ]; then
+      echo "WARN: $urlvar not set; skipping $role bootstrap" >&2
+      continue
+    fi
+    solid_tables="$(psql "$url" -tAc "SELECT count(*) FROM pg_tables WHERE schemaname='public' AND tablename LIKE 'solid_%'" 2>/dev/null || echo 0)"
+    if [ "$solid_tables" = "0" ]; then
+      echo "entrypoint: bootstrapping $role database schema"
+      ./bin/rails "db:create:$role"
+      DISABLE_DATABASE_ENVIRONMENT_CHECK=1 ./bin/rails "db:schema:load:$role"
+    fi
+  done
+fi
+
+exec "$@"

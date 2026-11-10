@@ -1,0 +1,25 @@
+# Keep secrets, local state and heavy, regenerable dirs out of the image
+# and the build context. Without this, COPY . . bakes the dev .env (with
+# live API keys) into image layers.
+.git
+.github
+.bundle
+coverage/
+log/
+storage/
+tmp/
+spec/
+test/
+node_modules/
+vendor/
+.env
+.env.*
+!.env.example
+apps/
+cookies.txt
+docker-compose*.yml
+Dockerfile
+Dockerfile.*
+README*
+CHANGELOG*
+.bonsai_token

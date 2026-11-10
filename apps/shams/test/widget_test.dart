@@ -210,7 +210,10 @@ void main() {
 
     expect(find.text('hi'), findsOneWidget); // the stored user turn
     expect(find.text('Earlier answer.'), findsOneWidget); // the agent's turn
-    expect(find.text('Message'), findsOneWidget); // the empty composer hint
+    expect(
+      find.text('Message shams ai…'),
+      findsOneWidget,
+    ); // the empty composer hint
     // The agent and its model, which is how the model choice stays visible.
     expect(find.text('Shams AI · openai · bonsai-227b'), findsOneWidget);
     // The workspace is behind this route now.
@@ -306,7 +309,7 @@ void main() {
       '{"content":"Rails 8.2?"}',
       reason: 'the composer posts exactly what was typed',
     );
-    expect(find.text('Message'), findsOneWidget); // the field cleared
+    expect(find.text('Message shams ai…'), findsOneWidget); // the field cleared
     expect(find.textContaining('Agent is working'), findsOneWidget);
 
     // Step the clock past one poll interval. pumpAndSettle would never return
@@ -501,7 +504,8 @@ void main() {
     expect(
       find.textContaining('Agent is working'),
       findsOneWidget,
-      reason: 'a turn this client just posted is waited on even before the '
+      reason:
+          'a turn this client just posted is waited on even before the '
           'server creates the placeholder',
     );
     expect(tester.widget<TextField>(find.byType(TextField)).enabled, isFalse);
@@ -541,10 +545,7 @@ void main() {
     expect(find.textContaining(genericFailure), findsOneWidget);
     // The sentence on its own was the whole complaint. This is the part that
     // says what to fix - and it arrives in the payload today.
-    expect(
-      find.textContaining('x-api-key header is required'),
-      findsOneWidget,
-    );
+    expect(find.textContaining('x-api-key header is required'), findsOneWidget);
     // A failed turn is not a completed task, so its cost line is suppressed.
     expect(find.textContaining('Finished'), findsNothing);
     // Everything still lives under one selectable surface, so the exact
@@ -602,7 +603,7 @@ void main() {
       find.textContaining('No messages yet. Say something.'),
       findsOneWidget,
     );
-    expect(find.text('Message'), findsOneWidget);
+    expect(find.text('Message shams ai…'), findsOneWidget);
     // The empty payload carries no agent, so this line can only come from the
     // agent that was picked - which is the model choice staying visible.
     expect(find.text('Shams AI · openai · bonsai-227b'), findsOneWidget);

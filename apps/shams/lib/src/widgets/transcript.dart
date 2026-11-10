@@ -1,7 +1,11 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:gpt_markdown/gpt_markdown.dart';
 
 import '../api/models.dart';
+import '../theme/app_theme.dart';
 import '../util/turn_times.dart';
 
 /// One row the user sent.
@@ -18,36 +22,32 @@ class UserTurn extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final brightness = theme.brightness;
 
     return Align(
       alignment: Alignment.centerRight,
       child: ConstrainedBox(
         constraints: const BoxConstraints(maxWidth: 560),
         child: Padding(
-          padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 2),
+          padding: const EdgeInsets.symmetric(vertical: 4),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.end,
             mainAxisSize: MainAxisSize.min,
             children: [
               DecoratedBox(
                 decoration: BoxDecoration(
-                  color: theme.colorScheme.primaryContainer,
-                  borderRadius: const BorderRadius.only(
-                    topLeft: Radius.circular(16),
-                    topRight: Radius.circular(16),
-                    bottomLeft: Radius.circular(16),
-                    bottomRight: Radius.circular(6),
-                  ),
+                  color: userBubbleColor(brightness),
+                  borderRadius: BorderRadius.circular(16),
                 ),
                 child: Padding(
                   padding: const EdgeInsets.symmetric(
-                    horizontal: 14,
-                    vertical: 10,
+                    horizontal: 16,
+                    vertical: 12,
                   ),
                   child: Text(
                     message.content,
-                    style: theme.textTheme.bodyMedium?.copyWith(
-                      height: 1.5,
+                    style: theme.textTheme.bodyLarge?.copyWith(
+                      color: userBubbleTextColor,
                     ),
                   ),
                 ),
@@ -70,8 +70,10 @@ class UserTurn extends StatelessWidget {
 ///
 /// Its `content` is Markdown, so it is rendered with [GptMarkdown] exactly the
 /// way the request asked ("show its context formatted text to clients like
-/// ChatGPT do"). Three real states share this widget, because the server writes
-/// the assistant row progressively:
+/// ChatGPT do"). The answer is set as full-width text on the page background -
+/// no bubble wraps it - because that is how the reference client reads.
+/// Three real states share this widget, because the server writes the
+/// assistant row progressively:
 ///
 ///   * placeholder, still empty - nothing to render; the screen's waiting row
 ///     covers it, so this returns a zero-height box;
@@ -95,109 +97,86 @@ class AssistantTurn extends StatelessWidget {
       finishedAt: completedAt,
     );
 
-    return Align(
-      alignment: Alignment.centerLeft,
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
       child: ConstrainedBox(
-        // 560px keeps the prose near the 65-75 character measure the reading
+        // 640px keeps the prose near the 65-75 character measure the reading
         // guide asks for; the code fences inside are scrollable, not clipped.
         constraints: const BoxConstraints(maxWidth: 640),
-        child: Padding(
-          padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 2),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              DecoratedBox(
-                decoration: BoxDecoration(
-                  color: theme.colorScheme.surfaceContainerHighest,
-                  borderRadius: const BorderRadius.only(
-                    topLeft: Radius.circular(6),
-                    topRight: Radius.circular(16),
-                    bottomLeft: Radius.circular(16),
-                    bottomRight: Radius.circular(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            GptMarkdown(
+              message.content,
+              style: theme.textTheme.bodyLarge,
+              // A reveal animation owns a ticker, and a ticker means
+              // `pumpAndSettle` never returns in a test (and burns
+              // frames for a reply that is already complete). The
+              // text still arrives token by token - it is just the
+              // fade-in of each character we opt out of.
+              animation: GptMarkdownAnimation.none,
+            ),
+            // The "still writing" caret. A static block, never a
+            // spinning indicator, so the transcript has no live
+            // ticker while the user reads a finished thread.
+            if (streaming) const _Caret(),
+            // The cause of a failed turn travels in `metadata["error"]`; the
+            // sentence in `content` is deliberately generic, so without this
+            // the whole failure reads "I encountered an error". Selectable
+            // through the transcript's SelectionArea, because the point is to
+            // hand the exact provider message to whoever can fix it.
+            if (detail != null)
+              Padding(
+                padding: const EdgeInsets.only(top: 8),
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    color: theme.colorScheme.errorContainer,
+                    borderRadius: BorderRadius.circular(12),
                   ),
-                ),
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 16,
-                    vertical: 12,
-                  ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      GptMarkdown(
-                        message.content,
-                        style: theme.textTheme.bodyMedium?.copyWith(
-                          height: 1.6,
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 12,
+                      vertical: 8,
+                    ),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Icon(
+                          Icons.error_outline,
+                          size: 16,
+                          color: theme.colorScheme.onErrorContainer,
                         ),
-                        // A reveal animation owns a ticker, and a ticker means
-                        // `pumpAndSettle` never returns in a test (and burns
-                        // frames for a reply that is already complete). The
-                        // text still arrives token by token - it is just the
-                        // fade-in of each character we opt out of.
-                        animation: GptMarkdownAnimation.none,
-                      ),
-                      // The "still writing" caret. A static block, never a
-                      // spinning indicator, so the transcript has no live
-                      // ticker while the user reads a finished thread.
-                      if (streaming) const _Caret(),
-                    ],
+                        const SizedBox(width: 8),
+                        Flexible(
+                          child: Text(
+                            detail,
+                            style: theme.textTheme.bodySmall?.copyWith(
+                              color: theme.colorScheme.onErrorContainer,
+                              height: 1.45,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
                 ),
               ),
-              // The cause of a failed turn travels in `metadata["error"]`; the
-              // sentence in `content` is deliberately generic, so without this
-              // the whole failure reads "I encountered an error". Selectable
-              // through the transcript's SelectionArea, because the point is to
-              // hand the exact provider message to whoever can fix it.
-              if (detail != null)
-                Padding(
-                  padding: const EdgeInsets.only(top: 8),
-                  child: DecoratedBox(
-                    decoration: BoxDecoration(
-                      color: theme.colorScheme.errorContainer,
-                      borderRadius: BorderRadius.circular(10),
-                    ),
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 12,
-                        vertical: 8,
-                      ),
-                      child: Row(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Icon(
-                            Icons.error_outline,
-                            size: 16,
-                            color: theme.colorScheme.onErrorContainer,
-                          ),
-                          const SizedBox(width: 8),
-                          Flexible(
-                            child: Text(
-                              detail,
-                              style: theme.textTheme.bodySmall?.copyWith(
-                                color: theme.colorScheme.onErrorContainer,
-                                height: 1.5,
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                ),
-              // The finish stamp and cost belong to a turn that actually
-              // produced an answer. A failed turn "finished" too, but printing
-              // "took 22s" beside "I encountered an error" reads as a success
-              // metric, so the meta is dropped whenever a cause is shown.
-              if (completedAt != null && detail == null)
-                Padding(
-                  padding: const EdgeInsets.only(top: 6),
-                  child: _TurnMeta(_finishLine(completedAt, elapsed)),
-                ),
-            ],
-          ),
+            // The finish stamp and cost belong to a turn that actually
+            // produced an answer. A failed turn "finished" too, but printing
+            // "took 22s" beside "I encountered an error" reads as a success
+            // metric, so the meta is dropped whenever a cause is shown.
+            if (completedAt != null && detail == null)
+              Padding(
+                padding: const EdgeInsets.only(top: 6),
+                child: _TurnMeta(_finishLine(completedAt, elapsed)),
+              ),
+            // Copy the raw response source - the same Markdown the turn was
+            // stored with - so a reply can be quoted into another tool without
+            // re-selecting it. Selection (above) covers ad-hoc spans; this is
+            // the whole-turn affordance.
+            _CopyResponseButton(content: message.content),
+          ],
         ),
       ),
     );
@@ -337,6 +316,67 @@ class _DotsState extends State<_Dots> with SingleTickerProviderStateMixin {
   }
 }
 
+/// The "copy this response" affordance of an assistant turn.
+///
+/// Copies the turn's Markdown source to the clipboard and flashes a check for
+/// a moment - stateful only for that flash, whose timer is disposed.
+class _CopyResponseButton extends StatefulWidget {
+  const _CopyResponseButton({required this.content});
+
+  final String content;
+
+  @override
+  State<_CopyResponseButton> createState() => _CopyResponseButtonState();
+}
+
+class _CopyResponseButtonState extends State<_CopyResponseButton> {
+  bool _copied = false;
+  Timer? _resetTimer;
+
+  @override
+  void dispose() {
+    _resetTimer?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _copy() async {
+    await Clipboard.setData(ClipboardData(text: widget.content));
+    if (!mounted) return;
+    setState(() => _copied = true);
+    _resetTimer?.cancel();
+    _resetTimer = Timer(const Duration(milliseconds: 1400), () {
+      if (!mounted) return;
+      setState(() => _copied = false);
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Align(
+      alignment: Alignment.centerRight,
+      child: SizedBox.square(
+        dimension: 32,
+        child: IconButton(
+          tooltip: 'Copy response',
+          isSelected: _copied,
+          selectedIcon: Icon(
+            Icons.check,
+            size: 16,
+            color: theme.colorScheme.tertiary,
+          ),
+          icon: Icon(
+            Icons.copy_all_outlined,
+            size: 16,
+            color: theme.colorScheme.onSurfaceVariant,
+          ),
+          onPressed: _copy,
+        ),
+      ),
+    );
+  }
+}
+
 /// The block that trails a partially written answer.
 class _Caret extends StatelessWidget {
   const _Caret();
@@ -363,12 +403,6 @@ class _TurnMeta extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    return Text(
-      text,
-      style: theme.textTheme.labelSmall?.copyWith(
-        color: theme.colorScheme.onSurfaceVariant,
-        letterSpacing: 0.2,
-      ),
-    );
+    return Text(text, style: theme.textTheme.labelSmall);
   }
 }

@@ -136,6 +136,12 @@ Rails.application.routes.draw do
       end
       resources :agents, only: [ :index, :show ]
       resources :runs, only: [ :show ]
+
+      # OpenAI-compatible gateway for OpenCode
+      namespace :openai do
+        get "models", to: "chat_completions#models"
+        post "chat/completions", to: "chat_completions#create"
+      end
     end
   end
 

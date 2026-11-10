@@ -13,6 +13,8 @@ RUN apt-get update -qq && \
       libjemalloc2 \
       libvips \
       libpq-dev \
+      libyaml-0-2 \
+      imagemagick \
       postgresql-client \
       && rm -rf /var/lib/apt/lists /var/cache/apt/archives
 
@@ -27,10 +29,16 @@ ENV RAILS_ENV="production" \
 # Build stage.
 FROM base AS build
 
+# Bundler resilience: parallel fetches with retries (transient registry hiccups
+# killed earlier builds mid-run).
+ENV BUNDLE_RETRY="5" \
+    BUNDLE_JOBS="8"
+
 RUN apt-get update -qq && \
     apt-get install --no-install-recommends -y \
       build-essential \
       git \
+      libyaml-dev \
       pkg-config \
       && rm -rf /var/lib/apt/lists /var/cache/apt/archives
 
@@ -41,7 +49,10 @@ RUN bundle install && \
 COPY . .
 
 RUN bundle exec bootsnap precompile --gemfile app/ lib/
-RUN bin/rails assets:precompile
+# The app boots a full production env during precompile (its encrypted
+# credentials initializer demands a secret); SECRET_KEY_BASE_DUMMY=1 lets Rails
+# derive a build-time throwaway secret without baking anything sensitive.
+RUN SECRET_KEY_BASE_DUMMY=1 bin/rails assets:precompile
 
 # Runtime stage.
 FROM base
@@ -52,6 +63,7 @@ COPY --from=build /usr/local/bundle /usr/local/bundle
 COPY --from=build /rails /rails
 
 RUN useradd rails --create-home --shell /bin/bash && \
+    mkdir -p db log storage tmp && \
     chown -R rails:rails db log storage tmp
 USER rails:rails
 

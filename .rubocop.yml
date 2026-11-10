@@ -14,6 +14,9 @@ AllCops:
   TargetRubyVersion: 3.4
   Exclude:
     - "db/schema.rb"
+    - "db/queue_schema.rb"
+    - "db/cable_schema.rb"
+    - "db/cache_schema.rb"
     - "db/migrate/*"
     - "bin/*"
     - "node_modules/**/*"

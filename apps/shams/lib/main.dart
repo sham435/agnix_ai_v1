@@ -1,71 +1,70 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
-import 'package:gpt_markdown/gpt_markdown.dart';
 
 import 'src/api/models.dart';
 import 'src/api/shams_api.dart';
 import 'src/config.dart';
 import 'src/screens/app_screens.dart';
 import 'src/screens/chat_screen.dart';
+import 'src/theme/app_theme.dart';
+import 'src/theme/theme_controller.dart';
 
 void main() {
   runApp(ShamsApp(api: ShamsApi(baseUrl: apiBase)));
 }
 
 /// Root of the Shams desktop and Android client.
-class ShamsApp extends StatelessWidget {
-  const ShamsApp({required this.api, super.key});
+///
+/// Owns the [ThemeController] so the system/light/dark choice made anywhere in
+/// the headers is honoured by the whole app; the mode itself is stored in
+/// `shared_preferences` by the controller, not here.
+class ShamsApp extends StatefulWidget {
+  const ShamsApp({required this.api, super.key, this.themeStore});
 
   final ShamsApi api;
 
-  static const _seed = Color(0xFF1D4ED8);
+  /// Test seam: injects a store (or none) so widget tests never touch the
+  /// platform's real preference persistence.
+  final ThemeStore? themeStore;
 
-  /// The Markdown look the assistant transcript renders with.
-  ///
-  /// `GptMarkdown` reads this from the ambient theme, so every reply shares one
-  /// definition of a heading, a link, inline `code`. The only thing pinned here
-  /// is that links and inline code follow the seed colour instead of the
-  /// package's default blue/red, so a reply never fights the app's palette.
-  static GptMarkdownThemeData _markdown(Brightness brightness) {
-    final scheme = ColorScheme.fromSeed(
-      seedColor: _seed,
-      brightness: brightness,
-    );
-    return GptMarkdownThemeData(
-      brightness: brightness,
-      linkColor: scheme.primary,
-      linkHoverColor: scheme.primary,
-      inlineCode: InlineCodeStyle(
-        backgroundColor: scheme.surfaceContainerHighest,
-        color: scheme.onSurface,
-      ),
-    );
+  @override
+  State<ShamsApp> createState() => _ShamsAppState();
+}
+
+class _ShamsAppState extends State<ShamsApp> {
+  late final ThemeController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = ThemeController(store: widget.themeStore);
+    unawaited(_controller.load());
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    const seed = _seed;
-    return MaterialApp(
-      title: 'Shams',
-      debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: seed),
-        useMaterial3: true,
-        extensions: [
-          _markdown(Brightness.light),
-        ],
-      ),
-      darkTheme: ThemeData(
-        brightness: Brightness.dark,
-        colorScheme: ColorScheme.fromSeed(
-          seedColor: seed,
-          brightness: Brightness.dark,
+    // Rebuilds MaterialApp whenever the mode changes - the only global rebuild
+    // a theme switch legitimately needs.
+    return ListenableBuilder(
+      listenable: _controller,
+      builder: (context, _) => ThemeScope(
+        controller: _controller,
+        child: MaterialApp(
+          title: 'Shams',
+          debugShowCheckedModeBanner: false,
+          theme: shamsTheme(Brightness.light),
+          darkTheme: shamsTheme(Brightness.dark),
+          themeMode: _controller.mode,
+          home: SessionGate(api: widget.api),
         ),
-        useMaterial3: true,
-        extensions: [
-          _markdown(Brightness.dark),
-        ],
       ),
-      home: SessionGate(api: api),
     );
   }
 }
@@ -189,6 +188,14 @@ class _SessionGateState extends State<SessionGate> {
 
   Future<void> _newChat() async => _chatWithAgent(await _pickAgent());
 
+  /// A prompt card from the welcome surface: choose the agent, then start the
+  /// thread *with the prompt as its first turn* - `POST /api/v1/conversations`
+  /// accepts optional `content` and runs the whole startup (user row,
+  /// `AgentStreamJob`), which is exactly what a suggestion should do. Nothing
+  /// here is canned or client-only.
+  Future<void> _startFromSuggestion(String prompt) async =>
+      _chatWithAgent(await _pickAgent(), content: prompt);
+
   /// Shows the agent list and returns the choice, or null if backed out.
   ///
   /// Choosing the agent is the model selection: the model lives on the agent
@@ -198,12 +205,15 @@ class _SessionGateState extends State<SessionGate> {
     return pickAgent(context, _agents);
   }
 
-  Future<void> _chatWithAgent(Agent? agent) async {
+  Future<void> _chatWithAgent(Agent? agent, {String? content}) async {
     if (agent == null) return;
 
     Conversation created;
     try {
-      created = await widget.api.createConversation(agentId: agent.id);
+      created = await widget.api.createConversation(
+        agentId: agent.id,
+        content: content,
+      );
     } on ApiException catch (error) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -236,6 +246,7 @@ class _SessionGateState extends State<SessionGate> {
         onOpenConversation: _openConversation,
         onNewChat: _newChat,
         onChatWithAgent: _chatWithAgent,
+        onSuggestion: _startFromSuggestion,
         origin: _origin,
       ),
     };
@@ -257,12 +268,7 @@ class _Connecting extends StatelessWidget {
           children: [
             const CircularProgressIndicator(),
             const SizedBox(height: 16),
-            Text(
-              'Connecting to $origin...',
-              style: theme.textTheme.bodyMedium?.copyWith(
-                color: theme.colorScheme.outline,
-              ),
-            ),
+            Text('Connecting to $origin...', style: theme.textTheme.labelSmall),
           ],
         ),
       ),

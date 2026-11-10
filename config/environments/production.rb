@@ -32,7 +32,7 @@ Rails.application.configure do
   config.force_ssl = true
 
   # Log to STDOUT with the current request id.
-  config.log_tags = [:request_id]
+  config.log_tags = [ :request_id ]
   config.logger = ActiveSupport::TaggedLogging.logger(STDOUT)
 
   # Use a different cache store in production.
@@ -43,7 +43,13 @@ Rails.application.configure do
   config.solid_queue.connects_to = { database: { writing: :queue } }
 
   # Action Cable via Solid Cable in production.
-  config.action_cable.cable = { adapter: "solid_cable" }
+  #
+  # Do NOT re-introduce a hash override here. `config.action_cable.cable` must
+  # keep the STRING keys (and the full payload) from `config_for(:cable)` -
+  # ActionCable's pubsub resolver does `cable.fetch("adapter") { "redis" }`, so
+  # a symbol-keyed override like `{ adapter: "solid_cable" }` silently misses
+  # and every broadcast dials the Redis default `redis://localhost:6379`,
+  # which this stack does not run.
 
   # Enable locale fallbacks for I18n.
   config.i18n.fallbacks = true
@@ -52,7 +58,7 @@ Rails.application.configure do
   config.active_support.report_deprecations = false
 
   # Prepend all log lines with the following tags.
-  config.log_tags = [:request_id]
+  config.log_tags = [ :request_id ]
 
   # Info include generic and useful information about system operation.
   # Use a different logger for distributed setups.
@@ -60,7 +66,7 @@ Rails.application.configure do
   # config.logger = ActiveSupport::TaggedLogging.new(Syslog::Logger.new "app-name")
 
   # Mailer.
-  config.action_mailer.default_url_options = { host: ENV.fetch("APP_HOST") }
+  config.action_mailer.default_url_options = { host: ENV.fetch("APP_HOST", "localhost") }
   config.action_mailer.delivery_method = :postmark
   config.action_mailer.perform_deliveries = true
 
@@ -74,7 +80,14 @@ Rails.application.configure do
     secure: Rails.env.production?
 
   # Default URL options.
-  config.default_url_options = { host: ENV.fetch("APP_HOST") }
+  config.default_url_options = { host: ENV.fetch("APP_HOST", "localhost") }
+
+  # Host authorization: only the public hostname (set APP_HOST when the domain
+  # is live) and loopback for proxy health checks. No public exposure yet.
+  config.hosts = [ ENV.fetch("APP_HOST", "localhost"), "localhost", "127.0.0.1" ].uniq
+
+  # Action Cable: same origin policy as the future HTTPS hostname.
+  config.action_cable.allowed_request_origins = [ "https://#{ENV.fetch('APP_HOST', 'localhost')}" ]
 
   # Private upload storage. Production service is chosen via credentials
   # (never auto-selected); falls back to the local Disk service.

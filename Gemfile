@@ -48,6 +48,7 @@ gem "omniauth-github", "~> 2.0"
 gem "httparty", "~> 0.22"          # HTTP client for LLM integrations
 gem "faraday", "~> 2.12"           # HTTP for webhooks
 gem "pdf-reader"
+gem "rubyzip"                      # OOXML zip reader for xlsx/docx asset extractors (prod eager-load fires require "zip")
 gem "json_schemer", "~> 2.5"        # JSON Schema validation for tool calling
 
 # -- Email --

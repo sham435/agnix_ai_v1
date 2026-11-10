@@ -4,7 +4,11 @@ import 'package:flutter/material.dart';
 
 import '../api/models.dart';
 import '../api/shams_api.dart';
+import '../widgets/brand_mark.dart';
 import '../widgets/chat_composer.dart';
+import '../widgets/prompt_card.dart';
+import '../widgets/theme_button.dart';
+import '../widgets/placeholder_shimmer.dart';
 import '../widgets/transcript.dart';
 
 /// How often the chat screen re-reads the conversation while a reply is being
@@ -38,6 +42,7 @@ class ChatScreen extends StatefulWidget {
     super.key,
     this.title,
     this.agent,
+    this.onNewChat,
   });
 
   final ShamsApi api;
@@ -52,6 +57,10 @@ class ChatScreen extends StatefulWidget {
   /// messages at all - so the picker hands over the agent it just chose rather
   /// than leave the header without a model.
   final Agent? agent;
+
+  /// The home screen's new-chat flow, from the header action. Optional: only
+  /// wired where a "start a different thread" affordance makes sense.
+  final VoidCallback? onNewChat;
 
   @override
   State<ChatScreen> createState() => _ChatScreenState();
@@ -270,6 +279,14 @@ class _ChatScreenState extends State<ChatScreen> {
     _scrollToEnd();
   }
 
+  /// Puts the text of an example prompt into the composer.
+  ///
+  /// Purely client-side: it fills the very `TextEditingController` the user
+  /// types into and posts nothing anywhere. The send action stays the user's.
+  void _applyPrompt(String text) {
+    _controller.text = text;
+  }
+
   /// The thread's own title, else the agent it runs on, else what the caller
   /// had to go on. `Conversations::StartChat` names a thread after its first
   /// turn, so a conversation started empty genuinely has no title yet.
@@ -298,24 +315,48 @@ class _ChatScreenState extends State<ChatScreen> {
     return Scaffold(
       appBar: AppBar(
         toolbarHeight: 68,
-        title: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          mainAxisAlignment: MainAxisAlignment.center,
+        title: Row(
           children: [
-            Text(
-              _heading(conversation, agent),
-              overflow: TextOverflow.ellipsis,
-            ),
-            if (agent != null)
-              Text(
-                '${agent.name} · ${agent.subtitle}',
-                overflow: TextOverflow.ellipsis,
-                style: theme.textTheme.bodySmall?.copyWith(
-                  color: theme.colorScheme.onSurfaceVariant,
-                ),
+            const BrandMark(size: 26),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Text(
+                    _heading(conversation, agent),
+                    overflow: TextOverflow.ellipsis,
+                    maxLines: 1,
+                    style: theme.textTheme.titleLarge,
+                  ),
+                  if (agent != null)
+                    Text(
+                      '${agent.name} · ${agent.subtitle}',
+                      overflow: TextOverflow.ellipsis,
+                      maxLines: 1,
+                      style: theme.textTheme.labelSmall,
+                    ),
+                ],
               ),
+            ),
           ],
         ),
+        actions: [
+          const ThemeButton(),
+          if (widget.onNewChat != null)
+            IconButton(
+              tooltip: 'New chat',
+              onPressed: () async {
+                // Same-navigation choice: leave this thread first, so the
+                // "pick an agent and start fresh" flow lands in a clean back
+                // stack position rather than deepening this one.
+                Navigator.of(context).maybePop();
+                widget.onNewChat!();
+              },
+              icon: const Icon(Icons.add_comment_outlined),
+            ),
+        ],
       ),
       body: Column(
         children: [
@@ -323,18 +364,21 @@ class _ChatScreenState extends State<ChatScreen> {
             child: RefreshIndicator(
               onRefresh: _load,
               child: _loading
-                  ? const Center(child: CircularProgressIndicator())
+                  ? const ConversationSkeleton()
                   : messages.isEmpty && !awaiting
-                  ? _EmptyThread(origin: widget.api.origin)
+                  ? _EmptyThread(
+                      origin: widget.api.origin,
+                      onPrompt: _applyPrompt,
+                    )
                   : SelectionArea(
                       // One SelectionArea over the whole thread: text inside a
                       // code fence, a heading or a list stays selectable, and
                       // the copy affordance is shared rather than per-bubble.
                       child: ListView.builder(
                         controller: _scroll,
-                        // Extra bottom padding keeps the last bubble clear of
+                        // Extra bottom padding keeps the last turn clear of
                         // the composer and the jump pill.
-                        padding: const EdgeInsets.fromLTRB(12, 12, 12, 16),
+                        padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
                         itemCount: messages.length + (showWaitingRow ? 1 : 0),
                         itemBuilder: (context, index) => _centered(
                           index >= messages.length
@@ -355,28 +399,33 @@ class _ChatScreenState extends State<ChatScreen> {
                 ),
               ),
             ),
-          ChatComposer(
-            controller: _controller,
-            busy: _sending || awaiting,
-            onSubmit: _send,
+          Center(
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 860),
+              child: ChatComposer(
+                controller: _controller,
+                busy: _sending || awaiting,
+                onSubmit: _send,
+              ),
+            ),
           ),
         ],
       ),
       // The jump-back affordance only when a reply is arriving and the reader
       // is not looking at it.
-      floatingActionButton:
-          awaiting && !_atBottom
-              ? FloatingActionButton.extended(
-                  onPressed: _jumpToLatest,
-                  icon: const Icon(Icons.keyboard_arrow_down),
-                  label: const Text('New turn - jump to latest'),
-                )
-              : null,
+      floatingActionButton: awaiting && !_atBottom
+          ? FloatingActionButton.extended(
+              onPressed: _jumpToLatest,
+              icon: const Icon(Icons.keyboard_arrow_down),
+              label: const Text('New turn - jump to latest'),
+            )
+          : null,
     );
   }
 
-  Widget _turnFor(Message message) =>
-      message.isUser ? UserTurn(message: message) : AssistantTurn(message: message);
+  Widget _turnFor(Message message) => message.isUser
+      ? UserTurn(message: message)
+      : AssistantTurn(message: message);
 
   /// Caps the reading measure on wide windows (desktop) without touching a
   /// phone's full width, and keeps the bubbles centred rather than flush-left
@@ -390,30 +439,85 @@ class _ChatScreenState extends State<ChatScreen> {
 }
 
 /// The placeholder shown for a conversation that has no turns yet.
+///
+/// Centred brand emblem, the exact headline and supporting line the spec
+/// gives the welcome experience, and the example prompt cards shared with the
+/// home screen's hero. The prompts only put their text into the composer the
+/// way a paste would; nothing is posted anywhere.
 class _EmptyThread extends StatelessWidget {
-  const _EmptyThread({required this.origin});
+  const _EmptyThread({required this.origin, this.onPrompt});
 
   final String origin;
+
+  /// Fills the composer with a tapped example prompt; user posts it.
+  final ValueChanged<String>? onPrompt;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    return ListView(
-      children: [
-        Padding(
-          padding: const EdgeInsets.all(24),
-          child: Text(
-            'No messages yet. Say something.\n\nConnected to $origin',
-            textAlign: TextAlign.center,
-            style: theme.textTheme.bodyMedium?.copyWith(
-              color: theme.colorScheme.onSurfaceVariant,
-              height: 1.6,
+    return CustomScrollView(
+      slivers: [
+        SliverFillRemaining(
+          hasScrollBody: false,
+          child: Center(
+            child: _centered(
+              Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.center,
+                children: [
+                  const BrandMark(size: 40),
+                  const SizedBox(height: 14),
+                  Text(
+                    'How can I help you today?',
+                    textAlign: TextAlign.center,
+                    style: theme.textTheme.titleMedium?.copyWith(fontSize: 20),
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    'Your intelligent workspace for thinking, creating and '
+                    'building.',
+                    textAlign: TextAlign.center,
+                    style: theme.textTheme.bodyMedium?.copyWith(
+                      color: theme.colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                  const SizedBox(height: 20),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    alignment: WrapAlignment.center,
+                    children: [
+                      for (final prompt in promptSuggestions)
+                        PromptCard(label: prompt, onSelected: onPrompt),
+                    ],
+                  ),
+                  const SizedBox(height: 24),
+                  Text(
+                    'No messages yet. Say something.',
+                    textAlign: TextAlign.center,
+                    style: theme.textTheme.labelSmall,
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    'Connected to $origin',
+                    textAlign: TextAlign.center,
+                    style: theme.textTheme.labelSmall,
+                  ),
+                ],
+              ),
             ),
           ),
         ),
       ],
     );
   }
+
+  /// Caps the reading measure on wide windows (desktop) without touching a
+  /// phone's full width.
+  Widget _centered(Widget child) => ConstrainedBox(
+    constraints: const BoxConstraints(maxWidth: 480),
+    child: child,
+  );
 }
 
 /// Picks an agent, which is also the model choice: `agents.model` and

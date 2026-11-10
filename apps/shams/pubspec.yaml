@@ -35,6 +35,10 @@ dependencies:
   # Use with the CupertinoIcons class for iOS style icons.
   cupertino_icons: ^1.0.8
   cookie_jar: ^4.0.9
+  # Remembers the user's system/light/dark choice across launches. Minor and
+  # standard; without it the theme selector memory would evaporate with the
+  # process (and the spec asks the preference to survive).
+  shared_preferences: ^2.2.0
   # 1.3.0 renders Markdown through `flutter_math_fork`, which compiles against
   # the Flutter pinned on this machine (3.35.3). 1.3.1+ swapped to
   # `val_latex_flutter`, whose `MathWidget` calls `SemanticsService

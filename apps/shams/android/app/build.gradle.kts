@@ -8,7 +8,10 @@ plugins {
 android {
     namespace = "com.shams.shams_app"
     compileSdk = flutter.compileSdkVersion
-    ndkVersion = flutter.ndkVersion
+    // Pinned to the only NDK the host has disk headroom to keep (27.0): the
+    // Flutter/AGP defaults ask for r28c and sdkmanager cannot stage it on this
+    // disk-full machine - provisioning would re-download ~7GB every build.
+    ndkVersion = "27.0.12077973"
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_11

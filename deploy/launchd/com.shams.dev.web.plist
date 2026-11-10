@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Dev web supervision (kept running beyond terminal sessions). Activate:
+    chmod +x ~/.config/shams/dev-web
+    cp deploy/launchd/com.shams.dev.web.plist ~/Library/LaunchAgents/
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.shams.dev.web.plist
+  Requires ~/.config/shams/dev-web. Production is supervised by the
+  shams-public Docker stack (restart: unless-stopped) instead.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.shams.dev.web</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/sham4/.config/shams/dev-web</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+    <key>StandardOutPath</key>
+    <string>/Users/sham4/bonsai227b-shamsai/shamsai/shams/log/dev-web.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/sham4/bonsai227b-shamsai/shamsai/shams/log/dev-web.log</string>
+</dict>
+</plist>
