@@ -7,9 +7,11 @@ Rails.application.routes.draw do
   root "conversations#index"
 
   # Authentication.
-  get    "login",  to: "sessions#new"
-  post   "login",  to: "sessions#create"
-  delete "logout", to: "sessions#destroy"
+  get    "login",       to: "sessions#new"
+  post   "login",       to: "sessions#create"
+  get    "login/otp",   to: "sessions#otp",        as: :login_otp
+  post   "login/otp",   to: "sessions#verify_otp"
+  delete "logout",      to: "sessions#destroy"
 
   # OAuth callbacks.
   get   "auth/:provider/callback", to: "oauth_callbacks#create"
@@ -22,6 +24,11 @@ Rails.application.routes.draw do
   namespace :settings do
     get   :profile, to: "profiles#edit"
     patch :profile, to: "profiles#update"
+    # Two-factor (TOTP) enrollment lives on its own page because the QR code is
+    # shown exactly once, before the secret is stored.
+    resource :two_factor, only: [ :show, :create, :destroy ] do
+      post :confirm, on: :collection
+    end
     get   :billing, to: "billing#index"
     get   :integrations, to: "integrations#index"
     # Per-organization model provider keys (Settings::IntegrationsController#save_key).

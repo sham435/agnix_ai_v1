@@ -1,0 +1,39 @@
+<div class="flex min-h-screen items-center justify-center bg-gradient-to-b from-canvas to-panel px-4">
+  <div class="w-full max-w-md">
+    <div class="text-center mb-8">
+      <div class="mx-auto mb-4 grid size-16 place-items-center rounded-2xl bg-panel border border-border-subtle">
+        <svg class="size-8 text-accent-text" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+          <path d="M12 2 4 5v6c0 5 3.4 9.4 8 11 4.6-1.6 8-6 8-11V5l-8-3z" stroke-linejoin="round"/>
+          <path d="m9 12 2 2 4-4" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </div>
+      <h1 class="text-2xl font-semibold text-fg">Two-factor code</h1>
+      <p class="text-fg-subtle text-sm mt-1">Enter the 6-digit code from your authenticator app.</p>
+    </div>
+
+    <div class="card">
+      <%= form_with url: login_otp_path, method: :post, class: "space-y-4" do %>
+        <div>
+          <label class="block text-[13px] font-medium text-fg mb-1" for="code">Code</label>
+          <input type="text"
+                 name="code"
+                 id="code"
+                 inputmode="numeric"
+                 autocomplete="one-time-code"
+                 pattern="[0-9]{6}"
+                 maxlength="6"
+                 placeholder="123456"
+                 class="input-field text-center tracking-[0.4em] font-mono"
+                 autofocus
+                 required>
+        </div>
+
+        <button type="submit" class="btn-primary w-full">Verify and sign in</button>
+      <% end %>
+    </div>
+
+    <p class="text-center text-[13px] text-fg-subtle mt-6">
+      <%= link_to "Use a different account", login_path, class: "hover:text-fg" %>
+    </p>
+  </div>
+</div>

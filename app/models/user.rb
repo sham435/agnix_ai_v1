@@ -15,10 +15,16 @@
 #  last_login_at          :datetime
 #  created_at             :datetime         not null
 #  updated_at             :datetime         not null
+#  otp_secret             :string
+#  otp_enabled            :boolean          default(FALSE), not null
 #
 class User < ApplicationRecord
   has_secure_password
   has_secure_token :remember_token
+
+  # Encrypted with the secret_key_base-derived keys configured for
+  # ToolIntegration#credentials; never queried by value.
+  encrypts :otp_secret
 
   # Associations.
   has_many :memberships, dependent: :destroy
@@ -73,6 +79,10 @@ class User < ApplicationRecord
 
   def active_organization
     @active_organization ||= organizations.first
+  end
+
+  def two_factor
+    @two_factor ||= TwoFactor.new(self)
   end
 
   # Count shown as the /scheduled sidebar badge (Phase 2). Kept in the model so

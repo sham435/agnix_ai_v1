@@ -19,6 +19,14 @@
     <%= link_to "Account settings", settings_profile_path,
           class: "block px-3 py-2 text-[13px] text-fg-muted hover:bg-hover hover:text-fg" %>
 
+    <%= link_to settings_two_factor_path,
+          class: "flex items-center justify-between gap-2 px-3 py-2 text-[13px] text-fg-muted hover:bg-hover hover:text-fg" do %>
+      <span>Two-factor</span>
+      <span class="text-[11px] <%= current_user.otp_enabled? ? "text-emerald-500" : "text-fg-subtle" %>">
+        <%= current_user.otp_enabled? ? "On" : "Off" %>
+      </span>
+    <% end %>
+
     <div class="border-t border-border my-1"></div>
 
     <button type="button"

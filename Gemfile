@@ -39,6 +39,8 @@ gem "phlex-rails", "~> 2.2"
 
 # -- Auth & Security --
 gem "bcrypt", "~> 3.1"             # Password hashing
+gem "rotp", "~> 6.2"               # TOTP (RFC 6238) two-factor codes
+gem "rqrcode", "~> 2.2"            # QR codes for the 2FA provisioning URI
 gem "omniauth", "~> 2.1"           # OAuth framework
 gem "omniauth-rails_csrf_protection", "~> 1.0"
 gem "omniauth-google-oauth2", "~> 1.2"

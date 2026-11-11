@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_10_25_120000) do
+ActiveRecord::Schema[8.1].define(version: 2026_11_11_000000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
   enable_extension "vector"
@@ -228,7 +228,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_25_120000) do
     t.uuid "agent_id"
     t.text "content", null: false
     t.datetime "created_at", null: false
-    t.vector "embedding", limit: 1536
+    t.vector "embedding"
     t.jsonb "metadata", default: {}, null: false
     t.uuid "source_id"
     t.string "source_type"
@@ -562,6 +562,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_25_120000) do
     t.string "email", null: false
     t.datetime "last_login_at"
     t.string "name"
+    t.boolean "otp_enabled", default: false, null: false
+    t.string "otp_secret"
     t.string "password_digest", null: false
     t.string "remember_token"
     t.string "role", default: "user", null: false

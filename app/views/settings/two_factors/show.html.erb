@@ -1,0 +1,61 @@
+<%= render "layouts/chat_layout" do %>
+  <header class="sticky top-0 z-20 flex h-[64px] items-center justify-between gap-3 border-b border-border-subtle bg-sidebar/80 glass px-4">
+    <div class="flex items-center gap-2">
+      <button id="menuBtn" class="lg:hidden grid size-9 place-items-center rounded-xl bg-panel hover:bg-hover text-fg-muted">
+        <svg class="size-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+      </button>
+      <h1 class="text-[16px] font-semibold text-fg">Two-Factor Authentication</h1>
+    </div>
+  </header>
+
+  <main class="flex-1 overflow-y-auto p-6">
+    <div class="mx-auto max-w-[600px] space-y-6">
+      <div class="card space-y-4">
+        <div class="flex items-start justify-between gap-4">
+          <div>
+            <h2 class="text-[15px] font-medium text-fg">Authenticator app (TOTP)</h2>
+            <p class="text-[13px] text-fg-subtle mt-1">
+              A 6-digit code from your phone is required after the password, on this site and on any app that signs in through the API.
+            </p>
+          </div>
+          <span class="shrink-0 rounded-full px-2.5 py-1 text-[12px] font-medium <%= current_user.otp_enabled? ? "bg-emerald-500/15 text-emerald-500" : "bg-panel border border-border text-fg-subtle" %>">
+            <%= current_user.otp_enabled? ? "On" : "Off" %>
+          </span>
+        </div>
+
+        <% if current_user.otp_enabled? %>
+          <p class="text-[13px] text-fg-muted">
+            Signed in as <%= current_user.email %>. Keep the device you scanned with — without it you cannot sign in.
+          </p>
+        <% else %>
+          <%= button_to "Set up two-factor", settings_two_factor_path, method: :post,
+                class: "btn-primary", data: { turbo: false } %>
+        <% end %>
+      </div>
+
+      <% if current_user.otp_enabled? %>
+        <div class="card space-y-4">
+          <div>
+            <h2 class="text-[15px] font-medium text-fg">Turn it off</h2>
+            <p class="text-[13px] text-fg-subtle mt-1">Confirm your password. Losing access to your authenticator without this means asking an admin to reset it for you.</p>
+          </div>
+
+          <%= form_with url: settings_two_factor_path, method: :delete, class: "space-y-3" do %>
+            <div>
+              <label class="block text-[13px] font-medium text-fg-muted mb-1" for="password">Password</label>
+              <input type="password"
+                     name="password"
+                     id="password"
+                     autocomplete="current-password"
+                     class="input-field"
+                     required>
+            </div>
+            <button type="submit" class="btn-secondary text-red-600 dark:text-red-400">Disable two-factor</button>
+          <% end %>
+        </div>
+      <% end %>
+    </div>
+  </main>
+
+  <%= render "shared/sidebar_js" %>
+<% end %>

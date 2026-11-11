@@ -55,6 +55,41 @@ class ApplicationController < ActionController::Base
     end
   end
 
+  # Every path that establishes a session (password, TOTP confirmation, OAuth)
+  # goes through here so the cookie and the session can never drift apart. The
+  # reset drops the pre-login session id — and with it the two-factor pending
+  # keys, which must not survive into an authenticated session.
+  def complete_sign_in(user)
+    reset_session
+    session[:user_id] = user.id
+    cookies.signed[:user_id] = {
+      value: user.id,
+      expires: 2.weeks.from_now,
+      httponly: true,
+      secure: Rails.env.production?,
+      same_site: :lax
+    }
+    user.update!(last_login_at: Time.current)
+  end
+
+  # Records that a user still has to prove their second factor. Nothing outside
+  # the sessions controller reads this key, so a pending visitor stays anonymous.
+  def request_two_factor(user)
+    session[:otp_user_id] = user.id
+    session[:otp_attempts] = 0
+  end
+
+  def pending_two_factor_user
+    return nil if session[:otp_user_id].blank?
+
+    User.find_by(id: session[:otp_user_id])
+  end
+
+  def clear_two_factor_pending
+    session.delete(:otp_user_id)
+    session.delete(:otp_attempts)
+  end
+
   def require_organization!
     return if current_organization
     redirect_to root_path, alert: "Please join or create an organization."

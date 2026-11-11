@@ -6,16 +6,13 @@ class OauthCallbacksController < ApplicationController
     user = find_or_create_user_from_auth(auth)
 
     if user
-      session[:user_id] = user.id
-      cookies.signed[:user_id] = {
-        value: user.id,
-        expires: 2.weeks.from_now,
-        httponly: true,
-        secure: Rails.env.production?,
-        same_site: :lax
-      }
-
-      redirect_to conversations_path, notice: "Signed in with #{provider}."
+      if user.otp_enabled?
+        request_two_factor(user)
+        redirect_to login_otp_path
+      else
+        complete_sign_in(user)
+        redirect_to conversations_path, notice: "Signed in with #{provider}."
+      end
     else
       redirect_to login_path, alert: "Failed to authenticate with #{provider}."
     end

@@ -5,16 +5,9 @@ class Api::V1::SessionsController < ApplicationController
     user = User.find_by(email: params[:email].to_s.downcase)
 
     if user&.authenticate(params[:password])
-      session[:user_id] = user.id
-      cookies.signed[:user_id] = {
-        value: user.id,
-        expires: 2.weeks.from_now,
-        httponly: true,
-        secure: Rails.env.production?,
-        same_site: :lax
-      }
+      return render_two_factor_required if user.otp_enabled? && !user.two_factor.valid?(params[:code])
 
-      user.update!(last_login_at: Time.current)
+      complete_sign_in(user)
 
       render json: {
         user: {
@@ -31,7 +24,22 @@ class Api::V1::SessionsController < ApplicationController
 
   def destroy
     session.delete(:user_id)
+    clear_two_factor_pending
     cookies.delete(:user_id)
     render json: { message: "Signed out successfully." }, status: :ok
+  end
+
+  private
+
+  # Reached only when the password was right and the code was not. A client
+  # that predates two-factor sends no code at all, so 401 + the flag tells it to
+  # prompt for one and retry; 403 means the code it sent was simply wrong.
+  def render_two_factor_required
+    if params[:code].present?
+      render json: { error: "Invalid two-factor code.", two_factor_required: true }, status: :forbidden
+    else
+      render json: { error: "Two-factor authentication required.", two_factor_required: true },
+        status: :unauthorized
+    end
   end
 end
