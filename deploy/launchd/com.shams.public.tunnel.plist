@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Template — install by explicit operator action:
+    cp deploy/launchd/com.shams.public.tunnel.plist ~/Library/LaunchAgents/
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.shams.public.tunnel.plist
+  Un-install with:
+    launchctl bootout gui/$(id -u)/com.shams.public.tunnel
+  Needs the repo at /Users/sham4/bonsai227b-shamsai/shamsai/shams, Apache
+  listening on 127.0.0.1:80, ~/.config/shams/public.env and cloudflared.
+  Note that every restart of a quick tunnel mints a new public hostname; the
+  keeper republishes it, it does not freeze it.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.shams.public.tunnel</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/sham4/bonsai227b-shamsai/shamsai/shams/deploy/tunnel_keeper.sh</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>ThrottleInterval</key>
+    <integer>15</integer>
+    <key>ProcessType</key>
+    <string>Background</string>
+    <key>LowPriorityIO</key>
+    <true/>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HOME</key>
+        <string>/Users/sham4</string>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>/Users/sham4/bonsai227b-shamsai/shamsai/shams/log/tunnel_keeper.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/sham4/bonsai227b-shamsai/shamsai/shams/log/tunnel_keeper.log</string>
+</dict>
+</plist>
