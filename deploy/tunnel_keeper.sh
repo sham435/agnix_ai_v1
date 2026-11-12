@@ -14,6 +14,10 @@
 # restart is unavoidable). The URL it last published goes in
 # ~/.config/shams/tunnel_url so anyone can see what the demo address currently is.
 #
+# It also watches the published address itself, because Cloudflare can revoke a
+# quick tunnel's route without killing the process — that leaves a healthy-
+# looking cloudflared behind a hostname that no longer resolves.
+#
 # It does not make the URL stable — only a named tunnel on a domain you own
 # does that. It makes the rotation stop needing a human.
 
@@ -52,6 +56,16 @@ wait_for_public() {
     sleep 10
   done
   return 1
+}
+
+# A public address that stopped answering is only the tunnel's fault when the
+# loopback origin still answers. If Apache or Rails is down, restarting
+# cloudflared would rotate the URL for nothing and make the outage worse.
+origin_down() {
+  local code
+  code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 \
+    -H "Host: $1" "$ORIGIN/login" 2>/dev/null) || code="000"
+  [ "$code" = "000" ] || [ "$code" = "502" ] || [ "$code" = "503" ]
 }
 
 # Env is baked into the containers, so a hostname change means recreating them;
@@ -115,6 +129,31 @@ while :; do
   else
     say "$url is not answering on /login"
   fi
+
+  # A revoked quick-tunnel route does not kill cloudflared: it retries forever
+  # behind a hostname that has already been un-registered, so the demo can be
+  # fully dead while the process looks healthy. Waiting on the child alone would
+  # miss that, so the address itself is polled and the child is cut loose once it
+  # has clearly stopped answering while the origin is fine.
+  dead_streak=0
+  while :; do
+    kill -0 "$child" 2>/dev/null || break
+    if verify "$url"; then
+      dead_streak=0
+    elif origin_down "$host"; then
+      say "$url not answering and the loopback origin is down; leaving the tunnel alone"
+      dead_streak=0
+    else
+      dead_streak=$((dead_streak + 1))
+      say "$url not answering ($dead_streak)"
+      if [ "$dead_streak" -ge 3 ]; then
+        say "restarting the tunnel; the hostname will change"
+        kill "$child" 2>/dev/null
+        break
+      fi
+    fi
+    sleep 60
+  done
 
   wait "$child" 2>/dev/null
   child=""
