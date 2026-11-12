@@ -1,4 +1,4 @@
-<div class="relative" data-controller="dropdown">
+<div class="relative" data-controller="dropdown" data-user-menu>
   <button type="button"
           data-dropdown-target="button"
           class="size-8 rounded-full bg-gradient-to-br from-emerald-400 to-emerald-600 grid place-items-center text-xs font-bold text-black focus:outline-none focus:ring-2 focus:ring-emerald-500/50"
@@ -16,16 +16,33 @@
       <div class="text-[12px] text-fg-muted truncate"><%= current_user.email %></div>
     </div>
 
-    <%= link_to "Account settings", settings_profile_path,
-          class: "block px-3 py-2 text-[13px] text-fg-muted hover:bg-hover hover:text-fg" %>
+    <%# Each item is a real link to /account?section=… that the panel controller
+        turns into a slide-over; with JavaScript off it opens the same section as
+        a page. The two menus on a chat page share one panel instance.
 
-    <%= link_to settings_two_factor_path,
-          class: "flex items-center justify-between gap-2 px-3 py-2 text-[13px] text-fg-muted hover:bg-hover hover:text-fg" do %>
-      <span>Two-factor</span>
-      <span class="text-[11px] <%= current_user.otp_enabled? ? "text-emerald-500" : "text-fg-subtle" %>">
-        <%= current_user.otp_enabled? ? "On" : "Off" %>
+        `data-turbo="false"` is what makes that split work: Turbo watches clicks
+        from the document element, before Stimulus's document-level handler can
+        prevent the default, so without it every item would navigate the page
+        out from under the conversation instead of opening the panel. %>
+    <%= link_to "Account settings", account_panel_path(section: "account"),
+          class: "block px-3 py-2 text-[13px] text-fg-muted hover:bg-hover hover:text-fg",
+          data: { turbo: "false", action: "click->dropdown#close click->account-panel#open",
+                  account_panel_url_param: account_panel_path(section: "account") } %>
+
+    <%= link_to account_panel_path(section: "security"),
+          class: "flex items-center justify-between gap-2 px-3 py-2 text-[13px] text-fg-muted hover:bg-hover hover:text-fg",
+          data: { turbo: "false", action: "click->dropdown#close click->account-panel#open",
+                  account_panel_url_param: account_panel_path(section: "security") } do %>
+      <span>Security &amp; two-factor</span>
+      <span class="text-[11px] <%= current_user.second_factor_enabled? ? "text-emerald-500" : "text-fg-subtle" %>">
+        <%= current_user.second_factor_enabled? ? "On" : "Off" %>
       </span>
     <% end %>
+
+    <%= link_to "Usage & membership", account_panel_path(section: "usage"),
+          class: "block px-3 py-2 text-[13px] text-fg-muted hover:bg-hover hover:text-fg",
+          data: { turbo: "false", action: "click->dropdown#close click->account-panel#open",
+                  account_panel_url_param: account_panel_path(section: "usage") } %>
 
     <div class="border-t border-border my-1"></div>
 

@@ -105,7 +105,7 @@ RSpec.describe "Two-factor authentication", type: :request do
 
     it "drops the pending sign-in once the attempts run out" do
       password_step
-      SessionsController::MAX_OTP_ATTEMPTS.times { code_step("000000") }
+      User::MAX_SECOND_FACTOR_ATTEMPTS.times { code_step("000000") }
 
       expect(response).to redirect_to(login_path)
 

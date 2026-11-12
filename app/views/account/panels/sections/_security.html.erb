@@ -1,0 +1,44 @@
+<%# Security & privacy: the index of everything that protects this account.
+    Each row reports live state and opens the control that changes it. -%>
+<p class="text-[12px] leading-relaxed text-fg-subtle">
+  Two things keep this account yours: the password, and what happens after it is
+  typed. Nothing on this page is decided in the browser.
+</p>
+
+<div class="space-y-2">
+  <%= render "account/panels/status_row",
+        title: "Authenticator app (TOTP)",
+        caption: current_user.second_factor_enabled? ? "Six-digit code required after your password, here and in the API." : "Off — your password alone is enough to sign in.",
+        href: account_panel_path(section: "two_factor"),
+        status: current_user.second_factor_enabled? ? "On" : "Off",
+        tone: current_user.second_factor_enabled? ? :on : :off %>
+
+  <%= render "account/panels/status_row",
+        title: "Recovery codes",
+        caption: "Single-use backups for when the authenticator is unavailable.",
+        href: account_panel_path(section: "recovery"),
+        status: @recovery_codes_left.positive? ? "#{@recovery_codes_left} left" : "None",
+        tone: @recovery_codes_left.positive? ? :on : :neutral %>
+
+  <%= render "account/panels/status_row",
+        title: "Phone verification",
+        caption: "Proves you hold a number, for registration and Coffee Key purchases.",
+        href: account_panel_path(section: "phone"),
+        status: current_user.phone_verified? ? "Verified" : "Not verified",
+        tone: current_user.phone_verified? ? :on : :neutral %>
+
+  <%= render "account/panels/status_row",
+        title: "Active sessions",
+        caption: "Devices that are signed in with this account right now.",
+        href: account_panel_path(section: "devices"),
+        status: pluralize(@active_devices, "device"),
+        tone: :neutral %>
+</div>
+
+<% if @two_factor_locked_minutes.to_i.positive? %>
+  <div class="rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[12px] text-amber-600 dark:text-amber-400">
+    Second-factor guesses are paused for
+    <%= pluralize(@two_factor_locked_minutes, "more minute") %> after too many failed codes.
+    While paused, neither an authenticator code nor a backup code is accepted.
+  </div>
+<% end %>

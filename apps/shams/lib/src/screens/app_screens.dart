@@ -28,13 +28,22 @@ class LoginScreen extends StatefulWidget {
     this.busy = false,
     this.error,
     this.origin,
+    this.needsCode = false,
   });
 
-  /// Called with the trimmed credentials; the caller owns the request.
-  final Future<void> Function(String email, String password) onSubmit;
+  /// Called with the trimmed credentials and, once the account has two-factor
+  /// on, the code the user typed. The caller owns the request.
+  final Future<void> Function(String email, String password, String? code)
+  onSubmit;
+
   final bool busy;
   final String? error;
   final String? origin;
+
+  /// Whether the server has asked for a two-factor code. The field is shown
+  /// only in answer to that, so an account without a second factor is never
+  /// invited to guess that it has one.
+  final bool needsCode;
 
   @override
   State<LoginScreen> createState() => _LoginScreenState();
@@ -43,11 +52,13 @@ class LoginScreen extends StatefulWidget {
 class _LoginScreenState extends State<LoginScreen> {
   final _email = TextEditingController();
   final _password = TextEditingController();
+  final _code = TextEditingController();
 
   @override
   void dispose() {
     _email.dispose();
     _password.dispose();
+    _code.dispose();
     super.dispose();
   }
 
@@ -55,7 +66,11 @@ class _LoginScreenState extends State<LoginScreen> {
     final email = _email.text.trim();
     final password = _password.text;
     if (email.isEmpty || password.isEmpty || widget.busy) return;
-    await widget.onSubmit(email, password);
+    await widget.onSubmit(
+      email,
+      password,
+      widget.needsCode ? _code.text.trim() : null,
+    );
   }
 
   @override
@@ -101,12 +116,33 @@ class _LoginScreenState extends State<LoginScreen> {
                       controller: _password,
                       enabled: !widget.busy,
                       obscureText: true,
-                      textInputAction: TextInputAction.done,
+                      textInputAction: widget.needsCode
+                          ? TextInputAction.next
+                          : TextInputAction.done,
                       autofillHints: const [AutofillHints.password],
                       onSubmitted: (_) => _submit(),
-                      decoration:
-                          const InputDecoration(labelText: 'Password'),
+                      decoration: const InputDecoration(labelText: 'Password'),
                     ),
+                    if (widget.needsCode) ...[
+                      const SizedBox(height: 12),
+                      TextField(
+                        controller: _code,
+                        enabled: !widget.busy,
+                        keyboardType: TextInputType.text,
+                        textCapitalization: TextCapitalization.characters,
+                        autofillHints: const [AutofillHints.oneTimeCode],
+                        maxLength: 11,
+                        onSubmitted: (_) => _submit(),
+                        decoration: const InputDecoration(
+                          labelText: 'Authentication code',
+                          helperText:
+                              '6 digits from your authenticator, or one of your '
+                              'recovery codes',
+                          helperMaxLines: 2,
+                          counterText: '',
+                        ),
+                      ),
+                    ],
                     const SizedBox(height: 20),
                     FilledButton(
                       onPressed: widget.busy ? null : _submit,
@@ -158,6 +194,7 @@ class HomeScreen extends StatelessWidget {
     required this.onNewChat,
     required this.onChatWithAgent,
     required this.onSuggestion,
+    required this.onOpenSecurity,
     super.key,
     this.origin,
   });
@@ -181,6 +218,11 @@ class HomeScreen extends StatelessWidget {
   /// starts with the prompt as its first turn.
   final Future<void> Function(String prompt) onSuggestion;
 
+  /// Opens the account & security screen - the mobile counterpart of the
+  /// web's right-side panel, where two-factor, recovery codes, phone
+  /// verification and active sessions live.
+  final VoidCallback onOpenSecurity;
+
   final String? origin;
 
   @override
@@ -188,8 +230,8 @@ class HomeScreen extends StatelessWidget {
     return LayoutBuilder(
       builder: (context, constraints) =>
           constraints.maxWidth >= desktopBreakpoint
-              ? _DesktopShell(this)
-              : _PhoneHome(this),
+          ? _DesktopShell(this)
+          : _PhoneHome(this),
     );
   }
 }
@@ -436,6 +478,22 @@ class _HomeDrawer extends StatelessWidget {
                     screen: screen,
                     onTap: () => Navigator.maybePop(context),
                   ),
+                  const Divider(),
+                  ListTile(
+                    leading: const Icon(Icons.shield_outlined),
+                    title: const Text('Account & security'),
+                    subtitle: const Text(
+                      'Two-factor, recovery codes, sessions',
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    onTap: () {
+                      // Close the drawer first, so the screen arrives over the
+                      // home page rather than over an open panel.
+                      Navigator.maybePop(context);
+                      screen.onOpenSecurity();
+                    },
+                  ),
                 ],
               ),
             ),
@@ -530,9 +588,7 @@ class _Sidebar extends StatelessWidget {
                   ? const SizedBox.expand()
                   : ListView(
                       padding: const EdgeInsets.symmetric(horizontal: 10),
-                      children: [
-                        _NavSections(screen: screen, onTap: () {}),
-                      ],
+                      children: [_NavSections(screen: screen, onTap: () {})],
                     ),
             ),
             const Divider(),
@@ -544,9 +600,14 @@ class _Sidebar extends StatelessWidget {
                       children: [
                         const _SidebarThemeCycle(),
                         _SidebarAction(
+                          icon: Icons.shield_outlined,
+                          tooltip: 'Account & security',
+                          onPressed: screen.onOpenSecurity,
+                        ),
+                        _SidebarAction(
                           icon: Icons.logout,
                           tooltip: 'Sign out',
-                          screen: screen,
+                          onPressed: screen.onLogout,
                         ),
                       ],
                     )
@@ -556,6 +617,11 @@ class _Sidebar extends StatelessWidget {
                       children: [
                         const ThemeButton(),
                         const SizedBox(height: 4),
+                        TextButton.icon(
+                          onPressed: screen.onOpenSecurity,
+                          icon: const Icon(Icons.shield_outlined, size: 18),
+                          label: const Text('Account & security'),
+                        ),
                         TextButton.icon(
                           onPressed: screen.onLogout,
                           icon: const Icon(Icons.logout, size: 18),
@@ -571,26 +637,22 @@ class _Sidebar extends StatelessWidget {
   }
 }
 
-/// The collapsed sidebar's sign-out icon (the expanded state uses a labelled
-/// button; the collapsed one has no room for a label).
+/// An icon-only footer action for the collapsed sidebar, which has no room for
+/// the labelled button the expanded state uses.
 class _SidebarAction extends StatelessWidget {
   const _SidebarAction({
     required this.icon,
     required this.tooltip,
-    required this.screen,
+    required this.onPressed,
   });
 
   final IconData icon;
   final String tooltip;
-  final HomeScreen screen;
+  final VoidCallback onPressed;
 
   @override
   Widget build(BuildContext context) {
-    return IconButton(
-      tooltip: tooltip,
-      onPressed: screen.onLogout,
-      icon: Icon(icon),
-    );
+    return IconButton(tooltip: tooltip, onPressed: onPressed, icon: Icon(icon));
   }
 }
 
@@ -610,13 +672,11 @@ class _SidebarThemeCycle extends StatelessWidget {
       },
       icon: const Icon(Icons.contrast),
       onPressed: () {
-        controller.setMode(
-          switch (controller.mode) {
-            ThemeMode.system => ThemeMode.light,
-            ThemeMode.light => ThemeMode.dark,
-            ThemeMode.dark => ThemeMode.system,
-          },
-        );
+        controller.setMode(switch (controller.mode) {
+          ThemeMode.system => ThemeMode.light,
+          ThemeMode.light => ThemeMode.dark,
+          ThemeMode.dark => ThemeMode.system,
+        });
       },
     );
   }
@@ -689,8 +749,9 @@ class _DesktopMainPane extends StatelessWidget {
                 ListTile(
                   leading: const Icon(Icons.forum_outlined),
                   title: Text(conversation.displayName),
-                  subtitle:
-                      Text(conversation.agent?.name ?? conversation.status),
+                  subtitle: Text(
+                    conversation.agent?.name ?? conversation.status,
+                  ),
                   trailing: const Icon(Icons.chevron_right, size: 20),
                   onTap: () => screen.onOpenConversation(conversation),
                 ),

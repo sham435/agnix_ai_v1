@@ -1,0 +1,14 @@
+<%#
+  The panel document, sent for both a frame navigation and an action inside the
+  panel. The frame id is the one the shell opened, which is what lets an action
+  redraw the panel in place instead of navigating the page out from under the
+  conversation.
+-%>
+<%= turbo_frame_tag "account_panel_body" do %>
+  <%= render "account/panels/nav", section: @panel_section %>
+
+  <div class="space-y-5 px-4 pb-10 pt-4">
+    <%= render "account/panels/flash" %>
+    <%= render "account/panels/sections/#{@panel_section}" %>
+  </div>
+<% end %>

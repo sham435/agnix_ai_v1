@@ -6,6 +6,10 @@
   stale = message.stale_streaming?
   streaming = raw_streaming && !stale
   is_empty = !streaming && message.empty_response?
+  # Stopped by the user from the header button. Not a failure and not an
+  # answer: it gets its own state so neither the "Failed" nor the "Success"
+  # badge can be trusted onto a turn that was simply cut short on request.
+  is_cancelled = !streaming && message.metadata.is_a?(Hash) && message.metadata["cancelled"] == true
   req_id = message.metadata.is_a?(Hash) ? message.metadata["request_id"] : nil
   stream_started_at = message.metadata.is_a?(Hash) ? message.metadata["stream_started_at"] : nil
 %>
@@ -52,6 +56,12 @@
                 title="<%= message.metadata["error"].to_s.truncate(240) %>">
             <svg class="size-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M18 6 6 18M6 6l12 12"/></svg>
             Failed
+          </span>
+        <% elsif is_cancelled %>
+          <%# Cut short by the user, not broken: neutral wording, no red. %>
+          <span class="inline-flex items-center gap-1 text-[11px] text-fg-subtle opacity-0 group-hover/message:opacity-100 transition">
+            <svg class="size-3" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="1"/></svg>
+            Stopped
           </span>
         <% elsif is_empty %>
           <span class="inline-flex items-center gap-1 text-[11px] text-amber-600 dark:text-amber-400 opacity-0 group-hover/message:opacity-100 transition">
@@ -113,6 +123,14 @@
           <div class="rounded-xl border border-amber-500/40 bg-amber-100 text-amber-900 dark:bg-amber-500/10 dark:border-amber-500/30 dark:text-amber-200 px-3.5 py-2.5 text-[13.5px]"
                data-stale-response-body>
             This response didn't finish. Click Regenerate to try again.
+          </div>
+        <% elsif is_cancelled && message.content.to_s.strip.empty? %>
+          <%# Stopped before the model produced a single token: nothing was
+              wrong and nothing was written, so say plainly what happened
+              instead of showing an empty bubble or blaming the model. %>
+          <div class="rounded-xl border border-border bg-panel px-3.5 py-2.5 text-[13.5px] text-fg-muted"
+               data-stopped-response-body>
+            You stopped this response before it produced any text.
           </div>
         <% elsif is_empty %>
           <%# Provider returned nothing renderable — do not fake success. %>

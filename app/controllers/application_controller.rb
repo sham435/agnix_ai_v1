@@ -12,16 +12,50 @@ class ApplicationController < ActionController::Base
   private
 
   def set_current_user
-    if session[:user_id]
-      Current.user = User.find_by(id: session[:user_id])
-    elsif cookies.signed[:user_id]
+    user = User.find_by(id: session[:user_id])
+    if user.nil? && cookies.signed[:user_id]
       user = User.find_by(id: cookies.signed[:user_id])
-      if user
-        session[:user_id] = user.id
-        Current.user = user
-      end
+      session[:user_id] = user.id if user
     end
+    Current.user = user if user && accepted_auth_session?(user)
     Current.request_id = request.request_id
+  end
+
+  # Is this request's device still allowed in?
+  #
+  # A request with no device token at all is a session issued before the
+  # panel existed: it keeps working until its owner pulls the "sign out
+  # everywhere" lever, which is exactly what that lever is for. Any request
+  # that does carry a token must match an unrevoked row of this user's, or the
+  # session ends here and both cookies go with it — otherwise deleting one
+  # cookie would leave the other to sign the revoked device straight back in.
+  def accepted_auth_session?(user)
+    token = presented_auth_token
+    return true if token.blank? && user.sessions_invalid_before.nil?
+
+    auth = token.blank? ? nil : AuthSession.find_by_token(token)
+    if auth&.user_id == user.id && auth.usable_for?(user)
+      Current.auth_session = auth
+      auth.touch_seen!
+      true
+    else
+      sign_out_current_request
+      false
+    end
+  end
+
+  def presented_auth_token
+    session[:auth_token].presence || cookies.signed[:auth_token].presence
+  end
+
+  def sign_out_current_request
+    reset_session
+    clear_sign_in_cookies
+  end
+
+  def clear_sign_in_cookies
+    cookies.delete(:user_id)
+    cookies.delete(:auth_token)
   end
 
   # Populate the persistent sidebar with the user's recent conversations. The
@@ -59,34 +93,56 @@ class ApplicationController < ActionController::Base
   # goes through here so the cookie and the session can never drift apart. The
   # reset drops the pre-login session id — and with it the two-factor pending
   # keys, which must not survive into an authenticated session.
+  #
+  # Each sign-in also opens a device row, which is what makes "signed-in
+  # devices" a list instead of a guess, and gives this browser a token that can
+  # be revoked without touching anybody else's.
   def complete_sign_in(user)
     reset_session
+    auth = AuthSession.start(user, user_agent: request.user_agent, ip: request.remote_ip)
+    persist = { expires: 2.weeks.from_now, httponly: true, secure: Rails.env.production?, same_site: :lax }
+
     session[:user_id] = user.id
-    cookies.signed[:user_id] = {
-      value: user.id,
-      expires: 2.weeks.from_now,
-      httponly: true,
-      secure: Rails.env.production?,
-      same_site: :lax
-    }
+    session[:auth_token] = auth.token
+    cookies.signed[:user_id] = persist.merge(value: user.id)
+    cookies.signed[:auth_token] = persist.merge(value: auth.token)
+    Current.auth_session = auth
+
     user.update!(last_login_at: Time.current)
+    AuthSession.prune!
   end
 
+  # How long a password that has been proved but not yet paired with a code
+  # stays worth anything. A half-finished sign-in must not sit in a shared
+  # browser waiting for someone to come back and guess the second factor.
+  TWO_FACTOR_CHALLENGE_TTL = 5.minutes
+
   # Records that a user still has to prove their second factor. Nothing outside
-  # the sessions controller reads this key, so a pending visitor stays anonymous.
+  # the sign-in path reads these keys, so a pending visitor stays anonymous.
   def request_two_factor(user)
     session[:otp_user_id] = user.id
-    session[:otp_attempts] = 0
+    session[:otp_requested_at] = Time.current.iso8601
   end
 
   def pending_two_factor_user
     return nil if session[:otp_user_id].blank?
+    return nil if two_factor_challenge_expired?
 
     User.find_by(id: session[:otp_user_id])
   end
 
+  def two_factor_challenge_expired?
+    stamp = session[:otp_requested_at]
+    return true if stamp.blank?
+
+    Time.parse(stamp) < TWO_FACTOR_CHALLENGE_TTL.ago
+  rescue ArgumentError
+    true
+  end
+
   def clear_two_factor_pending
     session.delete(:otp_user_id)
+    session.delete(:otp_requested_at)
     session.delete(:otp_attempts)
   end
 

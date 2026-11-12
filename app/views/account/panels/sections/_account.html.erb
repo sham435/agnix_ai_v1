@@ -1,0 +1,36 @@
+<%# Profile summary. Everything here is read from the signed-in user and their
+    organization; the only control is the link to the page that can change it. -%>
+<div class="card space-y-4">
+  <div class="flex items-center gap-3">
+    <span class="grid size-11 shrink-0 place-items-center rounded-full bg-gradient-to-br from-emerald-400 to-emerald-600 text-[15px] font-bold text-black">
+      <%= current_user.name.first.upcase %>
+    </span>
+    <div class="min-w-0">
+      <p class="truncate text-[14px] font-semibold text-fg"><%= current_user.name %></p>
+      <p class="truncate text-[12px] text-fg-subtle"><%= current_user.email %></p>
+    </div>
+  </div>
+
+  <dl class="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-[12px]">
+    <dt class="text-fg-subtle">Role</dt>
+    <dd class="text-fg"><%= current_user.admin? ? "Administrator" : "Member" %></dd>
+
+    <dt class="text-fg-subtle">Organization</dt>
+    <dd class="truncate text-fg"><%= @organization&.name || "None yet" %></dd>
+
+    <dt class="text-fg-subtle">Plan</dt>
+    <dd class="text-fg capitalize"><%= @organization&.plan || "free" %></dd>
+
+    <dt class="text-fg-subtle">Member since</dt>
+    <dd class="text-fg"><%= I18n.l(current_user.created_at.to_date, format: :long) %></dd>
+
+    <dt class="text-fg-subtle">Last sign-in</dt>
+    <dd class="text-fg">
+      <%= current_user.last_login_at ? I18n.l(current_user.last_login_at, format: :long) : "This is your current session" %>
+    </dd>
+  </dl>
+
+  <%= link_to "Edit name, email and password", settings_profile_path,
+        data: { turbo_frame: "_top" },
+        class: "btn-secondary w-full text-[13px]" %>
+</div>

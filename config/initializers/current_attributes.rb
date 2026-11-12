@@ -2,5 +2,5 @@
 
 # ActiveSupport::CurrentAttributes.
 class Current < ActiveSupport::CurrentAttributes
-  attribute :user, :organization, :request_id
+  attribute :user, :organization, :request_id, :auth_session
 end

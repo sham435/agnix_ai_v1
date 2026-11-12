@@ -11,7 +11,7 @@
   contrast — the Phase 1 acceptance criterion. Phase 2/3/5 nav slots render only
   once their routes are mounted (AppShell::Features), so no dead links ship.
 -%>
-<div class="flex h-screen w-full overflow-hidden" data-controller="sidebar theme">
+<div class="flex h-screen w-full overflow-hidden" data-controller="sidebar theme account-panel">
   <%# ── Sidebar ────────────────────────────────────────────────────────── %>
   <aside id="sidebar"
          class="shell-sidebar"
@@ -160,4 +160,8 @@
   <div class="flex flex-1 flex-col min-w-0 bg-canvas">
     <%= yield %>
   </div>
+
+  <%# Account & security slide-over. Mounted once, openable from any header, and
+      inert until opened — see account/panels/_shell.html.erb. %>
+  <%= render "account/panels/shell" %>
 </div>

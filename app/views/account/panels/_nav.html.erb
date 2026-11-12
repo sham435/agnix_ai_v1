@@ -1,0 +1,24 @@
+<%#
+  Section navigation. The sub-sections (two-factor setup, backup codes) are not
+  chips — they are opened from Security & privacy and carry their own back link,
+  so the nav never offers two ways to the same place. The chip still lights up
+  while one of them is open, because that is where the user came from.
+-%>
+<%
+  tabs = {
+    "account"  => "Account",
+    "security" => "Security",
+    "phone"    => "Phone",
+    "devices"  => "Devices",
+    "usage"    => "Usage"
+  }
+  active_group = %w[two_factor recovery].include?(@panel_section) ? "security" : @panel_section
+%>
+<nav class="account-panel__tabs" aria-label="Account sections">
+  <% tabs.each do |key, label| %>
+    <%= link_to label,
+          account_panel_path(section: key),
+          class: "account-panel__tab #{'account-panel__tab--active' if active_group == key}",
+          "aria-current": ("page" if @panel_section == key) %>
+  <% end %>
+</nav>

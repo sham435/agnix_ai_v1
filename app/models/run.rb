@@ -95,7 +95,12 @@ class Run < ApplicationRecord
     record_state!("exited", note: "failed: #{error}")
   end
 
+  # Cancel a run that is still going. A Stop pressed a moment after the answer
+  # landed must not rewrite a finished run's history, so a run that already
+  # exited is left exactly as it is.
   def cancel!
+    return self unless %w[pending running].include?(status)
+
     update!(status: :cancelled, finished_at: Time.current)
     record_state!("exited", note: "cancelled")
   end

@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_11_11_000000) do
+ActiveRecord::Schema[8.1].define(version: 2026_11_12_000000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
   enable_extension "vector"
@@ -129,6 +129,18 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_11_000000) do
     t.index ["expires_at"], name: "index_attachment_drafts_on_expires_at"
     t.index ["user_id", "draft_token", "asset_id"], name: "index_attachment_drafts_unique", unique: true
     t.index ["user_id"], name: "index_attachment_drafts_on_user_id"
+  end
+
+  create_table "auth_sessions", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
+    t.datetime "created_at", null: false
+    t.string "device"
+    t.string "ip"
+    t.datetime "last_seen_at", null: false
+    t.datetime "revoked_at"
+    t.string "token_digest", null: false
+    t.uuid "user_id", null: false
+    t.index ["token_digest"], name: "index_auth_sessions_on_token_digest", unique: true
+    t.index ["user_id", "last_seen_at"], name: "index_auth_sessions_on_user_id_and_last_seen_at"
   end
 
   create_table "auto_fix_attempts", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
@@ -282,6 +294,21 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_11_000000) do
     t.index ["slug"], name: "index_organizations_on_slug", unique: true
   end
 
+  create_table "phone_verifications", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
+    t.integer "attempts", default: 0, null: false
+    t.string "channel", default: "dev", null: false
+    t.string "code_digest", null: false
+    t.datetime "consumed_at"
+    t.datetime "created_at", null: false
+    t.datetime "expires_at", null: false
+    t.string "ip"
+    t.string "phone", null: false
+    t.uuid "user_id", null: false
+    t.index ["ip", "created_at"], name: "index_phone_verifications_on_ip_and_created_at"
+    t.index ["phone", "created_at"], name: "index_phone_verifications_on_phone_and_created_at"
+    t.index ["user_id", "created_at"], name: "index_phone_verifications_on_user_id_and_created_at"
+  end
+
   create_table "project_files", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
     t.text "content"
     t.string "content_type"
@@ -323,6 +350,15 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_11_000000) do
     t.index ["organization_id"], name: "index_projects_on_organization_id"
     t.index ["user_id"], name: "idx_projects_on_user_id"
     t.index ["user_id"], name: "index_projects_on_user_id"
+  end
+
+  create_table "recovery_codes", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
+    t.string "code_digest", null: false
+    t.datetime "consumed_at"
+    t.datetime "created_at", null: false
+    t.uuid "user_id", null: false
+    t.index ["user_id", "code_digest"], name: "index_recovery_codes_on_user_id_and_code_digest", unique: true
+    t.index ["user_id"], name: "index_recovery_codes_on_user_id"
   end
 
   create_table "runs", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
@@ -563,15 +599,22 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_11_000000) do
     t.datetime "last_login_at"
     t.string "name"
     t.boolean "otp_enabled", default: false, null: false
+    t.integer "otp_failed_attempts", default: 0, null: false
+    t.integer "otp_last_step"
+    t.datetime "otp_locked_until"
     t.string "otp_secret"
     t.string "password_digest", null: false
+    t.string "phone"
+    t.datetime "phone_verified_at"
     t.string "remember_token"
     t.string "role", default: "user", null: false
+    t.datetime "sessions_invalid_before"
     t.jsonb "settings", default: {}, null: false
     t.string "stripe_customer_id"
     t.datetime "updated_at", null: false
     t.string "whatsapp_phone"
     t.index ["email"], name: "index_users_on_email", unique: true
+    t.index ["phone"], name: "index_users_on_phone", unique: true, where: "(phone IS NOT NULL)"
     t.index ["remember_token"], name: "index_users_on_remember_token", unique: true
     t.index ["whatsapp_phone"], name: "index_users_on_whatsapp_phone", unique: true, where: "(whatsapp_phone IS NOT NULL)"
   end
@@ -586,6 +629,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_11_000000) do
   add_foreign_key "assets", "users"
   add_foreign_key "attachment_drafts", "assets"
   add_foreign_key "attachment_drafts", "users"
+  add_foreign_key "auth_sessions", "users"
   add_foreign_key "conversations", "agents"
   add_foreign_key "conversations", "projects"
   add_foreign_key "conversations", "users"
@@ -603,11 +647,13 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_11_000000) do
   add_foreign_key "message_attachments", "messages"
   add_foreign_key "messages", "conversations"
   add_foreign_key "organizations", "users", column: "owner_id"
+  add_foreign_key "phone_verifications", "users"
   add_foreign_key "project_files", "projects"
   add_foreign_key "project_links", "projects"
   add_foreign_key "projects", "agents"
   add_foreign_key "projects", "organizations"
   add_foreign_key "projects", "users"
+  add_foreign_key "recovery_codes", "users"
   add_foreign_key "runs", "agents"
   add_foreign_key "runs", "conversations"
   add_foreign_key "scheduled_task_runs", "conversations"

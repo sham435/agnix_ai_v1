@@ -47,11 +47,20 @@ class AgentStreamJob < ApplicationJob
     # ({ code:, message: } set by #note_failure). Drives the terminal frame and
     # the decision to keep the reply a re-run was supposed to replace.
     @run_failure = nil
+    # Set when the runner reports the turn was stopped by the user, which
+    # chooses the `stopped` terminal frame over completed/failed below.
+    @run_cancelled = false
     conversation = Conversation.find(conversation_id)
     user = User.find(user_id)
     agent = conversation.agent
 
     Rails.logger.info "[AgentStreamJob] START conversation=#{conversation_id} user=#{user_id}#{" resume_run=#{resume_agent_run_id}" if resume_agent_run_id}#{" request_id=#{@request_id}" if @request_id}"
+
+    # Meter before anything is written or called. A turn whose organization is
+    # out of tokens for the day must not leave a placeholder, start a run, or
+    # reach the model server — it lands in the rescue below, which renders the
+    # reason in-chat and sends the `failed` frame with code quota_exceeded.
+    @quota_reservation = Quota.reserve(agent.organization, estimate: Quota.estimate(agent, message_content))
 
     # Broadcast the user's query first, on the same ordered pipeline as the
     # reply, so the query always renders above its answer. The row is also
@@ -124,7 +133,7 @@ class AgentStreamJob < ApplicationJob
       broadcast_chunk(conversation, streaming_msg.id, chunk)
     end
 
-    remember_outcome(
+    outcome = remember_outcome(
       if resume_agent_run_id
         runner.resume_plan(AgentRun.find(resume_agent_run_id), stream: true, &on_chunk)
       else
@@ -132,13 +141,26 @@ class AgentStreamJob < ApplicationJob
       end
     )
 
+    # The reservation was worst-case; the run's own count is the truth, and it
+    # replaces it whether or not the answer came out clean. A run that raised
+    # before reporting anything keeps the reservation (see Quota.settle).
+    Quota.settle(@quota_reservation, actual: outcome[:tokens]) if outcome.is_a?(Hash)
+
     Rails.logger.info "[AgentStreamJob] DONE conversation=#{conversation_id}"
 
     # Replace streaming message with final rendered version (no cursor).
     broadcast_replace(conversation, streaming_msg.reload, streaming: false)
     mark_terminal
 
-    if @run_failure
+    if @run_cancelled
+      # The user pressed Stop. The partial is already on the row with the same
+      # honest tail an error leaves behind, and nothing failed - so announce
+      # `stopped`, which retires the browser's indicator and frees the composer
+      # without leaving a red error state. The reply this run was replacing
+      # stays where it is, exactly as with a failure.
+      ActionCable.server.broadcast("conversation:#{conversation.id}",
+        terminal_payload(conversation, streaming_msg.id, type: "stopped"))
+    elsif @run_failure
       # The runner rescued a provider error and wrote an honest error state into
       # the placeholder. Say `failed` — never `completed` — and leave the reply
       # this run was replacing exactly where it was, so a bad re-run costs the
@@ -289,9 +311,10 @@ class AgentStreamJob < ApplicationJob
     Rails.logger.warn "[AgentStreamJob] PROGRESS-WRITE-FAILED conversation=#{message.conversation_id} #{e.class}: #{e.message}"
   end
 
-  # Record why a run did not succeed. The first verdict wins, so a precise
-  # internal one (run_timeout) is never overwritten by the generic message the
-  # runner echoes back afterwards.
+  # Why a run did not succeed. The first verdict wins, so a precise internal
+  # one (run_timeout) is never overwritten by the generic message the runner
+  # echoes back afterwards. A turn the user stopped is not a failure and never
+  # comes through here - it takes the `stopped` branch instead.
   def note_failure(message, code: "provider_error")
     @run_failure ||= { code: code, message: message.presence || "The agent run reported a failure." }
   end
@@ -314,8 +337,11 @@ class AgentStreamJob < ApplicationJob
   # AgentRunner rescues provider errors, writes an honest error state into the
   # placeholder and returns the bad news in its result hash instead of raising.
   # Capturing that verdict is what lets this job announce `failed` rather than
-  # pretending the run completed.
+  # pretending the run completed. A turn the user stopped is captured the same
+  # way and gets its own `stopped` verdict, because a stop is neither a success
+  # nor a failure.
   def remember_outcome(result)
+    @run_cancelled = true if result.is_a?(Hash) && result[:cancelled]
     if result.is_a?(Hash) && result[:error].present?
       note_failure(result[:error], code: (result[:error_code] || "provider_error"))
     end

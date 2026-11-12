@@ -7,7 +7,12 @@ import 'models.dart';
 
 /// A request that the Shams API rejected, or that could not be completed.
 class ApiException implements Exception {
-  const ApiException(this.message, {this.statusCode});
+  const ApiException(
+    this.message, {
+    this.statusCode,
+    this.twoFactorRequired = false,
+    this.retryInSeconds,
+  });
 
   final String message;
   final int? statusCode;
@@ -15,6 +20,17 @@ class ApiException implements Exception {
   /// `authenticate_user!` answers 401 with JSON for API requests, which is how
   /// the client knows it has to show the login screen again.
   bool get unauthorized => statusCode == 401;
+
+  /// The server's own word that the password was right and a second factor is
+  /// still owed — 401 when no code was sent, 403 when the one sent was refused.
+  /// Nothing here is inferred client-side: an account without two-factor never
+  /// sets it, so the code step only appears when the server asks for it.
+  final bool twoFactorRequired;
+
+  /// How long to wait before the request may work, when the refusal said so
+  /// (`retry_in` on a send that is still cooling down). A client repeats the
+  /// server's number instead of guessing its own.
+  final int? retryInSeconds;
 
   @override
   String toString() => 'ApiException(${statusCode ?? '-'}): $message';
@@ -58,15 +74,22 @@ class ShamsApi {
     }
   }
 
-  /// `POST /api/v1/sessions` with `{ email, password }`.
+  /// `POST /api/v1/sessions` with `{ email, password }` and, for an account
+  /// with a second factor, the `{ code }` the server asked for.
   ///
   /// A successful response carries the session cookies, which `_storeCookies`
   /// has already kept - clearing the jar here would sign the user back out.
-  Future<void> login(String email, String password) async {
+  /// [code] doubles as a backup recovery code, which the server spends and
+  /// reports in `two_factor.recovery_codes_left`.
+  Future<void> login(String email, String password, {String? code}) async {
     await _send(
       'POST',
       '/api/v1/sessions',
-      body: jsonEncode({'email': email, 'password': password}),
+      body: jsonEncode({
+        'email': email,
+        'password': password,
+        if (code != null && code.trim().isNotEmpty) 'code': code.trim(),
+      }),
     );
   }
 
@@ -75,6 +98,85 @@ class ShamsApi {
     await _send('DELETE', '/api/v1/sessions');
     _csrfToken = null;
     await _cookieJar.deleteAll();
+  }
+
+  /// `GET /api/v1/security` — two-factor state, phone state, the devices this
+  /// account is signed in on, and today's usage.
+  Future<SecurityPanel> security() => _getSecurity('/api/v1/security');
+
+  /// `POST /api/v1/security/two_factor` — start an enrollment.
+  ///
+  /// The key comes back in [SecurityPanel.enrollment] and changes nothing on
+  /// the account: only [confirmTwoFactor] activates it, and only after a code
+  /// built from that key arrives. The manual key is what a phone's authenticator
+  /// app is given — there is no second camera to scan a QR with.
+  Future<SecurityPanel> startTwoFactor() =>
+      _postSecurity('/api/v1/security/two_factor', {});
+
+  /// Activate the pending enrollment. On success the response carries the
+  /// backup codes; they are never shown again by any later call.
+  Future<SecurityPanel> confirmTwoFactor(String code) =>
+      _postSecurity('/api/v1/security/two_factor/confirm', {'code': code});
+
+  /// Turn the factor off, which costs the account password and takes the backup
+  /// codes with it.
+  Future<SecurityPanel> disableTwoFactor(String password) => _sendSecurity(
+    'DELETE',
+    '/api/v1/security/two_factor',
+    {'password': password},
+  );
+
+  /// A fresh set of backup codes, retiring the old set. Password too, because
+  /// these strings open the account.
+  Future<SecurityPanel> regenerateRecoveryCodes(String password) =>
+      _postSecurity('/api/v1/security/recovery_codes', {'password': password});
+
+  /// Ask for an SMS code. Refusals come back as [ApiException] carrying the
+  /// server's own reason; a cooldown also reports how long to wait.
+  Future<SecurityPanel> requestPhoneCode(String phone) =>
+      _postSecurity('/api/v1/security/phone', {'phone': phone});
+
+  /// Prove the number by the code it received. This is a different claim from a
+  /// sign-in code and the server never accepts one as the other.
+  Future<SecurityPanel> confirmPhoneCode(String code) =>
+      _postSecurity('/api/v1/security/phone/confirm', {'code': code});
+
+  /// Revoke one device. Revoking the device this client is on ends its session,
+  /// which [SecurityPanel.signedOut] reports.
+  Future<SecurityPanel> revokeDevice(String id) =>
+      _sendSecurity('DELETE', '/api/v1/security/devices/$id', null);
+
+  /// Revoke every device and refuse every session issued before now, this one
+  /// included. There is no panel to read afterwards.
+  Future<void> signOutEverywhere() async {
+    await _send('DELETE', '/api/v1/security/devices');
+    _csrfToken = null;
+    await _cookieJar.deleteAll();
+  }
+
+  Future<SecurityPanel> _getSecurity(String path) async {
+    final response = await _send('GET', path);
+    return SecurityPanel.fromJson(_map(response, path));
+  }
+
+  Future<SecurityPanel> _postSecurity(
+    String path,
+    Map<String, Object?> fields,
+  ) => _sendSecurity('POST', path, fields);
+
+  /// The panel's writes all answer the same way: the refreshed state, with the
+  /// result of the call merged into it.
+  Future<SecurityPanel> _sendSecurity(
+    String method,
+    String path,
+    Map<String, Object?>? fields,
+  ) async {
+    final response = await _send(
+      method,
+      path,
+      body: fields == null ? null : jsonEncode(fields),
+    );
+    return SecurityPanel.fromJson(_map(response, path));
   }
 
   /// `GET /api/v1/agents` - agents of the active organization.
@@ -172,9 +274,12 @@ class ShamsApi {
     if (rotated != null && rotated.isNotEmpty) _csrfToken = rotated;
 
     if (response.statusCode < 200 || response.statusCode >= 300) {
+      final failure = _failure(response);
       throw ApiException(
-        _errorMessage(response),
+        failure.message,
         statusCode: response.statusCode,
+        twoFactorRequired: failure.twoFactorRequired,
+        retryInSeconds: failure.retryInSeconds,
       );
     }
 
@@ -229,20 +334,41 @@ class ShamsApi {
     return body;
   }
 
-  String _errorMessage(TransportResponse response) {
+  /// What a rejection actually said, read once from its body.
+  ///
+  /// `authenticate_user!` and the security endpoints write `{ "error": ... }`;
+  /// the phone verifier writes `{ "status", "message", "retry_in" }`. Both are
+  /// the server's own words, and answering a cooldown with "Request failed
+  /// with status 429" would hide the one number the user can act on.
+  ({String message, bool twoFactorRequired, int? retryInSeconds}) _failure(
+    TransportResponse response,
+  ) {
+    Map<String, dynamic>? body;
     if (response.body.trim().isNotEmpty) {
       try {
         final decoded = jsonDecode(response.body);
-        if (decoded is Map<String, dynamic>) {
-          final error = decoded['error'];
-          if (error is String && error.isNotEmpty) return error;
-        }
+        if (decoded is Map<String, dynamic>) body = decoded;
       } on FormatException {
-        // Fall through to the generic message.
+        body = null;
       }
     }
-    return 'Request failed with status ${response.statusCode}';
+
+    // Only sign-in sets `two_factor_required`, and only once the password has
+    // been proved, so a 401 from anywhere else never means "ask for a code".
+    return (
+      message:
+          _said(body?['error']) ??
+          _said(body?['message']) ??
+          'Request failed with status ${response.statusCode}',
+      twoFactorRequired: body?['two_factor_required'] == true,
+      retryInSeconds: body?['retry_in'] is int
+          ? body!['retry_in'] as int
+          : null,
+    );
   }
+
+  static String? _said(Object? value) =>
+      value is String && value.isNotEmpty ? value : null;
 
   String _contentType(TransportResponse response) =>
       response.valueFor('content-type') ?? 'unknown';

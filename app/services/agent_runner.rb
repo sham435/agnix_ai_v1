@@ -38,6 +38,18 @@ class AgentRunner
   # apology, and neither double-marks it.
   STOP_MARKER = "\n\n…(reply stopped before finishing)".freeze
 
+  # Raised at a cancellation checkpoint when the user pressed Stop. A separate
+  # class from the provider errors because nothing failed: the words that
+  # arrived are the answer as far as it got, the run exits "cancelled", and the
+  # browser is told `stopped` rather than `failed`.
+  class Cancelled < StandardError; end
+
+  # A request cannot be interrupted from another process, so #stop flips a flag
+  # on the run row and the loop comes back and reads it. An iteration boundary
+  # always looks; inside a token stream the reload is throttled so a fast local
+  # model does not pay one query per delta.
+  CANCEL_POLL_INTERVAL = 0.5
+
   # §6 build resume: only these durable, overwriting filesystem writes are both
   # checkpointed and skipped when a re-delivered run of the same turn finds them
   # already completed. Re-running a completed write_file/scaffold is pure waste
@@ -370,6 +382,8 @@ class AgentRunner
     else
       reason = if result[:error].present?
         "Step error: #{result[:error]}"
+      elsif result[:cancelled]
+        "Step stopped by the user."
       elsif result[:incomplete]
         "Step did not finish within the iteration limit (#{actions} action(s) executed)."
       else
@@ -448,6 +462,8 @@ class AgentRunner
 
     begin
       iteration_budget.times do |iteration|
+        raise Cancelled if cancelled?(force: true)
+
         # Which burst this iteration is: the RUNNING transition that follows each
         # blocked interval carries it, so the trace reads iteration 1 -> provider
         # wait -> iteration 2 -> tool wait -> … instead of an anonymous ping-pong.
@@ -544,6 +560,18 @@ class AgentRunner
       { content: fallback_content, tool_calls: [], tokens: total_tokens,
         actions: tool_call_results.length, incomplete: true }
 
+    rescue Cancelled
+      # Stopped by the user, not by a failure: keep every word that actually
+      # arrived, exit the run cancelled, and hand the caller a verdict it can
+      # announce as `stopped` instead of `failed`.
+      final_content = persist_cancelled_reply
+      run_record.cancel!
+      # The same live signal the completed/failed paths emit, so a tab that
+      # only listens to status frames retires its indicator immediately.
+      yield({ type: "status", phase: "stopped" }) if block_given?
+      { content: final_content, tool_calls: [], tokens: total_tokens,
+        actions: tool_call_results.length, incomplete: true, cancelled: true }
+
     rescue => e
       run_record.fail!(e)
       Rails.logger.error "Agent run failed: #{e.class} - #{e.message}"
@@ -590,6 +618,24 @@ class AgentRunner
     end
   end
 
+  # The reply as it stood when the run was stopped. The partial is kept
+  # verbatim with the same tail the error path appends, so whichever path
+  # finalizes the row the reader sees one consistent "stopped here" marker.
+  # metadata gets `cancelled`, NOT `error`: the turn was interrupted on
+  # request, and nothing about it should read as a provider failure.
+  def persist_cancelled_reply
+    return "" unless @streaming_message
+
+    partial = @streaming_message.reload.content.to_s
+    content = partial.strip.empty? ? partial : "#{partial}#{STOP_MARKER}"
+    meta = (@streaming_message.metadata || {}).dup
+    meta.delete("streaming")
+    meta["cancelled"] = true
+    meta["stopped_short"] = true if content.strip.present?
+    @streaming_message.update!(content: content, tokens: estimate_tokens(content), metadata: meta)
+    content
+  end
+
   # Symbol-keyed { error_code:, retryable: } for a typed provider error (see
   # Llm::AnthropicAdapter::LlmError); {} for anything untyped, so OpenAI/local
   # adapters and non-LLM failures keep their existing generic handling.
@@ -597,6 +643,19 @@ class AgentRunner
     return {} unless error.respond_to?(:code) && error.code
     { error_code: error.code.to_s,
       retryable: (error.respond_to?(:retryable?) ? !!error.retryable? : nil) }
+  end
+
+  # True once the Stop endpoint has marked THIS run cancelled. Reads through the
+  # instance variable rather than a parameter because the checkpoint inside the
+  # streaming callback has no other way to reach the run it belongs to.
+  def cancelled?(force: false)
+    return false unless @run_record
+
+    now = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    return false if !force && @next_cancel_check && now < @next_cancel_check
+
+    @next_cancel_check = now + CANCEL_POLL_INTERVAL
+    @run_record.reload.cancelled?
   end
 
   def chat_with_agent_model(messages, tools, stream:, max_tokens: nil, &block)
@@ -616,6 +675,12 @@ class AgentRunner
       final_result = with_blocked("provider:#{agent.provider}/#{agent.model}") do
         with_local_model_slot(agent.provider) do
           client.stream_chat(**provider_opts(messages, tools, max_tokens)) do |piece, _full, _tcs, kind|
+            # Checked before anything else so a stopped turn never pays for
+            # another delta of tokens it will not keep. Raising here unwinds out
+            # of the adapter's socket loop; only its TRANSIENT_ERRORS list is
+            # rescued there, so Cancelled reaches #execute_tool_loop.
+            raise Cancelled if cancelled?
+
             now_ms = (Process.clock_gettime(Process::CLOCK_MONOTONIC) * 1000).round
             if kind == "reasoning"
               # Never forward the model's private chain-of-thought. Emit a single

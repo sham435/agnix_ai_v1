@@ -1,0 +1,84 @@
+<%#
+  Phone verification. Separate from two-factor on purpose: this proves you hold
+  a number (for registration and Coffee Key purchases), and an SMS code is never
+  accepted at sign-in. Delivery depends on what the server is configured for —
+  with no gateway configured the section says so rather than pretending.
+-%>
+<%= link_to "← Security & privacy", account_panel_path(section: "security"),
+      class: "inline-flex items-center gap-1 text-[12px] text-fg-subtle hover:text-fg" %>
+
+<div class="card space-y-3">
+  <div class="flex items-start justify-between gap-3">
+    <h3 class="text-[14px] font-medium text-fg">Your mobile number</h3>
+    <span class="badge <%= current_user.phone_verified? ? "bg-accent/15 text-accent-text" : "border border-border text-fg-subtle" %>">
+      <%= current_user.phone_verified? ? "Verified" : "Not verified" %>
+    </span>
+  </div>
+
+  <% if current_user.phone_verified? %>
+    <p class="text-[13px] font-medium text-fg"><%= current_user.phone %></p>
+    <p class="text-[12px] leading-relaxed text-fg-subtle">
+      Verified <%= l(current_user.phone_verified_at, format: :long) %>. Changing the
+      number means proving the new one — the old verification does not move with it.
+    </p>
+  <% elsif @phone_open %>
+    <p class="text-[13px] font-medium text-fg"><%= @phone_open.phone %></p>
+    <p class="text-[12px] leading-relaxed text-fg-subtle">
+      A code is waiting for this number. It stops working
+      <%= distance_of_time_in_words_to_now(@phone_open.expires_at).downcase %>.
+    </p>
+  <% else %>
+    <p class="text-[12px] leading-relaxed text-fg-subtle">
+      We send a six-digit code by text. It expires in
+      <%= (PhoneVerification::TTL / 60).to_i %> minutes and allows
+      <%= PhoneVerification::MAX_ATTEMPTS %> guesses.
+    </p>
+  <% end %>
+
+  <%= form_with url: account_phone_path, method: :post, class: "flex items-center gap-2" do %>
+    <input type="tel"
+           name="phone"
+           value="<%= @phone_open&.phone || current_user.phone %>"
+           autocomplete="tel-national"
+           placeholder="+94 77 123 4567"
+           aria-label="Mobile number"
+           class="input-field"
+           required>
+    <button type="submit" class="btn-primary shrink-0">
+      <%= current_user.phone_verified? ? "Send new code" : "Send code" %>
+    </button>
+  <% end %>
+
+  <% if @dev_code.present? %>
+    <p class="rounded-lg border border-dashed border-border px-3 py-2 text-[12px] text-fg-muted">
+      Development only — this server has no SMS gateway, so the code is
+      <code class="font-mono text-fg"><%= @dev_code %></code>. Never shown when a real
+      gateway is configured.
+    </p>
+  <% end %>
+</div>
+
+<% if @phone_open && !@phone_open.expired? %>
+  <div class="card space-y-3">
+    <h3 class="text-[14px] font-medium text-fg">Enter the code</h3>
+    <%= form_with url: account_confirm_phone_path, method: :post, class: "flex items-center gap-2" do %>
+      <input type="text"
+             name="code"
+             inputmode="numeric"
+             autocomplete="one-time-code"
+             pattern="[0-9]{<%= PhoneVerification::CODE_LENGTH %>}"
+             maxlength="<%= PhoneVerification::CODE_LENGTH %>"
+             placeholder="123456"
+             aria-label="Six digit code sent to your phone"
+             class="input-field w-36 text-center font-mono tracking-[0.3em]"
+             required>
+      <button type="submit" class="btn-primary shrink-0">Verify</button>
+    <% end %>
+    <% if @phone_open.resend_blocked? %>
+      <p class="text-[12px] text-fg-subtle">
+        You can ask for a new code in
+        <%= (@phone_open.resend_allowed_at - Time.current).ceil %> seconds.
+      </p>
+    <% end %>
+  </div>
+<% end %>

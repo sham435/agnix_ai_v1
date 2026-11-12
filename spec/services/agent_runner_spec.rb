@@ -1217,4 +1217,92 @@ RSpec.describe AgentRunner, type: :service do
       expect(calls).to eq(2)
     end
   end
+
+  # ── cancellation (the header Stop button) ─────────────────────────────
+  #
+  # POST /conversations/:id/stop runs in another process and cannot interrupt
+  # this thread, so it flags the run row and the loop reads the flag back at its
+  # next checkpoint. Before this, plain chat ignored the flag completely: the
+  # button reported success and the model kept generating to the end.
+  describe "cancellation from the Stop button" do
+    let(:agent) { create(:agent, organization: organization, tools: [ "calculator" ]) }
+    let!(:streaming_msg) do
+      conversation.messages.create!(role: "assistant", content: "Half an ",
+        metadata: { "streaming" => true })
+    end
+    let(:runner) do
+      described_class.new(agent: agent, conversation: conversation, user: user,
+        streaming_message: streaming_msg)
+    end
+
+    it "aborts the stream, keeps the partial, and exits the run cancelled" do
+      # The token-stream checkpoint polls at most twice a second, so two stub
+      # deltas a microsecond apart would never look at the row again. Poll on
+      # every chunk for this example.
+      stub_const("AgentRunner::CANCEL_POLL_INTERVAL", 0)
+      allow(client).to receive(:stream_chat) do |_kwargs, &blk|
+        blk&.call("answer", "Half an answer", [], "content")
+        Run.last.update!(status: "cancelled")
+        # The Stop lands mid-sentence: the very next delta must not be paid for.
+        blk&.call(" that never arrives", "Half an answer that never arrives", [], "content")
+        { content: "Half an answer that never arrives", tool_calls: [], tokens: 99 }
+      end
+
+      chunks = []
+      result = runner.run("Start", stream: true) { |chunk| chunks << chunk }
+
+      expect(result[:cancelled]).to be(true)
+      expect(result[:incomplete]).to be(true)
+      expect(result[:error]).to be_nil
+      expect(result[:tokens]).not_to eq(99)
+
+      # The words that actually reached the row are kept, with the same honest
+      # tail the error path writes - and no error attribution.
+      fresh = streaming_msg.reload
+      # Message#content is normalized with `strip`, so the trailing space of the
+      # partial is gone by the time the tail is appended.
+      expect(fresh.content).to eq("Half an#{AgentRunner::STOP_MARKER}")
+      expect(fresh.metadata["cancelled"]).to be(true)
+      expect(fresh.metadata["stopped_short"]).to be(true)
+      expect(fresh.metadata["error"]).to be_nil
+      expect(fresh.streaming?).to be(false)
+
+      expect(Run.last.reload.status).to eq("cancelled")
+      expect(chunks).to include(hash_including(type: "status", phase: "stopped"))
+      expect(chunks.none? { |c| c[:phase] == "failed" }).to be(true)
+    end
+
+    it "does not open another provider call once the run is cancelled" do
+      calculator_turn = { content: nil, tokens: 3,
+                          tool_calls: [ { id: "c1", type: "function",
+                                          function: { name: "calculator",
+                                                      arguments: '{"expression":"2+2"}' } } ] }
+      second_turn = { content: "never asked for", tool_calls: [], tokens: 3 }
+      allow(client).to receive(:stream_chat).and_return(calculator_turn, second_turn)
+
+      # The Stop arrives while the tool is running, i.e. between iterations.
+      allow(Agents::ToolRegistry).to receive(:execute) do
+        Run.last.update!(status: "cancelled")
+        { result: 4 }
+      end
+
+      result = runner.run("Go", stream: true) { |_chunk| nil }
+
+      expect(client).to have_received(:stream_chat).once
+      expect(result[:cancelled]).to be(true)
+    end
+
+    it "leaves a turn that was never stopped on its normal path" do
+      allow(client).to receive(:stream_chat) do |_kwargs, &blk|
+        blk&.call("all of it", "all of it", [], "content")
+        { content: "all of it", tool_calls: [], tokens: 5, finish_reason: "stop" }
+      end
+
+      result = runner.run("Finish", stream: true) { |_chunk| nil }
+
+      expect(result[:cancelled]).to be_nil
+      expect(streaming_msg.reload.content).to eq("all of it")
+      expect(Run.last.reload.status).to eq("succeeded")
+    end
+  end
 end

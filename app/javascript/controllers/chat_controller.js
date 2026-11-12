@@ -69,6 +69,23 @@ export default class extends Controller {
       this.sweepStalledTurns()
       this.sweepStalledPlaceholders()
     }, 5000)
+    // The Stop button lives in the header, outside this controller's element,
+    // so it reaches us through Turbo's own submit lifecycle instead of a
+    // Stimulus action. Reacting to the submit rather than waiting for the
+    // server frame is what makes the press feel instant: the streaming UI is
+    // retired as the request leaves, and every other tab gets the same frame
+    // from Action Cable once the run has actually been flagged.
+    this._onStopSubmit = (e) => this.onStopSubmitted(e)
+    document.addEventListener("turbo:submit-start", this._onStopSubmit)
+  }
+
+  // Stop pressed in THIS tab: retire whichever turn it believes is generating.
+  onStopSubmitted(e) {
+    const form = e.target
+    if (!(form instanceof HTMLFormElement)) return
+    if (!/\/(stop|interrupt)$/.test(form.action)) return
+    const live = Array.from(this.turns.values()).reverse().find((t) => !t.done && !t.failed)
+    this.stopStreaming(live?.mid, live?.rid)
   }
 
   disconnect() {
@@ -87,6 +104,10 @@ export default class extends Controller {
     if (this.scrollContainer && this.scrollHandler) {
       this.scrollContainer.removeEventListener("scroll", this.scrollHandler)
       this.scrollHandler = null
+    }
+    if (this._onStopSubmit) {
+      document.removeEventListener("turbo:submit-start", this._onStopSubmit)
+      this._onStopSubmit = null
     }
     this.turns = new Map()
   }
@@ -135,7 +156,7 @@ export default class extends Controller {
         this.replaceStreamingContent(data.content, data.message_id, data.request_id)
         break
       case "stopped":
-        this.stopStreaming()
+        this.stopStreaming(data.message_id, data.request_id)
         break
     }
   }
@@ -260,6 +281,10 @@ export default class extends Controller {
     // handles retiring them the moment we reach generating/completed/failed.
     if (phase === "failed") {
       this.failStreaming(messageId, error, rid)
+      return
+    }
+    if (phase === "stopped") {
+      this.stopStreaming(messageId, rid)
       return
     }
     if (turn) turn.phase = phase === "completed" ? "completed" : phase
@@ -387,12 +412,21 @@ export default class extends Controller {
     }))
   }
 
-  stopStreaming() {
-    const el = document.querySelector("[data-streaming-content]")
-    if (el) {
-      el.textContent += "\n\n[Generation stopped]"
-    }
-    this.destroyIndicators(document)
+  // The user stopped this turn. Retire the live UI for exactly the run the
+  // frame names, say so in its trace, and free the composer guard — all before
+  // the server finishes aborting the generation, so the button answers at once.
+  // The answer text is deliberately NOT touched here: the runner keeps the
+  // partial, appends its own "stopped before finishing" tail and replaces this
+  // bubble a moment later. Writing a second marker client-side would show the
+  // same confession twice (and would fake it for a run that never streamed).
+  stopStreaming(messageId, rid) {
+    const turn = this.turnFor(rid, messageId)
+    if (turn) { turn.done = true; turn.phase = "stopped" }
+    const trace = this.traceController(rid, messageId)
+    if (trace) trace.setPhase("stopped")
+    const scope = this.resolveContainer(rid, messageId) || document
+    this.destroyIndicators(scope)
+    this.broadcastTerminal("stopped", rid, messageId)
   }
 
   // ── Stall sweep (hung / dead-worker live recovery) ──────────────────

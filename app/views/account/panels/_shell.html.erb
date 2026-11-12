@@ -1,0 +1,41 @@
+<%#
+  Account & security panel. One slide-over surface for everything that is about
+  the account rather than the conversation, so the chat header never has to
+  grow a settings bar of its own.
+
+  It lives in the shell, which means it is openable from any signed-in page and
+  its content is loaded exactly once per section — the frame deliberately has
+  no `src` until the panel is opened for the first time, because the security
+  sections read the ledger, the device table and the quota.
+-%>
+<div class="account-panel"
+     id="account-panel"
+     role="dialog"
+     aria-modal="true"
+     aria-labelledby="account-panel-title"
+     data-account-panel-target="panel"
+     data-open="false"
+     inert
+     tabindex="-1">
+  <div class="account-panel__backdrop" data-action="click->account-panel#close"></div>
+
+  <section class="account-panel__surface">
+    <header class="account-panel__header">
+      <div class="min-w-0">
+        <p class="text-[10px] font-semibold uppercase tracking-[0.14em] text-fg-subtle">Shams AI</p>
+        <h2 id="account-panel-title" class="truncate text-[15px] font-semibold text-fg">Account settings</h2>
+      </div>
+
+      <button type="button"
+              class="account-panel__close"
+              data-action="account-panel#close"
+              aria-label="Close account settings">
+        <svg class="size-[18px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>
+      </button>
+    </header>
+
+    <div class="account-panel__scroll" data-account-panel-target="scroll" data-busy="false">
+      <%= turbo_frame_tag "account_panel_body", data: { account_panel_target: "frame" } %>
+    </div>
+  </section>
+</div>

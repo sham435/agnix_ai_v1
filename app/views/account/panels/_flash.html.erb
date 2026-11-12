@@ -1,0 +1,18 @@
+<%#
+  One line of feedback per action. Frame responses carry it in ivars; a
+  redirect (no JavaScript, or a full-page visit) carries it in the flash, and
+  the panel shows whichever it was given.
+-%>
+<% notice = @panel_notice || flash[:notice] %>
+<% alert = @panel_alert || flash[:alert] %>
+
+<% if notice.present? %>
+  <div role="status" class="rounded-xl border border-accent/25 bg-accent/10 px-3 py-2 text-[13px] text-accent-text">
+    <%= notice %>
+  </div>
+<% end %>
+<% if alert.present? %>
+  <div role="alert" class="rounded-xl border border-red-500/30 bg-red-500/10 px-3 py-2 text-[13px] text-red-600 dark:text-red-300">
+    <%= alert %>
+  </div>
+<% end %>

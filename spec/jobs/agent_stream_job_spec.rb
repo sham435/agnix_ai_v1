@@ -522,6 +522,57 @@ RSpec.describe AgentStreamJob, type: :job do
     end
   end
 
+  # ── the Stop button ───────────────────────────────────────────────────
+  #
+  # A turn the user interrupted is neither a success nor a failure. The runner
+  # keeps the partial with its honest tail and reports cancelled; the job has to
+  # announce `stopped`, because a red failure state blames the provider for the
+  # user's own click while `completed` claims an answer that was cut off.
+  describe "run stopped verdict" do
+    def stub_reported_stop
+      allow(runner).to receive(:run) do |_content, **_opts, &blk|
+        blk&.call({ type: "status", phase: "stopped" })
+        row = conversation.messages.reload.where(role: "assistant").order(:created_at).last
+        row.update!(
+          content: "Half an answer#{AgentRunner::STOP_MARKER}",
+          metadata: row.metadata.merge("cancelled" => true).except("streaming")
+        )
+        { content: "Half an answer#{AgentRunner::STOP_MARKER}", tokens: 40,
+          cancelled: true, incomplete: true }
+      end
+    end
+
+    it "announces stopped rather than completed or failed" do
+      stub_reported_stop
+      payloads = broadcasted_payloads
+
+      described_class.perform_now(
+        conversation_id: conversation.id, user_id: user.id, message_content: "Hi"
+      )
+
+      types = payloads.map { |p| p[:type] }
+      expect(types).to include("stopped")
+      expect(types).not_to include("completed", "failed")
+      stopped = payloads.find { |p| p[:type] == "stopped" }
+      expect(stopped[:message_id]).to be_present
+      expect(stopped[:conversation_id]).to eq(conversation.id)
+    end
+
+    it "keeps the reply a stopped re-run was replacing" do
+      superseded = conversation.messages.create!(role: "assistant", content: "the answer to keep")
+      stub_reported_stop
+
+      described_class.perform_now(
+        conversation_id: conversation.id, user_id: user.id,
+        message_content: "Hi", replaces_message_id: superseded.id
+      )
+
+      expect(conversation.messages.reload.find_by(id: superseded.id)&.content)
+        .to eq("the answer to keep")
+      expect(Turbo::StreamsChannel).not_to have_received(:broadcast_remove_to)
+    end
+  end
+
   # ── run budget (the Timeout.timeout replacement) ──────────────────────
   #
   # The job used to wrap the run in `Timeout.timeout(RUN_TIMEOUT_SECONDS)`. The
@@ -679,6 +730,59 @@ RSpec.describe AgentStreamJob, type: :job do
 
       expect(captured[:arrival_at]).to be_nil
       expect(captured[:dispatched_at]).to be_present
+    end
+  end
+
+  # ── daily token budget ────────────────────────────────────────────────
+
+  describe "daily token budget" do
+    let(:organization) { conversation.agent.organization }
+
+    def stub_a_turn(tokens: 300)
+      allow(runner).to receive(:run).and_return({ content: "done", tokens: tokens })
+    end
+
+    it "settles the worst-case reservation with what the turn really cost" do
+      organization.update!(plan: "pro")
+      stub_a_turn
+
+      described_class.perform_now(
+        conversation_id: conversation.id, user_id: user.id, message_content: "Hi"
+      )
+
+      event = UsageEvent.where(organization_id: organization.id).sole
+      expect(event.metadata["state"]).to eq("settled")
+      expect(event.tokens).to eq(300)
+    end
+
+    it "refuses the turn before creating a reply or calling the model" do
+      organization.update!(plan: "pro")
+      create(:usage_event, organization: organization, tokens: 20_000)
+      stub_a_turn
+      payloads = broadcasted_payloads
+
+      described_class.perform_now(
+        conversation_id: conversation.id, user_id: user.id, message_content: "Hi"
+      )
+
+      expect(runner).not_to have_received(:run)
+      expect(conversation.messages.where(role: "assistant")).to be_empty
+      failed = payloads.find { |p| p[:type] == "failed" }
+      expect(failed[:code]).to eq("quota_exceeded")
+      expect(failed[:message]).to include('all 20000 tokens for today')
+    end
+
+    it "still records the turn when no ceiling applies" do
+      create(:usage_event, organization: organization, tokens: 5_000_000)
+      stub_a_turn
+
+      described_class.perform_now(
+        conversation_id: conversation.id, user_id: user.id, message_content: "Hi"
+      )
+
+      expect(runner).to have_received(:run)
+      expect(UsageEvent.where(organization_id: organization.id).count).to eq(2)
+      expect(UsageEvent.where(organization_id: organization.id).order(:created_at).last.tokens).to eq(300)
     end
   end
 end

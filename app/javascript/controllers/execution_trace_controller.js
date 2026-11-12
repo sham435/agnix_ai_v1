@@ -27,6 +27,7 @@ export default class extends Controller {
     generating: "Generating response…",
     completed: "Completed",
     failed: "Failed",
+    stopped: "Stopped",
   }
 
   connect() {
@@ -48,6 +49,13 @@ export default class extends Controller {
 
   // Update the one-line status and (for a NEW phase) append it to the log.
   setPhase(phase, meta = {}) {
+    // A verdict already reached is final: a delta or heartbeat still in flight
+    // when the run ended must not repaint "Completed"/"Stopped" back to
+    // "Generating response…". A failure is still allowed to overwrite, because
+    // a run reported done and then known-broken is the one downgrade worth
+    // showing.
+    if (this.terminal && phase !== "failed") return
+
     const label = this.PHASE_LABELS[phase] || phase
     if (this.hasPhaseTarget) this.phaseTarget.textContent = label
 
@@ -58,7 +66,7 @@ export default class extends Controller {
     }
 
     // Leaving the thinking phase means the placeholder is dead: retire dots.
-    if (phase === "generating" || phase === "completed" || phase === "failed") {
+    if (phase === "generating" || phase === "completed" || phase === "failed" || phase === "stopped") {
       this.stopDots()
     }
 
@@ -69,6 +77,8 @@ export default class extends Controller {
     } else if (phase === "completed") {
       this.terminal = true
       this.element.classList.add("is-completed")
+    } else if (phase === "stopped") {
+      this.terminal = true
     }
   }
 

@@ -33,7 +33,19 @@ export default class extends Controller {
     this.buttonTarget?.focus()
   }
 
+  // For an item that opens something else (the account panel) — `hide` only
+  // reacts to clicks outside the menu, so a menu item needs to close it itself.
+  close() {
+    this.menuTarget.classList.add("hidden")
+  }
+
   onKey(e) {
+    // Several dropdowns share a page (sidebar menu, chat header menu, composer
+    // pickers). The shortcuts belong to the user menu only, and when the chat
+    // page renders two of them the last one wins, so one keystroke opens one menu.
+    const userMenus = document.querySelectorAll('[data-controller~="dropdown"][data-user-menu]')
+    if (userMenus[userMenus.length - 1] !== this.element) return
+
     const active = document.activeElement
     const isTyping = active && (active.tagName === "INPUT" || active.tagName === "TEXTAREA" || active.isContentEditable)
 

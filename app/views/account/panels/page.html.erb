@@ -1,0 +1,26 @@
+<%#
+  The same section as a page, for a client that does not run Turbo: the panel
+  chrome is a slide-over, this is the ordinary 64px-header settings grammar
+  every other page in the app uses.
+-%>
+<%= render "layouts/chat_layout" do %>
+  <header class="sticky top-0 z-20 flex h-[64px] items-center justify-between gap-3 border-b border-border-subtle bg-sidebar/80 glass px-4">
+    <div class="flex items-center gap-2">
+      <button id="menuBtn" class="lg:hidden grid size-9 place-items-center rounded-xl bg-panel hover:bg-hover text-fg-muted">
+        <svg class="size-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+      </button>
+      <h1 class="text-[16px] font-semibold text-fg">Account settings</h1>
+    </div>
+    <%= link_to "Back to chat", conversations_path, class: "btn-secondary text-[13px]" %>
+  </header>
+
+  <main class="flex-1 overflow-y-auto p-6">
+    <div class="mx-auto max-w-[620px] space-y-5">
+      <%= render "account/panels/nav", section: @panel_section %>
+      <%= render "account/panels/flash" %>
+      <%= render "account/panels/sections/#{@panel_section}" %>
+    </div>
+  </main>
+
+  <%= render "shared/sidebar_js" %>
+<% end %>

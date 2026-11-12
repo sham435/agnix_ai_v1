@@ -7,6 +7,7 @@ import 'src/api/shams_api.dart';
 import 'src/config.dart';
 import 'src/screens/app_screens.dart';
 import 'src/screens/chat_screen.dart';
+import 'src/screens/security_screen.dart';
 import 'src/theme/app_theme.dart';
 import 'src/theme/theme_controller.dart';
 
@@ -91,6 +92,11 @@ class _SessionGateState extends State<SessionGate> {
   String? _error;
   bool _submitting = false;
 
+  /// Whether the server asked this sign-in for a two-factor code. It is set
+  /// only in answer to that request, so the code field is never shown on the
+  /// client's own guess about the account.
+  bool _needsCode = false;
+
   String get _origin => widget.api.origin;
 
   @override
@@ -108,7 +114,12 @@ class _SessionGateState extends State<SessionGate> {
   /// Try to render the workspace; if the API refuses, show the login form.
   Future<void> _loadHome() async {
     if (!mounted) return;
-    setState(() => _stage = GateStage.loading);
+    // Clearing the code flag here keeps one rule true: the field is showing
+    // only when the sign-in POST right before it asked for a code.
+    setState(() {
+      _stage = GateStage.loading;
+      _needsCode = false;
+    });
     try {
       final results = await Future.wait([
         widget.api.listConversations(),
@@ -139,7 +150,7 @@ class _SessionGateState extends State<SessionGate> {
     }
   }
 
-  Future<void> _signIn(String email, String password) async {
+  Future<void> _signIn(String email, String password, String? code) async {
     if (_submitting) return;
     setState(() {
       _submitting = true;
@@ -147,11 +158,18 @@ class _SessionGateState extends State<SessionGate> {
     });
     try {
       await widget.api.fetchCsrfToken();
-      await widget.api.login(email, password);
+      await widget.api.login(email, password, code: code);
+      if (!mounted) return;
+      setState(() => _needsCode = false);
       await _loadHome();
     } on ApiException catch (error) {
       if (!mounted) return;
-      setState(() => _error = error.message);
+      setState(() {
+        _error = error.message;
+        // The server has proved the password and asked for a code; the field
+        // appears and the retry re-sends the credentials already on screen.
+        _needsCode = error.twoFactorRequired;
+      });
     } on Exception {
       if (!mounted) return;
       setState(() => _error = _unreachable.replaceAll('%s', _origin));
@@ -168,7 +186,22 @@ class _SessionGateState extends State<SessionGate> {
       setState(() => _error = error.message);
     }
     if (!mounted) return;
-    setState(() => _stage = GateStage.signedOut);
+    setState(() {
+      _stage = GateStage.signedOut;
+      // Whether the next sign-in needs a code is the server's answer again,
+      // not something this client remembers about the last one.
+      _needsCode = false;
+    });
+  }
+
+  /// The mobile counterpart of the web's right-side account & security panel:
+  /// the same API, shown as a full-height screen.
+  void _openSecurity() {
+    Navigator.of(context)
+        .push(
+          MaterialPageRoute(builder: (_) => SecurityScreen(api: widget.api)),
+        )
+        .then((_) => _loadHome());
   }
 
   void _openConversation(Conversation conversation, {Agent? seedAgent}) {
@@ -237,6 +270,7 @@ class _SessionGateState extends State<SessionGate> {
         busy: _submitting,
         error: _error,
         origin: _origin,
+        needsCode: _needsCode,
       ),
       GateStage.home => HomeScreen(
         conversations: _conversations,
@@ -247,6 +281,7 @@ class _SessionGateState extends State<SessionGate> {
         onNewChat: _newChat,
         onChatWithAgent: _chatWithAgent,
         onSuggestion: _startFromSuggestion,
+        onOpenSecurity: _openSecurity,
         origin: _origin,
       ),
     };

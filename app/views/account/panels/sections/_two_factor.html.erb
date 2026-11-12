@@ -1,0 +1,122 @@
+<%#
+  Authenticator-app two-factor. Three states, one screen: off (explain and
+  offer), enrolling (QR + manual key + the code that finishes it), on (what it
+  does, and the only two changes available — new backup codes, or turn it off).
+
+  The stored secret is never rendered. The only key shown is the pending one in
+  @two_factor_pending, which exists solely because the user is mid-enrollment.
+-%>
+<%= link_to "← Security & privacy", account_panel_path(section: "security"),
+      class: "inline-flex items-center gap-1 text-[12px] text-fg-subtle hover:text-fg" %>
+
+<% if @two_factor_enrolling %>
+  <div class="card space-y-4">
+    <div>
+      <h3 class="text-[14px] font-medium text-fg">1. Add this account to your authenticator</h3>
+      <p class="mt-1 text-[12px] leading-relaxed text-fg-subtle">
+        Google Authenticator, Microsoft Authenticator, Aegis or any other TOTP app.
+        The setup window closes in <%= (TwoFactor::ENROLLMENT_TTL / 60).to_i %> minutes.
+      </p>
+    </div>
+
+    <div class="flex justify-center rounded-xl bg-white p-4">
+      <%= @two_factor_pending.qr_svg %>
+    </div>
+
+    <div>
+      <p class="mb-1 text-[12px] font-medium text-fg-muted">Can’t scan? Enter this key instead:</p>
+      <code class="block break-all rounded-lg border border-border bg-elevated px-3 py-2 font-mono text-[13px] text-fg">
+        <%= @two_factor_pending.secret.to_s.scan(/.{1,4}/).join(" ") %>
+      </code>
+      <dl class="mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-[12px] text-fg-subtle">
+        <dt class="font-medium">Account</dt><dd class="truncate"><%= current_user.email %></dd>
+        <dt class="font-medium">Issuer</dt><dd><%= TwoFactor::ISSUER %></dd>
+        <dt class="font-medium">Type</dt><dd>Time-based, 6 digits</dd>
+      </dl>
+    </div>
+  </div>
+
+  <div class="card space-y-3">
+    <div>
+      <h3 class="text-[14px] font-medium text-fg">2. Confirm with a code</h3>
+      <p class="mt-1 text-[12px] leading-relaxed text-fg-subtle">
+        Nothing changes on your account until this code checks out — opening this
+        screen does not turn anything on.
+      </p>
+    </div>
+
+    <%= form_with url: account_confirm_two_factor_path, method: :post, class: "flex items-center gap-2" do %>
+      <input type="text"
+             name="code"
+             inputmode="numeric"
+             autocomplete="one-time-code"
+             pattern="[0-9]{6}"
+             maxlength="6"
+             placeholder="123456"
+             class="input-field w-36 text-center font-mono tracking-[0.3em]"
+             aria-label="Six digit code"
+             required>
+      <button type="submit" class="btn-primary shrink-0">Activate</button>
+    <% end %>
+
+    <%= link_to "Cancel", account_panel_path(section: "two_factor"), class: "text-[12px] text-fg-subtle hover:text-fg" %>
+  </div>
+
+<% elsif current_user.second_factor_enabled? %>
+  <div class="card space-y-3">
+    <div class="flex items-start justify-between gap-3">
+      <h3 class="text-[14px] font-medium text-fg">Two-factor authentication</h3>
+      <span class="badge bg-accent/15 text-accent-text">On</span>
+    </div>
+    <p class="text-[12px] leading-relaxed text-fg-subtle">
+      After your password, sign-ins here and in any app using the API need a code
+      from your authenticator — or one of your
+      <%= pluralize(@recovery_codes_left, "backup code") %>.
+    </p>
+    <p class="text-[12px] leading-relaxed text-fg-subtle">
+      The key itself is stored encrypted and is never shown again. To move to a
+      new phone, turn this off and set it up from the new device.
+    </p>
+
+    <%= link_to account_panel_path(section: "recovery"), class: "btn-secondary w-full text-[13px]" do %>
+      Backup codes (<%= @recovery_codes_left %> left)
+    <% end %>
+  </div>
+
+  <div class="card space-y-3">
+    <h3 class="text-[14px] font-medium text-fg">Turn it off</h3>
+    <p class="text-[12px] leading-relaxed text-fg-subtle">
+      Your password, because this is the change a hijacked session would most
+      like to make. Backup codes go with it.
+    </p>
+
+    <%= form_with url: account_disable_two_factor_path, method: :delete, class: "space-y-3" do %>
+      <input type="password"
+             name="password"
+             autocomplete="current-password"
+             placeholder="Current password"
+             aria-label="Current password"
+             class="input-field"
+             required>
+      <button type="submit" class="btn-secondary w-full text-[13px] text-red-600 dark:text-red-400">
+        Disable two-factor
+      </button>
+    <% end %>
+  </div>
+
+<% else %>
+  <div class="card space-y-3">
+    <div class="flex items-start justify-between gap-3">
+      <h3 class="text-[14px] font-medium text-fg">Authenticator app (TOTP)</h3>
+      <span class="badge bg-fg-muted/10 text-fg-muted">Off</span>
+    </div>
+    <p class="text-[12px] leading-relaxed text-fg-subtle">
+      Require a six-digit code from an authenticator app when signing in.
+      Compatible with Google Authenticator, Microsoft Authenticator, Aegis and
+      other TOTP apps. Your password alone stops being enough.
+    </p>
+
+    <%= button_to "Set up two-factor authentication", account_two_factor_path, method: :post,
+          class: "btn-primary w-full text-[13px]" %>
+  </div>
+<% end %>

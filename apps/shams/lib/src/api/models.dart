@@ -218,6 +218,221 @@ class Message {
   }
 }
 
+/// The account & security panel as `GET /api/v1/security` describes it, plus
+/// whatever the action that just ran chose to add to the same object.
+///
+/// One class rather than five because the server answers a mutation with the
+/// refreshed state and the result of the action together — a client that
+/// confirmed an enrollment gets the new backup codes in the same response, and
+/// those codes exist nowhere else.
+class SecurityPanel {
+  const SecurityPanel({
+    required this.twoFactorEnabled,
+    required this.recoveryCodesLeft,
+    required this.lockedMinutesLeft,
+    required this.phone,
+    required this.devices,
+    required this.usage,
+    this.recoveryCodes = const [],
+    this.enrollment,
+    this.message,
+    this.outcome,
+    this.retryInSeconds,
+    this.developmentPhoneCode,
+    this.signedOut = false,
+  });
+
+  final bool twoFactorEnabled;
+
+  /// Backup codes still unspent. New ones are only ever handed out by a
+  /// response — [recoveryCodes] — and generating a set retires the last.
+  final int recoveryCodesLeft;
+
+  /// Minutes the account's second factor is paused after too many wrong codes.
+  final int lockedMinutesLeft;
+
+  final PhoneStatus phone;
+  final List<DeviceSession> devices;
+  final UsageStatus usage;
+
+  /// Non-empty only in the response that minted them.
+  final List<String> recoveryCodes;
+
+  /// The half-finished enrollment: a key the account has not accepted yet.
+  final TwoFactorEnrollment? enrollment;
+
+  final String? message;
+
+  /// The phone verifier's own status (`sent`, `verified`, `cooldown`, …), which
+  /// the screen shows instead of inventing a state it has not seen.
+  final String? outcome;
+  final int? retryInSeconds;
+
+  /// Set only by a server with no SMS gateway, for the session that asked.
+  final String? developmentPhoneCode;
+
+  /// True when the call ended this client's own session.
+  final bool signedOut;
+
+  factory SecurityPanel.fromJson(Map<String, dynamic> json) {
+    final twoFactor = _section(json['two_factor']);
+    final phone = _section(json['phone']);
+    final usage = _section(json['usage']);
+    final enrollment = _section(json['enrollment']);
+
+    return SecurityPanel(
+      twoFactorEnabled: _flag(twoFactor['enabled']),
+      recoveryCodesLeft: _int(twoFactor['recovery_codes_left']) ?? 0,
+      lockedMinutesLeft: _int(twoFactor['locked_minutes_left']) ?? 0,
+      phone: PhoneStatus(
+        number: phone['number'] is String ? phone['number'] as String : '',
+        verified: _flag(phone['verified']),
+        verifiedAt: _date(phone['verified_at']),
+      ),
+      devices: (json['devices'] is List)
+          ? (json['devices'] as List)
+                .whereType<Map<String, dynamic>>()
+                .map(DeviceSession.fromJson)
+                .toList(growable: false)
+          : const [],
+      usage: UsageStatus(
+        organization: usage['organization'] is String
+            ? usage['organization'] as String
+            : '',
+        plan: usage['plan'] is String ? usage['plan'] as String : 'free',
+        metered: _flag(usage['metered']),
+        cap: _int(usage['cap']),
+        used: _int(usage['used']) ?? 0,
+        remaining: _int(usage['remaining']),
+      ),
+      recoveryCodes: (json['recovery_codes'] is List)
+          ? (json['recovery_codes'] as List).whereType<String>().toList(
+              growable: false,
+            )
+          : const [],
+      enrollment: enrollment.isEmpty
+          ? null
+          : TwoFactorEnrollment(
+              secret: enrollment['secret'] is String
+                  ? enrollment['secret'] as String
+                  : '',
+              provisioningUri: enrollment['provisioning_uri'] is String
+                  ? enrollment['provisioning_uri'] as String
+                  : '',
+              expiresInSeconds: _int(enrollment['expires_in']) ?? 0,
+            ),
+      message: json['message'] is String ? json['message'] as String : null,
+      outcome: json['status'] is String ? json['status'] as String : null,
+      retryInSeconds: _int(json['retry_in']),
+      developmentPhoneCode: json['code'] is String
+          ? json['code'] as String
+          : null,
+      signedOut: json['signed_out'] == true,
+    );
+  }
+}
+
+class PhoneStatus {
+  const PhoneStatus({
+    required this.number,
+    required this.verified,
+    this.verifiedAt,
+  });
+
+  final String number;
+  final bool verified;
+  final DateTime? verifiedAt;
+}
+
+/// One signed-in device. `id` is what a revoke call addresses.
+class DeviceSession {
+  const DeviceSession({
+    required this.id,
+    required this.label,
+    required this.ip,
+    required this.isCurrent,
+    this.signedInAt,
+    this.lastSeenAt,
+  });
+
+  final String id;
+  final String label;
+  final String ip;
+
+  /// The device this request came from — the one the panel gives no revoke
+  /// button, because signing out here is already the sign-out control.
+  final bool isCurrent;
+  final DateTime? signedInAt;
+  final DateTime? lastSeenAt;
+
+  factory DeviceSession.fromJson(Map<String, dynamic> json) => DeviceSession(
+    id: _id(json['id']),
+    label: json['device'] is String
+        ? json['device'] as String
+        : 'Unknown device',
+    ip: json['ip'] is String ? json['ip'] as String : '',
+    isCurrent: _flag(json['current']),
+    signedInAt: _date(json['signed_in_at']),
+    lastSeenAt: _date(json['last_seen_at']),
+  );
+}
+
+/// Today's quota for the active organization.
+///
+/// An unmetered plan reports `metered: false` with a null cap; that is "no
+/// daily ceiling", never "nothing left".
+class UsageStatus {
+  const UsageStatus({
+    required this.organization,
+    required this.plan,
+    required this.metered,
+    required this.cap,
+    required this.used,
+    required this.remaining,
+  });
+
+  final String organization;
+  final String plan;
+  final bool metered;
+  final int? cap;
+  final int used;
+  final int? remaining;
+
+  /// 0.0–1.0 of the day's budget spent, or null when there is no budget.
+  double? get fractionUsed {
+    final cap = this.cap;
+    if (!metered || cap == null || cap <= 0) return null;
+    final value = used / cap;
+    if (value < 0) return 0;
+    return value > 1 ? 1 : value;
+  }
+}
+
+/// A pending two-factor key: shown so an authenticator app can be told about
+/// this account, and worth nothing until a code built from it is confirmed.
+class TwoFactorEnrollment {
+  const TwoFactorEnrollment({
+    required this.secret,
+    required this.provisioningUri,
+    required this.expiresInSeconds,
+  });
+
+  final String secret;
+  final String provisioningUri;
+  final int expiresInSeconds;
+}
+
+Map<String, dynamic> _section(Object? value) =>
+    value is Map<String, dynamic> ? value : const {};
+
+int? _int(Object? value) => value is int ? value : null;
+
+/// A security flag, read as it is: an absent or malformed one is false. The
+/// `_bool` above defaults to true because a missing `is_active` on an agent
+/// means the row is live; nothing about protection may be assumed on absent
+/// data.
+bool _flag(Object? value) => value == true;
+
 /// A UUID (or, defensively, any scalar) rendered as the string the API uses.
 String _id(Object? value) {
   if (value is String) return value;

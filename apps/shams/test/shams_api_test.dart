@@ -5,6 +5,19 @@ import 'package:shams_app/src/api/shams_api.dart';
 
 import 'fake_transport.dart';
 
+/// Runs a call the server is expected to refuse, and hands back the refusal.
+///
+/// A sign-in that *succeeds* here would be the bug: it would mean the client
+/// got in without the second factor the account asks for.
+Future<ApiException> refused(Future<void> Function() call) async {
+  try {
+    await call();
+  } on ApiException catch (error) {
+    return error;
+  }
+  throw StateError('expected the request to be refused');
+}
+
 void main() {
   group('ShamsApi', () {
     test('normalises the base URL and keeps the origin readable', () {
@@ -201,6 +214,417 @@ void main() {
       });
 
       await expectLater(apiWith(transport).fetchCsrfToken(), completes);
+    });
+
+    group('security panel', () {
+      test('reads the snapshot the panel is drawn from', () async {
+        final transport = FakeTransport({
+          'GET /api/v1/security': [
+            json(
+              200,
+              securityPayload(
+                devices: [
+                  deviceJson(currentDeviceId, 'Chrome · macOS', current: true),
+                  deviceJson(otherDeviceId, 'Safari · iPhone'),
+                ],
+              ),
+            ),
+          ],
+        });
+        final panel = await apiWith(transport).security();
+
+        expect(transport.sent.single.uri.path, '/api/v1/security');
+        expect(panel.twoFactorEnabled, isFalse);
+        expect(panel.recoveryCodesLeft, 0);
+        expect(panel.phone.number, '');
+        expect(panel.phone.verified, isFalse);
+        expect(panel.devices.map((d) => d.label), [
+          'Chrome · macOS',
+          'Safari · iPhone',
+        ]);
+        expect(
+          panel.devices.map((d) => d.isCurrent),
+          [true, false],
+          reason: 'exactly the row this request came from is "this device"',
+        );
+        expect(panel.usage.plan, 'member');
+        expect(panel.usage.cap, 20000);
+        expect(panel.usage.remaining, 18800);
+      });
+
+      test('reads an unmetered plan as no ceiling, not as none left', () async {
+        final panel = await apiWith(
+          FakeTransport({
+            'GET /api/v1/security': [
+              json(200, securityPayload(meteredUsage: false)),
+            ],
+          }),
+        ).security();
+
+        expect(panel.usage.metered, isFalse);
+        expect(panel.usage.cap, isNull);
+        expect(panel.usage.remaining, isNull);
+        expect(
+          panel.usage.fractionUsed,
+          isNull,
+          reason: 'a bar drawn from a null cap would read as 0 % used',
+        );
+      });
+
+      test('treats a missing or malformed flag as protection off', () async {
+        // The defensive default for `is_active` on an agent is "live"; for
+        // whether an account is protected, the only safe default is the one
+        // that does not claim a guard the server never confirmed.
+        final panel = await apiWith(
+          FakeTransport({
+            'GET /api/v1/security': [
+              json(200, '{"two_factor":{"enabled":null}}'),
+            ],
+          }),
+        ).security();
+
+        expect(panel.twoFactorEnabled, isFalse);
+        expect(panel.devices, isEmpty);
+      });
+
+      test('sends the code the user typed for a second factor', () async {
+        final transport = FakeTransport({
+          'POST /api/v1/sessions': [json(200, '{"user":{"id":1}}')],
+        });
+
+        await apiWith(
+          transport,
+        ).login('dev@shams.ai', 'secret', code: '429117');
+
+        expect(
+          transport.sent.single.body,
+          '{"email":"dev@shams.ai","password":"secret","code":"429117"}',
+        );
+      });
+
+      test(
+        'reports that a sign-in needs a code, and that the code was wrong',
+        () async {
+          final transport = FakeTransport({
+            'POST /api/v1/sessions': [
+              json(
+                401,
+                '{"error":"Two-factor authentication required.",'
+                '"two_factor_required":true}',
+              ),
+              json(
+                403,
+                '{"error":"Invalid two-factor code.",'
+                '"two_factor_required":true}',
+              ),
+              json(
+                429,
+                '{"error":"Too many attempts. Sign-ins are paused for '
+                '15 minutes.","two_factor_required":true}',
+              ),
+            ],
+          });
+          final api = apiWith(transport);
+
+          for (var i = 0; i < 3; i++) {
+            final error = await refused(
+              () => api.login('dev@shams.ai', 'secret', code: '111111'),
+            );
+            expect(error.twoFactorRequired, isTrue, reason: error.message);
+          }
+          expect(transport.sent.map((r) => r.body).toSet(), {
+            '{"email":"dev@shams.ai","password":"secret","code":"111111"}',
+          });
+        },
+      );
+
+      test('never calls a plain bad password a request for a code', () async {
+        final api = apiWith(
+          FakeTransport({
+            'POST /api/v1/sessions': [
+              json(401, '{"error":"Invalid email or password."}'),
+            ],
+          }),
+        );
+
+        await expectLater(
+          api.login('dev@shams.ai', 'wrong'),
+          throwsA(
+            isA<ApiException>()
+                .having(
+                  (e) => e.twoFactorRequired,
+                  'twoFactorRequired',
+                  isFalse,
+                )
+                .having((e) => e.statusCode, 'statusCode', 401),
+          ),
+        );
+      });
+
+      test(
+        'starts an enrollment and shows the key only from that response',
+        () async {
+          final transport = FakeTransport({
+            'POST /api/v1/security/two_factor': [
+              json(200, securityPayload(enrollment: pendingEnrollmentJson)),
+            ],
+          });
+          final panel = await apiWith(transport).startTwoFactor();
+
+          expect(transport.sent.single.body, '{}');
+          expect(panel.twoFactorEnabled, isFalse);
+          expect(panel.enrollment?.secret, pendingSecret);
+          expect(
+            panel.enrollment?.provisioningUri,
+            startsWith('otpauth://totp/'),
+          );
+          expect(panel.enrollment?.expiresInSeconds, 600);
+        },
+      );
+
+      test(
+        'activates on a confirmed code and returns the backup codes once',
+        () async {
+          final codes = ['2K4QX7ZR9T', 'ABCD2EFGHJ'];
+          final panel = await apiWith(
+            FakeTransport({
+              'POST /api/v1/security/two_factor/confirm': [
+                json(
+                  200,
+                  securityPayload(
+                    twoFactorEnabled: true,
+                    recoveryCodesLeft: codes.length,
+                    recoveryCodes: codes,
+                  ),
+                ),
+              ],
+            }),
+          ).confirmTwoFactor('429117');
+
+          expect(panel.twoFactorEnabled, isTrue);
+          expect(panel.recoveryCodes, codes);
+        },
+      );
+
+      test('turns two-factor off only with the password', () async {
+        final transport = FakeTransport({
+          'DELETE /api/v1/security/two_factor': [json(200, securityPayload())],
+        });
+        await apiWith(transport).disableTwoFactor('secret');
+
+        expect(transport.sent.single.method, 'DELETE');
+        expect(transport.sent.single.body, '{"password":"secret"}');
+      });
+
+      test('asks the server for the code instead of inventing one', () async {
+        final transport = FakeTransport({
+          'DELETE /api/v1/security/two_factor': [
+            json(422, '{"error":"That password is not right."}'),
+          ],
+        });
+
+        await expectLater(
+          apiWith(transport).disableTwoFactor('nope'),
+          throwsA(
+            isA<ApiException>()
+                .having(
+                  (e) => e.message,
+                  'message',
+                  'That password is not right.',
+                )
+                .having((e) => e.statusCode, 'statusCode', 422),
+          ),
+        );
+      });
+
+      test('regenerates backup codes with the password', () async {
+        final transport = FakeTransport({
+          'POST /api/v1/security/recovery_codes': [
+            json(
+              200,
+              securityPayload(
+                twoFactorEnabled: true,
+                recoveryCodesLeft: 10,
+                recoveryCodes: ['2K4QX7ZR9T'],
+              ),
+            ),
+          ],
+        });
+        final panel = await apiWith(
+          transport,
+        ).regenerateRecoveryCodes('secret');
+
+        expect(transport.sent.single.body, '{"password":"secret"}');
+        expect(panel.recoveryCodes, ['2K4QX7ZR9T']);
+      });
+
+      test('a phone cooldown keeps the server message and the wait', () async {
+        // A refusal sends no snapshot, only `status`/`message`/`retry_in`, so
+        // the client must surface those words rather than its own summary of
+        // the status code.
+        final refusal = await refused(
+          () => apiWith(
+            FakeTransport({
+              'POST /api/v1/security/phone': [
+                json(
+                  429,
+                  '{"status":"cooldown",'
+                  '"message":"That code is still valid. Wait before asking '
+                  'for another.","retry_in":42}',
+                ),
+              ],
+            }),
+          ).requestPhoneCode('+94771234567'),
+        );
+
+        expect(refusal.statusCode, 429);
+        expect(
+          refusal.message,
+          'That code is still valid. Wait before asking for another.',
+        );
+        expect(refusal.retryInSeconds, 42);
+        expect(
+          refusal.twoFactorRequired,
+          isFalse,
+          reason: 'a cooldown is not a request for a code',
+        );
+      });
+
+      test(
+        'a sent code answers with the snapshot and the resend window',
+        () async {
+          final panel = await apiWith(
+            FakeTransport({
+              'POST /api/v1/security/phone': [
+                json(
+                  200,
+                  securityPayload(
+                    phone: '+94771234567',
+                    status: 'sent',
+                    message: 'We sent a 6-digit code to +94771234567.',
+                    retryIn: 30,
+                    code: '429117',
+                  ),
+                ),
+              ],
+            }),
+          ).requestPhoneCode('+94771234567');
+
+          expect(panel.outcome, 'sent');
+          expect(panel.retryInSeconds, 30);
+          expect(panel.phone.verified, isFalse);
+          expect(
+            panel.developmentPhoneCode,
+            '429117',
+            reason: 'only a server with no SMS gateway sends this',
+          );
+        },
+      );
+
+      test('verifies the number from the texted code', () async {
+        final transport = FakeTransport({
+          'POST /api/v1/security/phone/confirm': [
+            json(
+              200,
+              securityPayload(
+                phone: '+94771234567',
+                phoneVerified: true,
+                status: 'verified',
+                message: 'Number verified.',
+              ),
+            ),
+          ],
+        });
+        final panel = await apiWith(transport).confirmPhoneCode('429117');
+
+        expect(transport.sent.single.body, '{"code":"429117"}');
+        expect(panel.phone.verified, isTrue);
+        expect(panel.phone.number, '+94771234567');
+        expect(panel.developmentPhoneCode, isNull);
+      });
+
+      test('revokes one device by id', () async {
+        final transport = FakeTransport({
+          'DELETE /api/v1/security/devices/$otherDeviceId': [
+            json(
+              200,
+              securityPayload(
+                devices: [
+                  deviceJson(currentDeviceId, 'Chrome · macOS', current: true),
+                ],
+                message: 'Safari · iPhone was signed out.',
+              ),
+            ),
+          ],
+        });
+        final panel = await apiWith(transport).revokeDevice(otherDeviceId);
+
+        expect(transport.sent.single.method, 'DELETE');
+        expect(panel.devices, hasLength(1));
+        expect(panel.message, 'Safari · iPhone was signed out.');
+      });
+
+      test('knows a revoke ended this session', () async {
+        // The real answer for one's own row is a message and nothing else; the
+        // screen must read `signed_out` from it rather than a snapshot.
+        final panel = await apiWith(
+          FakeTransport({
+            'DELETE /api/v1/security/devices/$currentDeviceId': [
+              json(
+                200,
+                '{"message":"This device was signed out.",'
+                '"signed_out":true}',
+              ),
+            ],
+          }),
+        ).revokeDevice(currentDeviceId);
+
+        expect(panel.signedOut, isTrue);
+        expect(
+          panel.devices,
+          isEmpty,
+          reason: 'no state was sent, so none may be claimed',
+        );
+        expect(panel.twoFactorEnabled, isFalse);
+      });
+
+      test('signs out everywhere on the collection route', () async {
+        final transport = FakeTransport({
+          'DELETE /api/v1/security/devices': [
+            json(
+              200,
+              '{"message":"Signed out everywhere.",'
+              '"signed_out":true}',
+            ),
+          ],
+        });
+
+        await expectLater(apiWith(transport).signOutEverywhere(), completes);
+        expect(transport.sent.single.uri.path, '/api/v1/security/devices');
+      });
+
+      test('answers 404 for a device that is not this account\'s', () async {
+        final api = apiWith(
+          FakeTransport({
+            'DELETE /api/v1/security/devices/$otherDeviceId': [
+              json(404, '{"error":"That device is not signed in."}'),
+            ],
+          }),
+        );
+
+        await expectLater(
+          api.revokeDevice(otherDeviceId),
+          throwsA(
+            isA<ApiException>()
+                .having((e) => e.statusCode, 'statusCode', 404)
+                .having(
+                  (e) => e.message,
+                  'message',
+                  'That device is not signed in.',
+                ),
+          ),
+        );
+      });
     });
 
     group('chat', () {

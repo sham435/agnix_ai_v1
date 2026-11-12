@@ -72,17 +72,59 @@ class ConversationsController < ApplicationController
     redirect_to @conversation, flash_key => outcome.message
   end
 
+  # Stop the turn in flight. A row can only ever be a request: the run's own
+  # thread decides when to look, so both flavors are marked and each notices at
+  # its next checkpoint — AgentRunner re-reads its Run per iteration and per
+  # streamed chunk, #execute_plan breaks on an interrupted AgentRun. The
+  # broadcast is what makes the button answer at once, in every tab.
   def stop
-    @conversation.agent_runs.active.update_all(status: "interrupted")
-    head :ok
+    runs = @conversation.runs.active.to_a
+    plans = @conversation.agent_runs.active.update_all(status: "interrupted")
+    live = live_streaming_message
+    in_flight = runs.any? || plans.positive? || live.present?
+
+    runs.each(&:cancel!)
+    broadcast_stopped(live) if in_flight
+
+    render_stop_note(in_flight)
   end
 
+  # The plan card's own stop path, kept identical so both entry points agree.
   def interrupt
-    @conversation.agent_runs.active.update_all(status: "interrupted")
-    head :ok
+    stop
   end
 
   private
+
+  def broadcast_stopped(live_message)
+    payload = { type: "stopped", conversation_id: @conversation.id }
+    payload[:message_id] = live_message.id if live_message
+    if live_message && live_message.metadata.is_a?(Hash) && live_message.metadata["request_id"].present?
+      payload[:request_id] = live_message.metadata["request_id"]
+    end
+    ActionCable.server.broadcast("conversation:#{@conversation.id}", payload)
+  end
+
+  # The placeholder this conversation is currently streaming into, if any —
+  # keyed so the stopped frame reaches the bubble the user is watching rather
+  # than whichever one happens to carry a cursor.
+  def live_streaming_message
+    @conversation.messages.where(role: "assistant").order(created_at: :desc).limit(5)
+      .find { |message| message.streaming? && !message.stale_streaming? }
+  end
+
+  def render_stop_note(in_flight)
+    note = if in_flight
+      "Stopping the current run."
+    else
+      "Nothing is running in this conversation."
+    end
+
+    render turbo_stream: turbo_stream.append(
+      "messages-list",
+      html: %(<div role="status" class="px-3.5 py-2 text-[13px] text-fg-muted rounded-lg border border-border bg-panel">#{note}</div>)
+    )
+  end
 
   def conversation_search_json(conversation)
     {

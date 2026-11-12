@@ -1,0 +1,23 @@
+<%#
+  One tappable summary row: what the setting is, what it currently does, and
+  how it reads. Used by Security & privacy so every row looks like the others
+  and none of them is a dead end — each goes somewhere that can change it.
+
+  locals: title, caption, href, status, tone (:on / :off / :warn / :neutral)
+-%>
+<%
+  tone_class = case tone.to_sym
+  when :on    then "bg-accent/15 text-accent-text"
+  when :warn  then "bg-amber-500/15 text-amber-600 dark:text-amber-400"
+  when :off   then "bg-fg-muted/10 text-fg-muted"
+  else "border border-border text-fg-subtle"
+  end
+%>
+<%= link_to href,
+      class: "flex items-center justify-between gap-3 rounded-xl border border-border bg-panel px-3.5 py-3 text-left transition hover:bg-hover" do %>
+  <span class="min-w-0">
+    <span class="block text-[13px] font-medium text-fg"><%= title %></span>
+    <span class="mt-0.5 block text-[12px] leading-relaxed text-fg-subtle"><%= caption %></span>
+  </span>
+  <span class="badge shrink-0 <%= tone_class %>"><%= status %></span>
+<% end %>

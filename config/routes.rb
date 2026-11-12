@@ -114,6 +114,25 @@ Rails.application.routes.draw do
     end
   end
 
+  # Account & security panel: one right-side surface for profile, two-factor,
+  # backup codes, phone verification, signed-in devices and quota. Every route
+  # answers the panel's turbo frame in place, and each one still behaves as a
+  # normal page for clients that do not run JavaScript.
+  namespace :account, path: "account" do
+    get    "", to: "panels#show", as: :panel
+
+    post   "two_factor",                to: "two_factors#create",     as: :two_factor
+    delete "two_factor",                to: "two_factors#disable",    as: :disable_two_factor
+    post   "two_factor/confirm",        to: "two_factors#confirm",    as: :confirm_two_factor
+    post   "two_factor/recovery_codes", to: "two_factors#regenerate", as: :recovery_codes
+
+    post   "phone",                     to: "phones#request_code",    as: :phone
+    post   "phone/confirm",             to: "phones#confirm",         as: :confirm_phone
+
+    delete "devices/:id",               to: "devices#destroy",        as: :device
+    delete "devices",                   to: "devices#close_everywhere", as: :devices
+  end
+
   # Webhooks.
   namespace :webhooks do
     post "stripe",   to: "stripe#create"
@@ -143,6 +162,20 @@ Rails.application.routes.draw do
       end
       resources :agents, only: [ :index, :show ]
       resources :runs, only: [ :show ]
+
+      # The account & security panel as data, for clients that draw their own
+      # screens. Same services, same session, same refusals as the browser
+      # panel — and the only key any response carries is a pending enrollment
+      # the client has not proved yet.
+      get    "security",                   to: "security#show"
+      post   "security/two_factor",        to: "two_factor#create"
+      delete "security/two_factor",        to: "two_factor#destroy"
+      post   "security/two_factor/confirm", to: "two_factor#confirm"
+      post   "security/recovery_codes",    to: "recovery_codes#create"
+      post   "security/phone",             to: "phone#create"
+      post   "security/phone/confirm",     to: "phone#confirm"
+      delete "security/devices/:id",       to: "devices#destroy",     as: :security_device
+      delete "security/devices",           to: "devices#destroy_all", as: :security_devices
 
       # OpenAI-compatible gateway for OpenCode
       namespace :openai do

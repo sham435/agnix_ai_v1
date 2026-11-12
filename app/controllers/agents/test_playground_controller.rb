@@ -7,6 +7,9 @@ class Agents::TestPlaygroundController < ApplicationController
   end
 
   def run
+    # Meter first: a turn that cannot fit today's allowance creates nothing.
+    reservation = Quota.reserve(current_organization, estimate: Quota.estimate(@agent, params[:message]))
+
     # Create a test conversation.
     conversation = current_user.conversations.create!(
       agent: @agent,
@@ -20,6 +23,7 @@ class Agents::TestPlaygroundController < ApplicationController
     )
 
     result = runner.run(params[:message], stream: false)
+    Quota.settle(reservation, actual: result[:tokens])
 
     render json: {
       content: result[:content],
@@ -27,6 +31,8 @@ class Agents::TestPlaygroundController < ApplicationController
       tool_calls: result[:tool_calls],
       conversation_id: conversation.id
     }
+  rescue Quota::Exceeded => e
+    render json: { error: e.message, code: e.code }, status: :too_many_requests
   rescue => e
     render json: { error: e.message }, status: :unprocessable_entity
   end

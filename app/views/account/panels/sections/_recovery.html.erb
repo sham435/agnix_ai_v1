@@ -1,0 +1,75 @@
+<%#
+  Backup codes. Shown exactly once, in the response that created them: what is
+  stored is a SHA-256 of each code, so this page cannot show them again, and a
+  lost set is replaced rather than recovered.
+-%>
+<%= link_to "← Security & privacy", account_panel_path(section: "security"),
+      class: "inline-flex items-center gap-1 text-[12px] text-fg-subtle hover:text-fg" %>
+
+<% if @recovery_codes.present? %>
+  <div class="card space-y-3">
+    <div class="flex items-start justify-between gap-3">
+      <h3 class="text-[14px] font-medium text-fg">Save these codes now</h3>
+      <span class="badge bg-accent/15 text-accent-text"><%= @recovery_codes.length %></span>
+    </div>
+    <p class="text-[12px] leading-relaxed text-fg-subtle">
+      Each code works once, in place of an authenticator code. They are shown
+      only on this page — the server keeps a hash of each one and cannot read
+      them back to you.
+    </p>
+
+    <ul class="grid grid-cols-2 gap-2 font-mono text-[13px] text-fg">
+      <% @recovery_codes.each do |code| %>
+        <li class="rounded-lg border border-border bg-elevated px-2.5 py-1.5 text-center"><%= RecoveryCode.format(code) %></li>
+      <% end %>
+    </ul>
+
+    <%= link_to "I’ve saved them", account_panel_path(section: "security"), class: "btn-primary w-full text-[13px]" %>
+  </div>
+
+<% elsif !current_user.second_factor_enabled? %>
+  <div class="card space-y-2">
+    <h3 class="text-[14px] font-medium text-fg">No backup codes yet</h3>
+    <p class="text-[12px] leading-relaxed text-fg-subtle">
+      Backup codes only exist to replace an authenticator you cannot reach, so
+      they come with two-factor. Set that up first.
+    </p>
+    <%= link_to "Set up two-factor", account_panel_path(section: "two_factor"),
+          class: "btn-secondary w-full text-[13px]" %>
+  </div>
+
+<% else %>
+  <div class="card space-y-3">
+    <div class="flex items-start justify-between gap-3">
+      <h3 class="text-[14px] font-medium text-fg">Recovery codes</h3>
+      <span class="badge <%= @recovery_codes_left.positive? ? "bg-accent/15 text-accent-text" : "bg-amber-500/15 text-amber-600 dark:text-amber-400" %>">
+        <%= @recovery_codes_left %> left
+      </span>
+    </div>
+    <p class="text-[12px] leading-relaxed text-fg-subtle">
+      Type one into the six-digit box at sign-in when your authenticator is
+      gone. Spent codes do not work again, and the codes are single-use, so a
+      set you have already used is worth replacing.
+    </p>
+
+    <% if @recovery_codes_left.zero? %>
+      <p class="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[12px] text-amber-600 dark:text-amber-400">
+        You have no unused codes. If you lose the authenticator now, an
+        administrator has to reset the account.
+      </p>
+    <% end %>
+
+    <%= form_with url: account_recovery_codes_path, method: :post, class: "space-y-3" do %>
+      <input type="password"
+             name="password"
+             autocomplete="current-password"
+             placeholder="Current password"
+             aria-label="Current password"
+             class="input-field"
+             required>
+      <button type="submit" class="btn-secondary w-full text-[13px]">
+        Generate a new set — this invalidates any codes still unused
+      </button>
+    <% end %>
+  </div>
+<% end %>

@@ -541,4 +541,57 @@
   .shell-nav-item { @apply flex items-center gap-3 rounded-xl px-3 py-2.5 text-[14px] text-fg-muted hover:bg-hover hover:text-fg transition; }
   .shell-nav-active { @apply bg-hover text-fg; }
   .shell-section-label { @apply px-3 py-2 text-[11px] font-semibold uppercase tracking-wider text-fg-subtle; }
+
+  /* ── Account & security panel ──────────────────────────────────────────────
+     A right-side slide-over for everything about the account rather than the
+     conversation. The chat stays visible behind it: the surface is 380–420px on
+     desktop and the backdrop dims (not hides) the page, and on mobile the same
+     element becomes a full-height drawer because `min(420px, 100%)` is 100%
+     there. Open/close is driven by [data-open] on the root, set by
+     account_panel_controller.js — same state-in-attributes pattern as the
+     sidebar, so nothing animates via class juggling.
+     Every colour is a token, so light and dark both read correctly. */
+  .account-panel {
+    @apply fixed inset-0 z-50;
+    pointer-events: none;
+  }
+
+  .account-panel__backdrop {
+    @apply absolute inset-0 bg-black/50 backdrop-blur-[2px];
+    opacity: 0;
+    transition: opacity .22s ease;
+  }
+
+  .account-panel__surface {
+    @apply absolute inset-y-0 right-0 flex flex-col border-l bg-sidebar shadow-2xl;
+    border-color: var(--color-border);
+    width: min(420px, 100%);
+    transform: translateX(100%);
+    transition: transform .28s cubic-bezier(.2, .8, .2, 1);
+  }
+
+  @media (max-width: 420px) {
+    .account-panel__surface { width: 100%; }
+  }
+
+  .account-panel[data-open="true"] { pointer-events: auto; }
+  .account-panel[data-open="true"] .account-panel__backdrop { opacity: 1; }
+  .account-panel[data-open="true"] .account-panel__surface { transform: translateX(0); }
+
+  .account-panel__header { @apply flex h-[64px] shrink-0 items-center justify-between gap-3 border-b border-border px-4; }
+  .account-panel__close { @apply grid size-9 shrink-0 place-items-center rounded-xl bg-hover text-fg-muted transition hover:text-fg; }
+  .account-panel__scroll { @apply flex-1 overflow-y-auto; }
+
+  .account-panel__tabs { @apply sticky top-0 z-10 flex gap-1 overflow-x-auto border-b border-border bg-sidebar px-3 py-2; }
+  .account-panel__tab { @apply shrink-0 rounded-lg px-2.5 py-1.5 text-[12px] font-medium text-fg-muted transition hover:bg-hover hover:text-fg; }
+  .account-panel__tab--active { @apply bg-hover text-fg; }
+
+  /* Busy state while the frame is fetching a section. */
+  .account-panel__scroll[data-busy="true"] { @apply opacity-60; }
+  .account-panel__scroll { transition: opacity .15s ease; }
+
+  @media (prefers-reduced-motion: reduce) {
+    .account-panel__surface,
+    .account-panel__backdrop { transition: none; }
+  }
 }

@@ -135,18 +135,15 @@ String conversationDetailPayload({
   String? error,
   int? tokens,
   String title = 'hi',
-}) => _conversationJson(
-  title,
-  <String>[
-    _userMessageJson,
-    _assistantJson(
-      streaming: streaming,
-      reply: reply,
-      error: error,
-      tokens: tokens,
-    ),
-  ],
-);
+}) => _conversationJson(title, <String>[
+  _userMessageJson,
+  _assistantJson(
+    streaming: streaming,
+    reply: reply,
+    error: error,
+    tokens: tokens,
+  ),
+]);
 
 /// The second user turn, i.e. the one a test posts through the composer.
 const _followUpMessageJson =
@@ -164,14 +161,11 @@ const _followUpMessageJson =
 /// The chat screen used to read this state once, conclude nothing was pending,
 /// and never look again; measured live on 2026-11-04, the reply landed ~20 s
 /// later and the app never showed it.
-final String turnPostedPayload = _conversationJson(
-  'Roadmap',
-  <String>[
-    _userMessageJson,
-    _assistantJson(streaming: false, reply: 'Earlier answer.'),
-    _followUpMessageJson,
-  ],
-);
+final String turnPostedPayload = _conversationJson('Roadmap', <String>[
+  _userMessageJson,
+  _assistantJson(streaming: false, reply: 'Earlier answer.'),
+  _followUpMessageJson,
+]);
 
 /// `POST /api/v1/conversations/:id/messages` - the saved user row plus the
 /// server's own note that the reply is still being generated.
@@ -212,6 +206,83 @@ Map<String, List<TransportResponse>> get unauthenticatedRoutes =>
         json(401, '{"error":"Please sign in to continue."}'),
       ],
     };
+
+// ---------------------------------------------------------------------------
+// Account & security panel
+// ---------------------------------------------------------------------------
+
+const currentDeviceId = '4a1f9c2e-7b3d-4e16-9a05-2c8d1e6f3b70';
+const otherDeviceId = '6b2f0d31-8c4e-4f27-ab16-3d9e2f704c81';
+
+/// One `devices` row, as `security_devices` builds it.
+String deviceJson(
+  String id,
+  String name, {
+  bool current = false,
+  String? ip = '127.0.0.1',
+}) =>
+    '{"id":"$id","device":${jsonEncode(name)},'
+    '"ip":${ip == null ? 'null' : jsonEncode(ip)},'
+    '"signed_in_at":"2026-11-11T09:00:00.000Z",'
+    '"last_seen_at":"2026-11-11T09:30:00.000Z",'
+    '"current":$current}';
+
+/// The `usage` block. An unmetered plan answers `metered:false` with a null
+/// cap - "no ceiling", which the client must not read as "nothing left".
+const _meteredUsage =
+    '{"organization":"Shams","plan":"member","metered":true,'
+    '"cap":20000,"used":1200,"remaining":18800}';
+const _freeUsage =
+    '{"organization":"Shams","plan":"free","metered":false,'
+    '"cap":null,"used":1200,"remaining":null}';
+
+/// `GET /api/v1/security`, and the snapshot the panel actions answer with.
+///
+/// The optional arguments are the parts that appear only in one response and
+/// never in the next: [enrollment] (raw JSON, as only the call that minted it
+/// carries it), [recoveryCodes], and the phone verifier's `status`/`message`/
+/// [code] - the last of which a server with no SMS gateway sends in
+/// development only.
+String securityPayload({
+  bool twoFactorEnabled = false,
+  int recoveryCodesLeft = 0,
+  int lockedMinutesLeft = 0,
+  String? phone,
+  bool phoneVerified = false,
+  bool meteredUsage = true,
+  List<String> devices = const [],
+  String? enrollment,
+  List<String> recoveryCodes = const [],
+  String? status,
+  String? message,
+  String? code,
+  int? retryIn,
+  bool signedOut = false,
+}) =>
+    '{'
+    '"two_factor":{"enabled":$twoFactorEnabled,'
+    '"recovery_codes_left":$recoveryCodesLeft,'
+    '"locked_minutes_left":$lockedMinutesLeft},'
+    '"phone":{"number":${phone == null ? 'null' : jsonEncode(phone)},'
+    '"verified":$phoneVerified,'
+    '"verified_at":${phoneVerified ? '"2026-11-11T09:00:00.000Z"' : 'null'}},'
+    '"devices":[${devices.join(',')}],'
+    '"usage":${meteredUsage ? _meteredUsage : _freeUsage}'
+    '${enrollment == null ? '' : ',"enrollment":$enrollment'}'
+    '${recoveryCodes.isEmpty ? '' : ',"recovery_codes":${jsonEncode(recoveryCodes)}'}'
+    '${status == null ? '' : ',"status":${jsonEncode(status)}'}'
+    '${message == null ? '' : ',"message":${jsonEncode(message)}'}'
+    '${code == null ? '' : ',"code":${jsonEncode(code)}'}'
+    '${retryIn == null ? '' : ',"retry_in":$retryIn'}'
+    '${signedOut ? ',"signed_out":true' : ''}'
+    '}';
+
+/// The key the server mints during enrollment: base32, and never stored.
+const pendingSecret = 'JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP';
+const pendingEnrollmentJson =
+    '{"secret":"$pendingSecret",'
+    '"provisioning_uri":"otpauth://totp/Shams%20AI:dev%40shams.ai'
+    '?secret=$pendingSecret&issuer=Shams%20AI","expires_in":600}';
 
 ShamsApi apiWith(HttpTransport transport) =>
     ShamsApi(baseUrl: 'http://localhost:3001/', transport: transport);

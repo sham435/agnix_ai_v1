@@ -47,7 +47,12 @@
       </svg>
       Continue
     </button>
+    <%# Without data-url the controller fell back to POST /interrupt, which is
+        not a route, so this button reloaded the page having stopped nothing.
+        The conversation's interrupt action flags both run flavors and tells
+        every open tab. %>
     <button data-action="agent-plan#interrupt" data-agent-run-id="<%= run.id %>"
+            data-url="<%= interrupt_conversation_path(run.conversation) %>"
             class="rounded-full bg-panel hover:bg-hover px-4 py-1.5 text-xs text-fg-muted transition">
       Stop
     </button>

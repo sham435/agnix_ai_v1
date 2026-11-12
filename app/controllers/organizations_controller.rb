@@ -55,7 +55,9 @@ class OrganizationsController < ApplicationController
     redirect_to organization_path(@organization), alert: "Admin access required."
   end
 
+  # `plan` is deliberately not permitted: it is a billing state and only the
+  # Stripe webhook path may change it.
   def organization_params
-    params.require(:organization).permit(:name, :slug, :plan, settings: {})
+    params.require(:organization).permit(:name, :slug, settings: {})
   end
 end
