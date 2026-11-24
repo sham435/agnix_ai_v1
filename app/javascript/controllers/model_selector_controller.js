@@ -1,7 +1,7 @@
 import { Controller } from "@hotwired/stimulus"
 
 export default class extends Controller {
-  static targets = ["label", "list", "search", "status", "panel"]
+  static targets = ["label", "list", "search", "status", "panel", "backdrop", "button"]
   static values = { conversationId: String, default: "" }
 
   connect() {
@@ -23,10 +23,15 @@ export default class extends Controller {
   }
 
   toggle() {
-    this.panelTarget.hidden = !this.panelTarget.hidden
-    if (!this.panelTarget.hidden) this.searchTarget.focus()
+    const open = this.panelTarget.hidden
+    this.panelTarget.hidden = !open
+    if (this.hasBackdropTarget) this.backdropTarget.hidden = !open
+    if (open) this.searchTarget.focus()
   }
-  close() { this.panelTarget.hidden = true }
+  close() {
+    this.panelTarget.hidden = true
+    if (this.hasBackdropTarget) this.backdropTarget.hidden = true
+  }
 
   async load(refresh = false) {
     this.abort?.abort()
