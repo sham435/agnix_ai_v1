@@ -2,6 +2,12 @@
 
 module Llm
   class Client
+    # OpenAI-compatible providers whose models default to chain-of-thought and
+    # must have thinking disabled for normal text chat. Reasoning metadata is
+    # still captured separately by the adapter; only user-visible content is
+    # affected. Add a provider here only after verifying the flag is accepted.
+    THINKING_DISABLED_PROVIDERS = %w[bonsai nvidia_nim].freeze
+
     attr_reader :provider, :model, :temperature, :max_tokens, :api_key, :top_p, :connection, :model_config
 
     def initialize(provider:, model:, temperature: 0.7, max_tokens: 4096, api_key: nil, top_p: nil,
@@ -67,7 +73,15 @@ module Llm
       kwargs = { api_key: selected_connection.api_key, model: adapter_model,
                  base_url: adapter_base_url(selected_connection), top_p: top_p,
                  connection: selected_connection }
-      kwargs[:chat_template_kwargs] = { "enable_thinking" => false } if provider == "bonsai"
+      # Some OpenAI-compatible reasoning models (Bonsai, NVIDIA NIM, and other
+      # providers that default to chain-of-thought) spend their entire token
+      # budget on reasoning unless thinking is explicitly disabled. Keep the
+      # flag here (never in user-visible content) and preserve reasoning
+      # metadata separately in the adapter. Providers opt in by membership.
+      nvidia_endpoint = selected_connection.base_url.to_s.include?("integrate.api.nvidia.com")
+      thinking_disabled = THINKING_DISABLED_PROVIDERS.include?(provider) || nvidia_endpoint ||
+        (model_config.is_a?(Hash) && model_config.dig("options", "enable_thinking") == false)
+      kwargs[:chat_template_kwargs] = { "enable_thinking" => false } if thinking_disabled
       adapter_class.new(**kwargs)
     end
 
