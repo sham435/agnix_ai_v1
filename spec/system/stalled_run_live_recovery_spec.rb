@@ -64,7 +64,7 @@ RSpec.describe "Stalled run live recovery", :js, type: :system do
     expect(page).not_to have_css("[data-thinking-indicator]")
   end
 
-  it "retires a server-rendered placeholder that never produced a cable turn (dashboard first message)" do
+  it "retires a server-rendered placeholder after authoritative task state reports no active run" do
     # A placeholder the server stamped 110s ago: past the client stall threshold
     # (100s) but still inside the server's 2-minute stale window, so the page
     # renders it as a genuinely live "thinking" state. It predates the chat
@@ -103,11 +103,14 @@ RSpec.describe "Stalled run live recovery", :js, type: :system do
       "streaming" => "true", "hasStamp" => true, "turnExists" => false, "acks" => 1
     )
 
-    # Fire the DOM sweep — the periodic interval runs the same pass.
+    # A task-state frame is authoritative: the placeholder may still be stamped
+    # streaming, but no worker owns an active run anymore.
     page.evaluate_script(<<~JS)
       (() => {
         const host = document.getElementById('messages-container')
         const chat = window.Stimulus.getControllerForElementAndIdentifier(host, 'chat')
+        chat.handleStream({ type: "background_tasks", conversation_id: #{conversation.id.to_json},
+          active: 0, queued: 0, tasks: [] })
         chat.sweepStalledPlaceholders()
         return true
       })()
@@ -119,16 +122,14 @@ RSpec.describe "Stalled run live recovery", :js, type: :system do
     expect(page).to have_css("[data-request-id='stall-dom-1'][data-streaming='false']", wait: 2)
   end
 
-  it "retires a slow-but-talking run whose stream started past the absolute ceiling (composer-guard parity)" do
+  it "keeps a server-confirmed active run waiting past the former client ceiling" do
     login_as user
     visit conversation_path(conversation)
     expect(page).to have_css("#messages-container[data-controller='chat']", wait: 10)
 
-    # A reasoning model still streaming internal frames: lastActivity is
-    # freshly refreshed every tick, so the SILENCE trigger (STALL_MS) would
-    # never fire. The absolute ceiling (GENERATION_CEILING_MS = 130s) is the
-    # safety net — measured from the server's stream_started_at, it retires
-    # the run at the same instant the composer frees its Send guard.
+    # Silence retires only runs the server no longer reports as active. A slow
+    # reasoning model may exceed the former 130-second client ceiling without
+    # being falsely declared idle or steering being disabled.
     injected = page.evaluate_script(<<~JS)
       (() => {
         const host = document.getElementById('messages-container')
@@ -145,22 +146,23 @@ RSpec.describe "Stalled run live recovery", :js, type: :system do
           '<span data-thinking-indicator class="thinking-indicator" role="status"><span class="thinking-dots">..</span></span>' +
           '<div data-streaming-content="pending-' + cid + '"></div>'
         document.getElementById('messages-list').appendChild(node)
+        chat.handleStream({ type: "background_tasks", conversation_id: #{conversation.id.to_json},
+          active: 1, queued: 0, active_request_id: cid, tasks: [] })
         // Fresh lastActivity (just now) — would survive the silence trigger.
         chat.turns.set(cid, { key: cid, rid: cid, mid: null, text: '', phase: 'generating',
                               done: false, failed: false,
                               lastActivity: Date.now(), startedAt: Date.now() - 200000,
                               streamStartedAt: started })
-        // Sanity: not silent, but exceeded ceiling.
         return JSON.stringify({
           silentWouldFire: (Date.now() - chat.turns.get(cid).lastActivity) > chat.constructor.STALL_MS,
-          elapsed: chat.turnElapsed(chat.turns.get(cid), Date.now()),
-          ceiling: chat.constructor.GENERATION_CEILING_MS
+          elapsed: Date.now() - Date.parse(chat.turns.get(cid).streamStartedAt),
+          formerCeiling: 130000
         })
       })()
     JS
     sanity = JSON.parse(injected)
     expect(sanity["silentWouldFire"]).to be(false), "silence trigger should NOT fire (lastActivity is fresh)"
-    expect(sanity["elapsed"]).to be > sanity["ceiling"]
+    expect(sanity["elapsed"]).to be > sanity["formerCeiling"]
 
     page.evaluate_script(<<~JS)
       (() => {
@@ -171,9 +173,23 @@ RSpec.describe "Stalled run live recovery", :js, type: :system do
       })()
     JS
 
-    expect(page).to have_css("[data-stale-response-body]", text: "This response didn't finish", wait: 5)
-    expect(page).not_to have_css("[data-thinking-ack]")
-    expect(page).not_to have_css("[data-thinking-indicator]")
+    expect(page).to have_css("[data-request-id='stall-ceiling-1'][data-streaming='true']", wait: 5)
+    expect(page).to have_no_css("[data-stale-response-body]")
+    expect(page).to have_css("[data-thinking-ack]")
+    expect(page).to have_css("#messages-container[data-composer-busy='stall-ceiling-1']")
+    waiting = page.evaluate_script(<<~JS)
+      (() => {
+        const host = document.getElementById('messages-container')
+        const chat = window.Stimulus.getControllerForElementAndIdentifier(host, 'chat')
+        const turn = chat.turns.get('stall-ceiling-1')
+        turn.lastActivity = Date.now() - 200000
+        chat.sweepStalledTurns()
+        return turn.waiting
+      })()
+    JS
+    expect(waiting).to be(true)
+    expect(page).to have_no_css("[data-stale-response-body]")
+    expect(page).to have_css("#messages-container[data-composer-busy='stall-ceiling-1']")
   end
 end
 # rubocop:enable RSpec/LetSetup, RSpec/ExampleLength, RSpec/MultipleExpectations

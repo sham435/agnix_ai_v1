@@ -4,11 +4,11 @@ class Agents::RunsController < ApplicationController
   before_action :set_agent
 
   def index
-    @runs = @agent.runs.order(created_at: :desc).includes(:conversation).limit(100)
+    @runs = @agent.runs.for_user(current_user).order(created_at: :desc).includes(:conversation).limit(100)
   end
 
   def show
-    @run = @agent.runs.find(params[:id])
+    @run = @agent.runs.for_user(current_user).find(params[:id])
   end
 
   private

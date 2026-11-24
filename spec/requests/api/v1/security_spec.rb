@@ -8,8 +8,8 @@ require "rails_helper"
 # The security panel's data endpoints — what the mobile app reads and acts on.
 # The rules under test are the panel's own, seen from the other side of the
 # wire: a code has to be proved before the account changes, backup codes leave
-# the server once, a password costs the factor its removal, and the stored key
-# is never handed to anyone.
+# the server once, removal costs a fresh password and second-factor proof, and
+# the stored key is never handed to anyone.
 RSpec.describe "API v1 security", type: :request do
   let(:user) { create(:user) }
   let(:secret) { "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ" }
@@ -90,6 +90,27 @@ RSpec.describe "API v1 security", type: :request do
       expect(user.reload).to be_second_factor_enabled
     end
 
+    it "spends the enrollment step and requires a newer authenticator code to disable" do
+      freeze_time do
+        enrollment = start_enrollment
+        code = code_for(enrollment["secret"])
+        post "/api/v1/security/two_factor/confirm", params: { code: code }, headers: api_headers
+        expect(response).to have_http_status(:ok)
+        expect(user.reload.otp_last_step).to eq(Time.current.to_i / TwoFactor::STEP_SECONDS)
+
+        delete "/api/v1/security/two_factor",
+          params: { password: "password123", code: code }, headers: api_headers
+        expect(response).to have_http_status(:unprocessable_entity)
+        expect(user.reload).to be_second_factor_enabled
+
+        travel TwoFactor::STEP_SECONDS.seconds
+        delete "/api/v1/security/two_factor",
+          params: { password: "password123", code: code_for(enrollment["secret"]) }, headers: api_headers
+        expect(response).to have_http_status(:ok)
+        expect(user.reload).not_to be_second_factor_enabled
+      end
+    end
+
     it "does not confirm an enrollment the client never started" do
       api_login(user)
 
@@ -114,14 +135,15 @@ RSpec.describe "API v1 security", type: :request do
   describe "turning it off" do
     before { enroll_over_api }
 
-    it "costs the password, and takes the backup codes with the factor" do
-      delete "/api/v1/security/two_factor", params: { password: "wrong" }, headers: api_headers
+    it "costs the password and recovery proof, and takes the backup codes with the factor" do
+      code = RecoveryCode.generate!(user).first
+      delete "/api/v1/security/two_factor", params: { password: "wrong", code: code }, headers: api_headers
 
       expect(response).to have_http_status(:unprocessable_entity)
       expect(json["error"]).to include("Wrong password")
       expect(user.reload).to be_second_factor_enabled
 
-      delete "/api/v1/security/two_factor", params: { password: "password123" }, headers: api_headers
+      delete "/api/v1/security/two_factor", params: { password: "password123", code: code }, headers: api_headers
 
       expect(response).to have_http_status(:ok)
       expect(json["two_factor"]).to include("enabled" => false, "recovery_codes_left" => 0)
@@ -129,6 +151,26 @@ RSpec.describe "API v1 security", type: :request do
       expect(user).not_to be_second_factor_enabled
       expect(user.otp_secret).to be_nil
       expect(user.recovery_codes.count).to eq(0)
+    end
+  end
+
+  describe "password-only sensitive changes" do
+    before { enroll_over_api }
+
+    it "refuses disabling without second-factor proof" do
+      delete "/api/v1/security/two_factor", params: { password: "password123" }, headers: api_headers
+
+      expect(response).to have_http_status(:unprocessable_entity)
+      expect(user.reload).to be_second_factor_enabled
+      expect(user.recovery_codes.unused.count).to eq(RecoveryCode::COUNT)
+    end
+
+    it "refuses regeneration without second-factor proof" do
+      post "/api/v1/security/recovery_codes", params: { password: "password123" }, headers: api_headers
+
+      expect(response).to have_http_status(:unprocessable_entity)
+      expect(user.recovery_codes.unused.count).to eq(RecoveryCode::COUNT)
+      expect(json).not_to have_key("recovery_codes")
     end
   end
 
@@ -142,36 +184,60 @@ RSpec.describe "API v1 security", type: :request do
       expect(user.recovery_codes.count).to eq(0)
     end
 
-    it "replaces the set, and only the password authorises it" do
+    it "replaces the set only with the password and recovery proof" do
       old = enroll_over_api
 
-      post "/api/v1/security/recovery_codes", params: { password: "nope" }, headers: api_headers
+      post "/api/v1/security/recovery_codes", params: { password: "nope", code: old.first }, headers: api_headers
       expect(response).to have_http_status(:unprocessable_entity)
 
-      post "/api/v1/security/recovery_codes", params: { password: "password123" }, headers: api_headers
+      post "/api/v1/security/recovery_codes",
+        params: { password: "password123", code: old.first }, headers: api_headers
 
       expect(response).to have_http_status(:ok)
       fresh = json.fetch("recovery_codes")
       expect(fresh).not_to include(*old)
       expect(user.recovery_codes.unused.count).to eq(RecoveryCode::COUNT)
+      expect(RecoveryCode.consume!(user.reload, old.first)).to be_nil
       # What the row holds is a 64-hex digest, so the plaintext a client was
       # handed cannot be read back out of the database.
       expect(user.recovery_codes.pluck(:code_digest))
         .to all(match(/\A\h{64}\z/))
     end
 
+    it "does not spend recovery proof submitted without an initial password-only challenge" do
+      codes = enroll_over_api
+      post "/api/v1/sessions", params: { email: user.email, password: "password123", code: codes.first }
+
+      expect(response).to have_http_status(:unauthorized)
+      expect(json["two_factor_required"]).to be(true)
+      expect(user.recovery_codes.unused.count).to eq(RecoveryCode::COUNT)
+      get "/api/v1/security"
+      expect(response).to have_http_status(:unauthorized)
+    end
+
     it "spends one at sign-in and refuses it twice" do
       codes = enroll_over_api
+
+      post "/api/v1/sessions", params: { email: user.email, password: "password123" }
+      expect(response).to have_http_status(:unauthorized)
+      expect(json["two_factor_required"]).to be(true)
+      expect(user.recovery_codes.unused.count).to eq(RecoveryCode::COUNT)
 
       post "/api/v1/sessions", params: { email: user.email, password: "password123", code: codes.first }
 
       expect(response).to have_http_status(:ok)
       expect(json.dig("two_factor", "recovery_codes_left")).to eq(RecoveryCode::COUNT - 1)
-      expect(RecoveryCode.consume!(user.reload, codes.first)).to be_nil
+
+      post "/api/v1/sessions", params: { email: user.email, password: "password123" }
+      post "/api/v1/sessions", params: { email: user.email, password: "password123", code: codes.first }
+      expect(response).to have_http_status(:forbidden)
+      expect(user.recovery_codes.unused.count).to eq(RecoveryCode::COUNT - 1)
     end
   end
 
   describe "phone verification" do
+    before { allow(PhoneVerification).to receive(:random_code).and_return("123456") }
+
     it "asks for a number in international format" do
       api_login(user)
 
@@ -267,6 +333,7 @@ RSpec.describe "API v1 security", type: :request do
       enrollment = start_enrollment
       post "/api/v1/security/two_factor/confirm",
         params: { code: code_for(enrollment["secret"]) }, headers: api_headers
+      codes = json.fetch("recovery_codes")
 
       stored = user.reload.otp_secret
       expect(stored).to eq(enrollment["secret"])
@@ -276,7 +343,9 @@ RSpec.describe "API v1 security", type: :request do
       bodies << response.body
       post "/api/v1/security/phone", params: { phone: "+94771234567" }, headers: api_headers
       bodies << response.body
-      post "/api/v1/security/recovery_codes", params: { password: "password123" }, headers: api_headers
+      post "/api/v1/security/recovery_codes",
+        params: { password: "password123", code: codes.first }, headers: api_headers
+      expect(response).to have_http_status(:ok)
       bodies << response.body
       delete "/api/v1/security/devices/#{user.auth_sessions.active.first.id}", headers: api_headers
       bodies << response.body

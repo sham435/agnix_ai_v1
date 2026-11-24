@@ -2,19 +2,19 @@
 # gone. 80 bits of randomness each, so a fast SHA-256 is enough — and the
 # digest doubles as the lookup key, which is why the plaintext is never stored.
 class RecoveryCode < ApplicationRecord
-  belongs_to :user
+  belongs_to :user, inverse_of: :recovery_codes
 
   # Digits and letters that survive being read aloud or retyped from a
   # screenshot: no 0/O, 1/I/L.
   ALPHABET = "23456789ABCDEFGHJKMNPQRSTUVWXYZ".freeze
-  LENGTH = 10
+  LENGTH = 17
   COUNT = 10
 
   scope :unused, -> { where(consumed_at: nil) }
 
   class << self
     def generate!(user, count: COUNT)
-      transaction do
+      user.with_lock do
         user.recovery_codes.unused.delete_all
         codes = Array.new(count) { random_code }
         codes.each { |code| create!(user: user, code_digest: digest(code)) }
@@ -56,10 +56,9 @@ class RecoveryCode < ApplicationRecord
 
     private
 
-    # 32 symbols divide 256 exactly, so mapping random bytes this way is
-    # unbiased — and `rand` would not be cryptographically safe here.
+    # 17 uniformly sampled symbols from this 30-character alphabet exceed 80 bits.
     def random_code
-      SecureRandom.bytes(LENGTH).bytes.map { |byte| ALPHABET[byte % ALPHABET.length] }.join
+      Array.new(LENGTH) { ALPHABET[SecureRandom.random_number(ALPHABET.length)] }.join
     end
   end
 

@@ -88,8 +88,8 @@ RSpec.describe "Account & security panel", :js, type: :system do
     snapshot("06-two-factor-off")
 
     click_button "Set up two-factor authentication"
-    expect(panel_body).to have_text("Add this account to your authenticator")
-    expect(panel_body).to have_css("svg[aria-label^='QR code']")
+    expect(panel_body).to have_text("Scan this QR code with your authenticator")
+    expect(panel_body).to have_css("svg[role='img'][aria-label*='authenticator']")
     snapshot("06b-two-factor-enrolling")
     # Opening the screen is not turning anything on.
     expect(user.reload.second_factor_enabled?).to be(false)
@@ -129,7 +129,8 @@ RSpec.describe "Account & security panel", :js, type: :system do
     fill_in "code", with: code
     click_button "Verify"
 
-    expect(panel_body).to have_text("Verified")
+    expect(panel_body).to have_text("#{phone} is verified.")
+    expect(panel_body.find("a", text: "Phone verification")).to have_text("Verified")
     expect(user.reload.phone).to eq(phone)
     expect(user.phone_verified_at).to be_present
   end
@@ -148,7 +149,7 @@ RSpec.describe "Account & security panel", :js, type: :system do
     snapshot("10-devices-after-revoke")
   end
 
-  it "turns two-factor off only for the right password" do
+  it "turns two-factor off only for the right password and fresh authenticator proof" do
     secret = TwoFactor.generate_secret
     TwoFactor.activate!(user, secret)
     open_from_user_menu("Security & two-factor")
@@ -157,12 +158,14 @@ RSpec.describe "Account & security panel", :js, type: :system do
     expect(panel_body).to have_text("Turn it off", wait: 5)
 
     fill_in "Current password", with: "not the password"
+    fill_in "code", with: ROTP::TOTP.new(secret).now
     click_button "Disable two-factor"
 
     expect(panel_body).to have_text("Wrong password. Nothing was changed.")
     expect(user.reload.second_factor_enabled?).to be(true)
 
     fill_in "Current password", with: "password123"
+    fill_in "code", with: ROTP::TOTP.new(secret).now
     click_button "Disable two-factor"
 
     expect(panel_body).to have_text("Two-factor authentication is off.")

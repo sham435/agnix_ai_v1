@@ -30,8 +30,13 @@ module Tools
         integration.touch_usage if result[:ok]
         result
       rescue StandardError => e
-        Rails.logger.warn "[Tools::Dispatcher] #{name} failed: #{e.class} #{e.message}"
-        refusal("execution_failed", detail: e.message.to_s.truncate(200))
+        if %w[web_search.search figma.get_file].include?(name)
+          Rails.logger.warn "[Tools::Dispatcher] #{name} failed: #{e.class}"
+          refusal("execution_failed")
+        else
+          Rails.logger.warn "[Tools::Dispatcher] #{name} failed: #{e.class} #{e.message}"
+          refusal("execution_failed", detail: e.message.to_s.truncate(200))
+        end
       end
 
       private

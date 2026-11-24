@@ -47,6 +47,59 @@ RSpec.describe "Images gallery", type: :request do
       expect(response.body).not_to include("image-generation-#{theirs.id}")
     end
 
+    it "subscribes each user only to their own gallery stream" do
+      owner_stream = Turbo::StreamsChannel.signed_stream_name(ImageGeneration.gallery_stream_name(user))
+      other_stream = Turbo::StreamsChannel.signed_stream_name(ImageGeneration.gallery_stream_name(other))
+
+      sign_in_as
+      get images_path
+      page = Nokogiri::HTML(response.body)
+      expect(page.at_css("turbo-cable-stream-source")["signed-stream-name"]).to eq(owner_stream)
+      expect(page.at_css("turbo-cable-stream-source")["signed-stream-name"]).not_to eq(other_stream)
+
+      sign_in_as(other)
+      get images_path
+      page = Nokogiri::HTML(response.body)
+      expect(page.at_css("turbo-cable-stream-source")["signed-stream-name"]).to eq(other_stream)
+      expect(page.at_css("turbo-cable-stream-source")["signed-stream-name"]).not_to eq(owner_stream)
+    end
+
+    it "returns to the originating conversation and carries context into the form" do
+      conversation = create(:conversation, user: user)
+      sign_in_as
+      get images_path(conversation_id: conversation.id)
+      page = Nokogiri::HTML(response.body)
+      expect(page.at_css('a[aria-label="Back to chat"]')["href"]).to eq(conversation_path(conversation))
+      expect(page.at_css('input[name="conversation_id"]')["value"]).to eq(conversation.id)
+      expect(response.body).to include("Return to conversation", "min-h-[44px]")
+    end
+
+    it "preserves an originating route but rejects external return destinations" do
+      conversation = create(:conversation, user: user)
+      sign_in_as
+      route = conversation_path(conversation, view: "chat")
+      get images_path(conversation_id: conversation.id, return_to: route)
+      expect(Nokogiri::HTML(response.body).at_css('a[aria-label="Back to chat"]')["href"]).to eq(route)
+      get images_path(conversation_id: conversation.id, return_to: "//external.example#{conversation_path(conversation)}")
+      expect(Nokogiri::HTML(response.body).at_css('a[aria-label="Back to chat"]')["href"]).to eq(conversation_path(conversation))
+    end
+
+    it "uses a recent owned conversation for direct navigation, never a foreign origin" do
+      conversation = create(:conversation, user: user)
+      foreign = create(:conversation, user: other)
+      sign_in_as
+      get images_path(conversation_id: foreign.id)
+      page = Nokogiri::HTML(response.body)
+      expect(page.at_css('a[aria-label="Back to chat"]')["href"]).to eq(conversation_path(conversation))
+      expect(page.at_css('input[name="conversation_id"]')["value"]).to be_blank
+    end
+
+    it "returns to the chats landing screen when no conversation exists" do
+      sign_in_as
+      get images_path
+      expect(Nokogiri::HTML(response.body).at_css('a[aria-label="Back to chat"]')["href"]).to eq(conversations_path)
+    end
+
     it "paginates at most 24 rows per page" do
       sign_in_as
       create_list(:image_generation, 25, user: user)
@@ -74,6 +127,24 @@ RSpec.describe "Images gallery", type: :request do
       expect(generation.user_id).to eq(user.id)
       expect(response.body).to include("image-generation-#{generation.id}")
       expect(Images::GenerateJob).to have_received(:perform_later).with(generation.id)
+    end
+
+    it "associates a queued task with its owned originating conversation" do
+      conversation = create(:conversation, user: user)
+      sign_in_as
+      post images_path, params: { conversation_id: conversation.id, image_generation: { prompt: "Context image" } }, headers: api_headers
+      expect(ImageGeneration.sole.metadata["conversation_id"]).to eq(conversation.id)
+      get images_path(conversation_id: conversation.id)
+      get conversation_path(conversation)
+      expect(ImageGeneration.sole).to be_queued
+      expect(Images::GenerateJob).to have_received(:perform_later).once
+    end
+
+    it "does not associate another user's conversation" do
+      foreign = create(:conversation, user: other)
+      sign_in_as
+      post images_path, params: { conversation_id: foreign.id, image_generation: { prompt: "Private context" } }, headers: api_headers
+      expect(ImageGeneration.sole.metadata["conversation_id"]).to be_nil
     end
 
     it "answers JSON with 202 + payload for API clients" do
@@ -132,6 +203,72 @@ RSpec.describe "Images gallery", type: :request do
       expect(clone.prompt).to eq(original.prompt)
       expect(clone.model).to eq(original.model)
       expect(clone.status).to eq("queued")
+      expect(Images::GenerateJob).to have_received(:perform_later).with(clone.id)
+    end
+
+    it "does not resubmit an active task or bypass the provider cooldown" do
+      sign_in_as
+      active = create(:image_generation, user: user)
+      limited = create(:image_generation, :failed, user: user,
+        metadata: { "retry_at" => (Time.current + 2.minutes).iso8601 }, error: "Wait before retrying")
+      [ active, limited ].each do |generation|
+        post regenerate_image_path(generation), headers: form_headers
+        expect(response).to have_http_status(:see_other)
+      end
+      expect(ImageGeneration.count).to eq(2)
+      expect(Images::GenerateJob).not_to have_received(:perform_later)
+      travel 3.minutes do
+        post regenerate_image_path(limited), headers: form_headers
+        expect(ImageGeneration.count).to eq(3)
+        expect(ImageGeneration.order(:created_at).last.metadata["retry_at"]).to be_nil
+      end
+    end
+
+    it "allows deliberate regeneration after stale worker recovery" do
+      original = create(:image_generation, :running, user: user)
+      original.update_columns(updated_at: ImageGeneration::RUNNING_LEASE.ago - 1.second)
+      original.recover_stale_running!
+      sign_in_as
+
+      post regenerate_image_path(original), headers: form_headers
+
+      clone = ImageGeneration.where.not(id: original.id).sole
+      expect(clone).to be_queued
+      expect(original.reload).to be_failed
+      expect(Images::GenerateJob).to have_received(:perform_later).with(clone.id)
+    end
+
+    it "preserves the conversation on a deliberate retry after failure" do
+      conversation = create(:conversation, user: user)
+      original = create(:image_generation, :failed, user: user, metadata: { "conversation_id" => conversation.id })
+      sign_in_as
+      post regenerate_image_path(original), headers: form_headers
+      clone = ImageGeneration.where.not(id: original.id).sole
+      expect(clone.metadata["conversation_id"]).to eq(conversation.id)
+      expect(original.reload).to be_failed
+    end
+
+    it "regenerates raw JSON-string metadata and preserves conversation context" do
+      conversation = create(:conversation, user: user)
+      original = create(:image_generation, :failed, user: user)
+      original.update_column(:metadata, {
+        "conversation_id" => conversation.id,
+        "conversation_path" => conversation_path(conversation),
+        "revised_prompt" => "Old refined prompt",
+        "provider_id" => "provider-image"
+      }.to_json)
+      sign_in_as
+
+      post regenerate_image_path(original), headers: api_headers.merge("ACCEPT" => "text/html")
+
+      expect(response).to have_http_status(:found)
+      expect(response).to redirect_to(images_path(
+        conversation_id: conversation.id, return_to: conversation_path(conversation)
+      ))
+      clone = ImageGeneration.where.not(id: original.id).sole
+      expect(clone.metadata).to eq(
+        "conversation_id" => conversation.id, "conversation_path" => conversation_path(conversation)
+      )
       expect(Images::GenerateJob).to have_received(:perform_later).with(clone.id)
     end
 

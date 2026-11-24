@@ -32,6 +32,7 @@ gem "jbuilder", "~> 2.11"          # JSON API views
 # -- Markdown & Rendering --
 gem "rouge"                        # Syntax highlighting
 gem "commonmarker", "~> 2.0"       # GitHub-flavored markdown
+gem "nokogiri", "~> 1.19"         # Bounded, network-free webfetch DOM parsing
 
 # -- ViewComponents --
 gem "view_component", "~> 3.21"

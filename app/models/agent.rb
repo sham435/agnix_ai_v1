@@ -74,6 +74,13 @@ class Agent < ApplicationRecord
 
   scope :active, -> { where(is_active: true) }
 
+  def self.chat_selection(organization, requested_id = nil)
+    return nil unless organization
+
+    available = organization.agents.active.order(created_at: :asc)
+    requested_id.present? ? available.find_by(id: requested_id) : available.first
+  end
+
   # Methods.
   def enabled_tools
     tools.reject { |t| t.is_a?(Hash) && t["enabled"] == false }
@@ -103,10 +110,12 @@ class Agent < ApplicationRecord
     Llm::Client.new(
       provider: provider,
       model: model,
+      connection: Llm::ProviderConnection.resolve(organization: organization, provider: provider, model: model),
       temperature: config.fetch("temperature", 0.7),
       max_tokens: config.fetch("max_tokens", 4096),
       top_p: config.fetch("top_p", nil),
-      api_key: api_key
+      api_key: api_key,
+      model_config: nil
     )
   end
 

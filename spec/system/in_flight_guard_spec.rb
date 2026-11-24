@@ -202,10 +202,10 @@ RSpec.describe "In-flight guard & live thinking indicator", :js, type: :system d
 
   # §4: a failed HTTP submission preserves the draft and re-enables retry.
   it "keeps the draft and unlocks the composer when the HTTP send is rejected" do
-    # Force a 422 from the controller by failing Message#save.
+    # Force a 422 from admission before any message or active task is created.
     allow(Message).to receive(:new).and_wrap_original do |orig, *args, **kwargs|
       inst = orig.call(*args, **kwargs)
-      def inst.save(*)
+      def inst.valid?(*)
         errors.add(:content, "can't be blank")
         false
       end

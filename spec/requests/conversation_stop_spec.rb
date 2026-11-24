@@ -35,8 +35,9 @@ RSpec.describe "Conversation stop", type: :request do
     end
     let!(:plan_run) { create(:agent_run, conversation: conversation, status: "executing") }
     let!(:placeholder) do
-      conversation.messages.create!(role: "assistant", content: "Half an ",
-        metadata: { "streaming" => true, "request_id" => "req-1" })
+      conversation.messages.create!(role: "assistant", content: "Half an ", metadata: {
+        "streaming" => true, "stream_started_at" => Time.current.utc.iso8601, "request_id" => "req-1"
+      })
     end
 
     it "cancels the chat run and the plan run, and answers the tab" do
@@ -67,7 +68,8 @@ RSpec.describe "Conversation stop", type: :request do
       post stop_conversation_path(conversation), headers: headers
 
       expect(response.body).to include("Nothing is running in this conversation.")
-      expect(frames).to be_empty
+      expect(frames.map { |frame| frame[:type] }).to eq([ "background_tasks" ])
+      expect(frames.sole).to include(active: 0, queued: 0)
     end
 
     it "leaves a finalized reply alone and stops only the live placeholder" do

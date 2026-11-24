@@ -49,9 +49,48 @@ RSpec.describe Agents::ToolRegistry, type: :service do
     end
   end
 
+  describe "deep_research result contract" do
+    let(:organization) { create(:organization) }
+    let(:user) { organization.owner }
+    let(:url) { "https://example.com/evidence" }
+    let(:source_id) { Research::DeepResearch.source_id(url) }
+    let(:full_result) do
+      {
+        status: "completed", reason: nil, calls: [ { query: "Rails", status: "completed" } ],
+        sources: [ { source_id: source_id, title: "Evidence", url: url, snippet: "x" * 2000, query: "Rails" } ],
+        findings: [ { text: "x" * 2000, source_url: url, basis: "search_snippet" } ],
+        limits: { sources: 10, calls: 20, seconds: 120, questions: 5, snippet_characters: 2000 },
+        elapsed_seconds: 0.5, caveat: "Findings are provider search snippets; full pages have not been reviewed."
+      }
+    end
+    let(:context) { { user: user, organization: organization } }
+
+    before do
+      allow(Capabilities::Registry).to receive(:available?).and_call_original
+      allow(Capabilities::Registry).to receive(:available?).with("deep_research", organization: organization).and_return(true)
+    end
+
+    it "sends the full ledger to the runner sink and returns only bounded model output" do
+      received = []
+      expect(Research::DeepResearch).to receive(:call).and_return(full_result)
+
+      result = described_class.execute("deep_research", { "topic" => "Rails" },
+        context.merge(research_sink: ->(research) { received << research }))
+
+      expect(received).to eq([ full_result ])
+      expect(result[:ok]).to be(true)
+      expect(result[:calls]).to eq(1)
+      expect(result[:sources].first).to include(source_id: source_id, number: 1)
+      expect(result[:sources].first[:snippet].length).to eq(300)
+      expect(result[:findings]).to eq([ { source_id: source_id, basis: "search_snippet" } ])
+      expect(result.to_json.bytesize).to be <= Research::DeepResearch::TOOL_RESULT_MAX_BYTES
+    end
+  end
+
   describe "capability gating (Phase C)" do
     before do
-      described_class.register_capability "cap_probe_tool", "sketch", # sketch = disabled("planned")
+      allow(Sketches::Create).to receive(:available?).and_return(false)
+      described_class.register_capability "cap_probe_tool", "sketch",
         description: "Probe",
         parameters: { type: "object", properties: {} } do |_args, _context|
         raise "capability gate must prevent execution"
@@ -177,12 +216,14 @@ RSpec.describe Agents::ToolRegistry, type: :service do
   # at needs_authorization, so the refusal path needs no stubbing at all; the
   # happy paths flip only the availability gate and never hit real HTTP.
   describe "generate_image (image_generation capability)" do
-    let(:user) { create(:user) }
-    let(:conversation) { create(:conversation, user: user) }
+    let(:organization) { create(:organization) }
+    let(:user) { organization.owner }
+    let(:agent) { create(:agent, organization: organization) }
+    let(:conversation) { create(:conversation, user: user, agent: agent) }
+    let(:context) { { user: user, conversation_id: conversation.id, agent_id: agent.id } }
 
     it "refuses with capability_unavailable while no provider key is configured" do
-      result = described_class.execute("generate_image", { "prompt" => "a lighthouse" },
-                                       { user: user, conversation_id: conversation.id })
+      result = described_class.execute("generate_image", { "prompt" => "a lighthouse" }, context)
 
       expect(result[:ok]).to be false
       expect(result[:error_code]).to eq("capability_unavailable")
@@ -193,19 +234,19 @@ RSpec.describe Agents::ToolRegistry, type: :service do
     context "with the capability enabled" do
       before do
         allow(Capabilities::Registry).to receive(:available?).and_call_original
-        allow(Capabilities::Registry).to receive(:available?).with("image_generation").and_return(true)
+        allow(Capabilities::Registry).to receive(:available?).with("image_generation", organization: organization).and_return(true)
         allow(Images::GenerateJob).to receive(:perform_later)
       end
 
       it "queues a trimmed row tagged with the conversation and enqueues the job" do
-        result = described_class.execute("generate_image", { "prompt" => "  a lighthouse at dusk  " },
-                                         { user: user, conversation_id: conversation.id })
+        result = described_class.execute("generate_image", { "prompt" => "  a lighthouse at dusk  " }, context)
 
         expect(result[:ok]).to be true
         expect(result[:status]).to eq("queued")
         generation = ImageGeneration.find(result[:image_generation_id])
         expect(generation.prompt).to eq("a lighthouse at dusk")
         expect(generation.user_id).to eq(user.id)
+        expect(generation.organization_id).to eq(organization.id)
         expect(generation.metadata["conversation_id"]).to eq(conversation.id.to_s)
         expect(Images::GenerateJob).to have_received(:perform_later).with(generation.id)
       end
@@ -214,7 +255,7 @@ RSpec.describe Agents::ToolRegistry, type: :service do
         result = described_class.execute(
           "generate_image",
           { "prompt" => "arctic fox", "size" => "9999x9999", "quality" => "ultra" },
-          { user: user }
+          context
         )
         generation = ImageGeneration.find(result[:image_generation_id])
 
@@ -226,8 +267,7 @@ RSpec.describe Agents::ToolRegistry, type: :service do
         create(:image_generation, :running, user: user,
                                              metadata: { "conversation_id" => conversation.id })
 
-        result = described_class.execute("generate_image", { "prompt" => "second one" },
-                                         { user: user, conversation_id: conversation.id })
+        result = described_class.execute("generate_image", { "prompt" => "second one" }, context)
 
         expect(result[:ok]).to be false
         expect(result[:error_code]).to eq("generation_in_flight")
@@ -241,8 +281,36 @@ RSpec.describe Agents::ToolRegistry, type: :service do
         expect(result[:error_code]).to eq("not_authorized")
       end
 
+      it "rejects a forged agent that does not own the conversation" do
+        other_agent = create(:agent, organization: organization)
+        result = described_class.execute("generate_image", { "prompt" => "forged art" },
+          context.merge(agent_id: other_agent.id))
+
+        expect(result).to eq(ok: false, error_code: "not_authorized")
+        expect(ImageGeneration.count).to eq(0)
+        expect(Images::GenerateJob).not_to have_received(:perform_later)
+      end
+
+      it "rejects another user's conversation" do
+        foreign = create(:conversation)
+        result = described_class.execute("generate_image", { "prompt" => "foreign art" },
+          context.merge(conversation_id: foreign.id, agent_id: foreign.agent.id))
+
+        expect(result).to eq(ok: false, error_code: "not_authorized")
+        expect(ImageGeneration.count).to eq(0)
+        expect(Images::GenerateJob).not_to have_received(:perform_later)
+      end
+
+      it "rolls back the generation when enqueueing fails" do
+        allow(Images::GenerateJob).to receive(:perform_later).and_raise(ActiveJob::EnqueueError)
+
+        expect { described_class.execute("generate_image", { "prompt" => "retry art" }, context) }
+          .to raise_error(ActiveJob::EnqueueError)
+        expect(ImageGeneration.count).to eq(0)
+      end
+
       it "surfaces validation errors for a blank prompt instead of a silent row" do
-        result = described_class.execute("generate_image", { "prompt" => "   " }, { user: user })
+        result = described_class.execute("generate_image", { "prompt" => "   " }, context)
 
         expect(result[:ok]).to be false
         expect(result[:error_code]).to eq("invalid_request")

@@ -1,7 +1,6 @@
 class AgentRunner
-  # A tool-using chat turn can now do real multi-step work on the machine (the
-  # agent's enabled tools include run_command/write_file even without an OS
-  # mode), so the old tight cap of 10 cut off work that was still progressing.
+  # A tool-using chat turn can do multi-step work in an isolated workspace,
+  # so the old tight cap of 10 cut off work that was still progressing.
   # Chat gets a moderate budget; a build/OS task, which can legitimately churn
   # through dozens of steps (scaffold files, install dependencies, re-verify),
   # gets a larger one. See #iteration_budget for how they are chosen.
@@ -29,6 +28,7 @@ class AgentRunner
   TOOL_STEP_MAX_TOKENS = Integer(ENV.fetch("TOOL_STEP_MAX_TOKENS", 2048))
   OS_MODES = %w[auto_plan auto_build manual_plan manual_build].freeze
   CHAT_ATTACHMENT_TOOLS = %w[read_asset list_assets].freeze
+  HOST_TOOLS = %w[run_command code_executor write_file read_file scaffold file_reader file_writer].freeze
   # Minimum spacing between repeated "thinking" status events (ms). Reasoning
   # models emit many tiny deltas; we forward a status heartbeat, not the text.
   THINKING_THROTTLE_MS = 250
@@ -37,6 +37,9 @@ class AgentRunner
   # paths write the same sentence - neither buries the partial under a generic
   # apology, and neither double-marks it.
   STOP_MARKER = "\n\n…(reply stopped before finishing)".freeze
+  RESEARCH_SOURCES_SECTION = /(?:\A|\n)[ \t]*(?:#+[ \t]*)?Sources[ \t]*:?[ \t]*\n(?:[ \t]*(?:[-*+]|\d+[.])[ \t]+[^\n]*(?:\n|\z)|[ \t]*https?:\/\/[^\n]*(?:\n|\z)|[ \t]*\r?\n)*\z/i
+  RESEARCH_MARKDOWN_LINK = %r{(!?)\[([^\]\n]*)\]\((https?://(?:[^\s()]|\([^\s()]*\))+)(?:\s+["'][^"']*["'])?\)}i
+  RESEARCH_URL = %r{<(https?://[^<>\s]+)>|(https?://[^\s<>"']+)}i
 
   # Raised at a cancellation checkpoint when the user pressed Stop. A separate
   # class from the provider errors because nothing failed: the words that
@@ -52,11 +55,10 @@ class AgentRunner
 
   # §6 build resume: only these durable, overwriting filesystem writes are both
   # checkpointed and skipped when a re-delivered run of the same turn finds them
-  # already completed. Re-running a completed write_file/scaffold is pure waste
-  # and the source of "duplicate files"; a read or a calculation is cheap to
-  # redo and a run_command may carry side effects we must never silently elide,
-  # so everything else always executes even when its outcome is still recorded.
-  RESUMABLE_WRITE_TOOLS = %w[write_file scaffold].freeze
+  # already completed. Re-running a completed workspace write is pure waste;
+  # reads and calculations are cheap to redo, and workspace commands may carry
+  # side effects we must never silently elide.
+  RESUMABLE_WRITE_TOOLS = %w[workspace_write_file].freeze
 
   attr_reader :agent, :conversation, :user, :source_message
 
@@ -117,19 +119,15 @@ class AgentRunner
       end
     end
 
-    # Per-message tool selection (composer Tools dropdown) narrows the agent's
-    # configured list for this run only. No selection -> agent config default.
-    names = per_message_tool_filter(names)
-
-    # OS modes always execute on this machine: guarantee the execution tools
-    # are available even when the agent's configured tool list is chat-only.
-    # `scaffold` is included here because laying down a whole verified project
-    # in one call is precisely what a build task needs, and doing it by hand
-    # through write/run round-trips is what used to exhaust the iteration
-    # budget.
+    # OS modes add sandbox tools even with a chat-only agent configuration.
+    # Host filesystem and execution tools are never available in any mode.
     if conversation.mode.in?(OS_MODES)
-      os_names = %w[run_command code_executor write_file read_file calculator memory_search time scaffold]
-      names = (names | os_names | attachment_tools | image_tools)
+      os_names = %w[calculator memory_search time]
+      workspace_names = %w[workspace_create workspace_write_file workspace_read_file
+                           workspace_list_files workspace_execute workspace_install
+                           workspace_run_tests workspace_start_preview workspace_get_logs
+                           workspace_export workspace_stop]
+      names = (names | os_names | workspace_names | attachment_tools | image_tools)
     else
       # Plain chat: conversations carrying user attachments get the read-only
       # asset tools so the agent can actually read uploaded files (uploads,
@@ -137,7 +135,8 @@ class AgentRunner
       # tools -> the streaming path stays as-is.
       names = (names | attachment_tools | image_tools)
     end
-    names
+    # Filter last so automatic additions cannot bypass a user's selection.
+    per_message_tool_filter(names.reject { |name| HOST_TOOLS.include?(name.to_s) })
   end
 
   private
@@ -146,7 +145,15 @@ class AgentRunner
   # no capability mapping (OS tools) always surface.
   def capability_allows_tool?(name)
     capability_key = Agents::ToolRegistry.capability_key_for(name)
-    capability_key.nil? || Capabilities::Registry.available?(capability_key)
+    return true if capability_key.nil?
+    return Capabilities::Registry.available?(capability_key) unless %w[webfetch web_search deep_research].include?(capability_key)
+
+    organization = ToolIntegration.authorized_organization_for(user, agent_id: agent.id)
+    return false unless organization.present?
+
+    return true if capability_key != "webfetch" && Capabilities::Registry.available?(capability_key)
+
+    Capabilities::Registry.available?(capability_key, organization: organization)
   end
 
   # Per-message tool selection intersects the agent's gated tool list — it can
@@ -167,6 +174,10 @@ class AgentRunner
   # org-scoped active integration, touches usage); plain names keep using the
   # native registry exactly as before.
   def dispatch_tool_call(tool_name, args)
+    unless tool_definitions.include?(tool_name)
+      return { error: "Tool is not allowed for this turn: #{tool_name}", error_code: "tool_not_allowed" }
+    end
+
     unless tool_name.to_s.include?(".")
       return Agents::ToolRegistry.execute(tool_name, args, tool_context)
     end
@@ -181,7 +192,13 @@ class AgentRunner
   end
 
   def tool_context
-    { user_id: user.id, user: user, agent_id: agent.id, conversation_id: conversation.id }
+    { user_id: user.id, user: user, agent_id: agent.id, conversation_id: conversation.id,
+      cancelled: -> { cancelled?(force: true) }, research_sink: ->(result) { record_research(result) } }
+  end
+
+  def record_research(result)
+    @research_results ||= []
+    @research_results << result.deep_dup
   end
 
   # The agent config pins a plugin tool to the integration row chosen when it
@@ -277,11 +294,12 @@ class AgentRunner
       executable, verifiable steps. Do NOT include markdown or backticks — reply with
       only the array.
       Rules:
-      - Steps must be doable with the tools: run_command (bash), write_file,
-        read_file, code_executor (python/ruby), memory_search.
-      - For building an app or project: one step to create the directory structure,
-        one step per major file (write_file), then install any dependencies, then a
-        final step that runs the build/tests and reports results.
+      - Use only tools enabled for this turn: #{tool_definitions.join(', ')}.
+      - File access and execution must use sandbox workspace tools, never the host.
+      - For building an app or project: create a sandbox with workspace_create,
+        write major files with workspace_write_file, install dependencies with
+        workspace_install, then use workspace_run_tests and report real results.
+      - If a required sandbox tool is unavailable, report that limitation.
       - 3 to 12 steps, each short and imperative.
       - Pure conversational request (greeting, question, chit-chat) => [].
       Example: ["Create the project directory structure", "Write the main Python module",
@@ -300,7 +318,7 @@ class AgentRunner
   end
 
   def chat_for_plan(prompt)
-    resp = agent.llm_client.chat(messages: [ { role: "user", content: prompt } ], max_tokens: PLAN_MAX_TOKENS)
+    resp = build_client_for_agent.chat(messages: [ { role: "user", content: prompt } ], max_tokens: PLAN_MAX_TOKENS)
     resp[:content].to_s
   rescue => e
     Rails.logger.warn "Plan generation failed: #{e.class} #{e.message}"
@@ -417,16 +435,39 @@ class AgentRunner
     Rails.logger.warn "broadcast_turbo error: #{e.message}"
   end
 
-  # A build/OS run operates on the machine through real tools and can span
-  # many steps; it gets the larger budget. Plain conversational chat keeps the
-  # tight cap. This mirrors the OS_MODES gate in tool_definitions that decides
-  # whether on-machine execution tools are available at all.
+  # Every build/OS task gets its own Docker workspace before the model's first
+  # turn, so "create me a project" never has to start with a filesystem path.
+  # The outcome is recorded as a sentence the system prompt then repeats —
+  # including the sentence for failure, because a task that could not get a
+  # sandbox must say so instead of pretending to have one.
+  def ensure_workspace_for_task!
+    @workspace_note = nil
+    return unless conversation.mode.in?(OS_MODES)
+
+    health = Workspaces::Provider.available?
+    unless health[:manager] && health[:docker]
+      @workspace_note = health[:manager] ? "the Docker daemon is not answering" : "the workspace manager is not reachable"
+      return
+    end
+
+    workspace = Workspaces::Provider.ensure_for(conversation: conversation, user: user)
+    @workspace_note = "workspace #{workspace.id} is running (Docker, no network, no host paths)"
+  rescue Workspaces::Unavailable, Workspaces::Rejected => e
+    @workspace_note = "no workspace could be created: #{e.message}"
+  rescue StandardError => e
+    Rails.logger.warn "[Workspace] provisioning failed: #{e.class}: #{e.message}"
+    @workspace_note = "no workspace could be created (#{e.class})"
+  end
+
+  # A build/OS run operates in a sandbox and can span many steps; it gets the
+  # larger budget. Plain conversational chat keeps the tight cap.
   def iteration_budget
     conversation.mode.in?(OS_MODES) ? BUILD_MAX_ITERATIONS : MAX_ITERATIONS
   end
 
   def execute_tool_loop(user_message, stream: true, &block)
     refresh_live_references!
+    @research_results = []
     @generating_announced = false
     run_record = Run.create!(
       agent_id: agent.id,
@@ -439,7 +480,7 @@ class AgentRunner
         dispatched_at: @pcb_dispatched_at,
         started_at: Time.current,
         request_id: @request_id
-      )
+      ).merge("effective_provider" => effective_provider, "effective_model" => effective_model)
     )
     # Every provider call and every tool invocation below records its own
     # BLOCKED/RUNNING transition on this row. It is an instance variable
@@ -457,6 +498,8 @@ class AgentRunner
 
     conversation.generate_title if conversation.messages.where(role: "user").count == 1
 
+    ensure_workspace_for_task!
+
     total_tokens = 0
     tool_call_results = []
 
@@ -469,7 +512,10 @@ class AgentRunner
         # wait -> iteration 2 -> tool wait -> … instead of an anonymous ping-pong.
         @pcb_burst_label = "iteration #{iteration + 1}"
         messages = build_messages(tool_call_results)
-        tool_schemas = build_tool_schemas
+        messages.concat(Conversations::TurnAdmission.consume_steering(conversation).map do |content|
+          { role: "user", content: content }
+        end)
+        tool_schemas = tool_schemas_for_selection
 
         # Generation budget for THIS turn (§2). Only intermediate tool-selection
         # turns are bounded: tools present, not the first turn (which for a plain
@@ -489,9 +535,10 @@ class AgentRunner
           # so the view can render a distinct "no response" state and the
           # context filter can drop it from history.
           raw = response[:content].to_s
-          content = raw.strip
+          content, research_meta = finalize_research_answer(raw.strip)
           final_meta = (@streaming_message&.metadata || {}).dup
           final_meta.delete("streaming")
+          final_meta["deep_research"] = research_meta unless research_meta.empty?
           final_meta["empty_response"] = true if content.empty?
 
           # finish_reason "length" means the model hit max_tokens mid-sentence:
@@ -521,7 +568,7 @@ class AgentRunner
               exit_note: "reply truncated at the max_tokens cap (finish_reason=length)")
             return {
               content: content, tool_calls: [], tokens: total_tokens,
-              actions: tool_call_results.length, incomplete: true, truncated: true,
+              actions: tool_call_results.count { |entry| action_succeeded?(entry[:result]) }, incomplete: true, truncated: true,
               messages: conversation.messages.to_a
             }
           end
@@ -532,7 +579,7 @@ class AgentRunner
             content: content,
             tool_calls: [],
             tokens: total_tokens,
-            actions: tool_call_results.length,
+            actions: tool_call_results.count { |entry| action_succeeded?(entry[:result]) },
             messages: conversation.messages.to_a
           }
         end
@@ -558,7 +605,7 @@ class AgentRunner
       end
       run_record.finish!(output: fallback_content, tokens_used: total_tokens, exit_note: "exited the loop at the iteration cap (#{iteration_budget})")
       { content: fallback_content, tool_calls: [], tokens: total_tokens,
-        actions: tool_call_results.length, incomplete: true }
+        actions: tool_call_results.count { |entry| action_succeeded?(entry[:result]) }, incomplete: true }
 
     rescue Cancelled
       # Stopped by the user, not by a failure: keep every word that actually
@@ -570,7 +617,7 @@ class AgentRunner
       # only listens to status frames retires its indicator immediately.
       yield({ type: "status", phase: "stopped" }) if block_given?
       { content: final_content, tool_calls: [], tokens: total_tokens,
-        actions: tool_call_results.length, incomplete: true, cancelled: true }
+        actions: tool_call_results.count { |entry| action_succeeded?(entry[:result]) }, incomplete: true, cancelled: true }
 
     rescue => e
       run_record.fail!(e)
@@ -614,7 +661,7 @@ class AgentRunner
           metadata: { "error" => e.message, "stopped_short" => true }.merge(meta_annotations))
       end
       { content: final_content, error: e.message, tool_calls: [], tokens: total_tokens,
-        actions: tool_call_results.length }.merge(annotations)
+        actions: tool_call_results.count { |entry| action_succeeded?(entry[:result]) } }.merge(annotations)
     end
   end
 
@@ -636,11 +683,94 @@ class AgentRunner
     content
   end
 
+  def finalize_research_answer(content)
+    return [ content, {} ] if @research_results.blank?
+
+    ledger = research_source_ledger
+    supported = ledger.map { |source| source[:url] }
+    body = content.sub(RESEARCH_SOURCES_SECTION, "").strip
+    body, unsupported = sanitize_research_citations(body, supported)
+    body = append_research_sources(body, ledger) if body.present? && ledger.any?
+    metadata = {
+      "runs" => @research_results.map(&:deep_dup),
+      "sources" => ledger,
+      "citation_validation" => { "supported_urls" => supported, "unsupported_urls" => unsupported.uniq }
+    }
+    [ body, metadata ]
+  end
+
+  def research_source_ledger
+    Array(@research_results).flat_map { |result| Array(result[:sources]) }.filter_map do |source|
+      next unless source.is_a?(Hash)
+
+      url = Research::DeepResearch.canonical_url(source[:url])
+      next unless url
+
+      { source_id: source[:source_id].presence || Research::DeepResearch.source_id(url),
+        title: source[:title].to_s.first(300), url: url,
+        snippet: source[:snippet].to_s.first(Research::DeepResearch::MAX_SNIPPET), query: source[:query].to_s }
+    end.uniq { |source| source[:url] }
+  end
+
+  def sanitize_research_citations(content, supported)
+    unsupported = []
+    linked = content.gsub(RESEARCH_MARKDOWN_LINK) do
+      image, label, url = Regexp.last_match.captures
+      canonical = Research::DeepResearch.canonical_url(url)
+      if canonical && supported.include?(canonical)
+        "#{image}[#{label}](#{canonical})"
+      else
+        unsupported << (canonical || url).to_s.first(2048)
+        "#{label.presence || 'source'} (unsupported citation)"
+      end
+    end
+    cleaned = linked.gsub(RESEARCH_URL) do
+      token = Regexp.last_match(1) || Regexp.last_match(2)
+      core, suffix = split_research_url(token)
+      canonical = Research::DeepResearch.canonical_url(core)
+      if canonical && supported.include?(canonical)
+        "#{canonical}#{suffix}"
+      else
+        unsupported << (canonical || core).to_s.first(2048)
+        "[unsupported citation]#{suffix}"
+      end
+    end
+    [ cleaned, unsupported ]
+  end
+
+  def split_research_url(token)
+    suffix = +""
+    closing = { ")" => "(", "]" => "[", "}" => "{" }
+    loop do
+      character = token[-1]
+      if ".,;:!?".include?(character)
+        token = token[0...-1]
+        suffix = "#{character}#{suffix}"
+      elsif closing.key?(character) && token.count(character) > token.count(closing.fetch(character))
+        token = token[0...-1]
+        suffix = "#{character}#{suffix}"
+      else
+        break
+      end
+    end
+    [ token, suffix ]
+  end
+
+  def append_research_sources(content, ledger)
+    sources = ledger.each_with_index.map do |source, index|
+      title = source[:title].to_s.gsub(/\s+/, " ").strip.first(120)
+      "#{index + 1}. #{title.presence || source[:url]} — #{source[:url]}"
+    end
+    [ content.rstrip, "", "Sources:", *sources ].join("\n")
+  end
+
   # Symbol-keyed { error_code:, retryable: } for a typed provider error (see
   # Llm::AnthropicAdapter::LlmError); {} for anything untyped, so OpenAI/local
   # adapters and non-LLM failures keep their existing generic handling.
   def error_annotations(error)
-    return {} unless error.respond_to?(:code) && error.code
+    typed = error.is_a?(Llm::ProviderError) || error.is_a?(Llm::AnthropicAdapter::LlmError)
+    return {} unless typed && error.code.present?
+
     { error_code: error.code.to_s,
       retryable: (error.respond_to?(:retryable?) ? !!error.retryable? : nil) }
   end
@@ -661,6 +791,7 @@ class AgentRunner
   def chat_with_agent_model(messages, tools, stream:, max_tokens: nil, &block)
     client = build_client_for_agent
     started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    stream = false if client.is_a?(Llm::Client) && !client.streaming_supported?
 
     if stream && block
       @thinking_announced = false
@@ -672,8 +803,8 @@ class AgentRunner
         @connecting_announced = true
         yield({ type: "status", phase: "connecting" })
       end
-      final_result = with_blocked("provider:#{agent.provider}/#{agent.model}") do
-        with_local_model_slot(agent.provider) do
+      final_result = with_blocked("provider:#{effective_provider}/#{effective_model}") do
+        with_local_model_slot(effective_provider) do
           client.stream_chat(**provider_opts(messages, tools, max_tokens)) do |piece, _full, _tcs, kind|
             # Checked before anything else so a stopped turn never pays for
             # another delta of tokens it will not keep. Raising here unwinds out
@@ -701,18 +832,59 @@ class AgentRunner
       end
       elapsed_ms = ((Process.clock_gettime(Process::CLOCK_MONOTONIC) - started) * 1000).round
       log_provider_metrics(elapsed_ms: elapsed_ms, tokens: final_result[:tokens], stream: true)
+      record_inference_result(final_result)
       final_result
     else
-      result = with_blocked("provider:#{agent.provider}/#{agent.model}") do
-        with_local_model_slot(agent.provider) { client.chat(**provider_opts(messages, tools, max_tokens)) }
+      result = with_blocked("provider:#{effective_provider}/#{effective_model}") do
+        with_local_model_slot(effective_provider) { client.chat(**provider_opts(messages, tools, max_tokens)) }
       end
       elapsed_ms = ((Process.clock_gettime(Process::CLOCK_MONOTONIC) - started) * 1000).round
       log_provider_metrics(elapsed_ms: elapsed_ms, tokens: result[:tokens], stream: false)
+      record_inference_result(result)
       result
     end
   rescue => e
+    code = error_annotations(e)[:error_code]
+    record_inference_outcome(error_code: code) if code
     Rails.logger.error "LLM call failed: #{e.class} #{e.message}"
     raise
+  end
+
+  def record_inference_result(result)
+    error_code = if result[:content].to_s.strip.present? || Array(result[:tool_calls]).any?
+                   nil
+    else
+                   "empty_response"
+    end
+    record_inference_outcome(error_code: error_code)
+  end
+
+  def record_inference_outcome(error_code: nil)
+    provider_client = build_client_for_agent
+    if provider_client.is_a?(Llm::Client) && (connection = provider_client.connection)
+      model = provider_client.inference_model
+      if connection.model != model
+        connection = Llm::ProviderConnection.new(
+          provider: connection.provider, integration: connection.integration, api_key: connection.api_key,
+          model: model, base_url: connection.base_url
+        )
+      end
+      Llm::InferenceTracker.record(connection, model, error: error_code, api_family: connection.api_family,
+        fingerprint: connection.inference_fingerprint)
+      return
+    end
+    integration = ToolIntegration.connection_for(agent.organization, effective_provider)
+    return unless integration
+
+    connection = Llm::ProviderConnection.new(
+      provider: effective_provider,
+      integration: integration,
+      model: effective_model
+    )
+    Llm::InferenceTracker.record(connection, effective_model, error: error_code,
+      fingerprint: connection.inference_fingerprint)
+  rescue StandardError => e
+    Rails.logger.warn "[LLM] inference-outcome-failed #{e.class}: #{e.message}"
   end
 
   # Wait on something outside this process, and say so on its control block.
@@ -753,9 +925,9 @@ class AgentRunner
   # after the fact as "busy box" vs "slow model". Metrics must never be the
   # reason a run fails, so the whole thing is guarded.
   def log_provider_metrics(elapsed_ms:, tokens:, stream:)
-    line = "[LLM] provider=#{agent.provider} model=#{agent.model} " \
+    line = "[LLM] provider=#{effective_provider} model=#{effective_model} " \
            "latency_ms=#{elapsed_ms} tokens=#{tokens} stream=#{stream}"
-    sample = Llm::ResourceSampler.sample(provider: agent.provider, model: agent.model)
+    sample = Llm::ResourceSampler.sample(provider: effective_provider, model: effective_model)
     if sample.empty?
       Rails.logger.info line
     else
@@ -768,8 +940,48 @@ class AgentRunner
     Rails.logger.warn "[LLM] metrics-log-failed #{e.class}: #{e.message}"
   end
 
+  def explicit_model_selection
+    return @explicit_model_selection if defined?(@explicit_model_selection)
+
+    @explicit_model_selection = source_message&.metadata&.dig("selected_model")&.deep_dup ||
+      Llm::ModelSelection.new(user: user, organization: agent.organization, conversation: conversation).snapshot
+  end
+
+  def effective_model_selection
+    @effective_model_selection ||= explicit_model_selection ||
+      { "provider_id" => agent.provider, "model_id" => agent.model }
+  end
+
+  def effective_provider
+    effective_model_selection&.fetch("provider_id") || agent.provider
+  end
+
+  def effective_model
+    effective_model_selection&.fetch("model_id") || agent.model
+  end
+
   def build_client_for_agent
-    agent.llm_client
+    selection = explicit_model_selection
+    return agent.llm_client unless selection
+    return agent.llm_client if selection["provider_id"] == agent.provider && selection["model_id"] == agent.model
+
+    connection = Llm::ProviderConnection.resolve(
+      organization: agent.organization,
+      provider: selection["provider_id"],
+      model: selection["model_id"]
+    )
+    Llm::Client.new(provider: selection["provider_id"], model: selection["model_id"], connection: connection,
+      temperature: agent.config.fetch("temperature", 0.7), max_tokens: agent.config.fetch("max_tokens", 4096),
+      top_p: agent.config.fetch("top_p", nil))
+  end
+
+  def tool_schemas_for_selection
+    return [] if build_tool_schemas.empty?
+    return build_tool_schemas unless explicit_model_selection
+
+    model = Llm::ModelCatalogue.new(agent.organization)
+      .resolve!({ "provider_id" => effective_provider, "model_id" => effective_model }, tools: true)
+    model[:supports_tools] == true ? build_tool_schemas : []
   end
 
   # Keyword args for a provider call. max_tokens is only included when a
@@ -811,14 +1023,23 @@ class AgentRunner
     end
   end
 
-  # Serialize a recent tool result and cap it. byteslice (not String#[]) so a
-  # truncated tail can never split a multi-byte character into mojibake.
+  # Keep the tool protocol's content valid JSON even when the payload is capped.
   def bound_payload(result)
     json = result.to_json
     return json if json.bytesize <= TOOL_RESULT_MAX_BYTES
 
-    json.byteslice(0, TOOL_RESULT_MAX_BYTES) +
-      "…[truncated #{json.bytesize - TOOL_RESULT_MAX_BYTES} bytes]"
+    original_bytes = json.bytesize
+    envelope = { ok: result[:ok], truncated: true, original_bytes: original_bytes,
+                 notice: "[truncated #{original_bytes - TOOL_RESULT_MAX_BYTES} bytes]" }
+    preview = json.byteslice(0, TOOL_RESULT_MAX_BYTES).scrub
+    while preview.present?
+      envelope[:preview] = preview
+      bounded = envelope.to_json
+      return bounded if bounded.bytesize <= TOOL_RESULT_MAX_BYTES
+
+      preview = preview[0, [ preview.length - 32, 0 ].max]
+    end
+    { truncated: true, original_bytes: original_bytes }.to_json
   end
 
   # A collapsed older result: enough for the model to recall WHAT happened
@@ -854,8 +1075,8 @@ class AgentRunner
       CTX
     end
 
-    tools = if agent.enabled_tools.present?
-      tool_names = agent.enabled_tools.map { |t| t.is_a?(Hash) ? t[:name] || t["name"] : t }.compact
+    tool_names = tool_definitions
+    tools = if tool_names.present?
       "\nAvailable tools: #{tool_names.join(", ")}. Use them when needed and return tool_calls with proper id and name."
     else
       ""
@@ -875,14 +1096,26 @@ class AgentRunner
 
         Current OS mode: #{conversation.mode}#{status_info}
 
+        Sandbox for this task: #{@workspace_note || "not provisioned for this turn"}.
+
         Execution rules:
-        - You act ON THIS MACHINE through real tools: run_command (bash),
-          write_file, read_file, code_executor (python/ruby).
+        - Build inside the Docker workspace: workspace_write_file,
+          workspace_execute, workspace_install, workspace_run_tests,
+          workspace_start_preview, workspace_get_logs, workspace_export.
+          Paths are relative to /workspace and spaces in them are ordinary —
+          there is no reason to rename anything.
+        - Host filesystem access and host execution are prohibited, even when
+          the sandbox is unavailable. Use only tools in the Available tools list.
+          Inspect project files with workspace_read_file / workspace_list_files.
+          Pass command arguments as argv tokens; never ask the user to rename
+          a folder to work around a tool.
         - For every plan step, call tools first; never claim an action you did
-          not run. Verify results (ls, cat, run tests) before saying done.
+          not run. A workspace is only "ready" when workspace_create said so.
         - A failing command means: read the error, fix it, run again.
         - Emit ONE tool call at a time and wait for its result.
-        - Finally, summarize exactly what was created and how to run it.
+        - Finally, summarize exactly what was created, how to run it, and the
+          preview link if the manager produced one. If the sandbox was
+          unavailable, say that instead of describing work that did not happen.
       CTX
     else
       ""
@@ -988,6 +1221,7 @@ class AgentRunner
   def resumable_action?(tool_name, args)
     return false if @resume_action_keys.nil? || @resume_action_keys.empty?
     return false unless RESUMABLE_WRITE_TOOLS.include?(tool_name.to_s)
+    return false unless tool_definitions.include?(tool_name)
 
     @resume_action_keys.include?(action_key(tool_name, args))
   end

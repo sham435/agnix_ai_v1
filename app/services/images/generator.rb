@@ -6,7 +6,7 @@ module Images
   # OpenAI Images API adapter (Phase 3). Reuses the LLM client's conventions:
   # the same server-side key loading idiom (Rails credentials :openai/:api_key
   # falling back to OPENAI_API_KEY), HTTParty with explicit open/read timeouts,
-  # and transport-transient retries with linear backoff. No new env var names.
+  # without automatic retries of billable requests. No new env var names.
   #
   # Provider quirks handled here (never in callers):
   # * gpt-image-1 always returns b64_json and REJECTS a response_format param —
@@ -21,9 +21,6 @@ module Images
     # queue worker forever: 10s to open, 60s to read (spec: ~30-60s).
     OPEN_TIMEOUT = 10
     READ_TIMEOUT = 60
-
-    MAX_ATTEMPTS = 2
-    RETRY_BACKOFF_SECONDS = 2
 
     TRANSIENT_ERRORS = [
       Errno::ETIMEDOUT, Net::OpenTimeout, Net::ReadTimeout, EOFError,
@@ -40,6 +37,25 @@ module Images
     Result = Data.define(:images, :created, :model)
 
     class Error < StandardError; end
+
+    class RateLimited < Error
+      attr_reader :retry_after, :retry_at
+
+      def initialize(retry_after: nil)
+        @retry_after = retry_after.to_s.presence
+        @retry_at = if @retry_after&.match?(/\A\d+\z/)
+          Time.current + @retry_after.to_i.seconds
+        elsif @retry_after
+          Time.httpdate(@retry_after)
+        end
+        super(@retry_at ?
+          "Image generation is rate limited. Retry manually after #{@retry_at.utc.iso8601}." :
+          "Image generation is rate limited. Wait before retrying manually.")
+      rescue ArgumentError
+        @retry_at = nil
+        super("Image generation is rate limited. Wait before retrying manually.")
+      end
+    end
 
     class NotConfigured < Error
       def initialize(msg = "Image generation is not configured. Add an OpenAI API key.")
@@ -74,7 +90,7 @@ module Images
       raise Error, "Image generation needs a prompt before it can run." if prompt.blank?
 
       body = build_body(prompt:, size:, quality:, n:)
-      response = request_with_retries(body)
+      response = request(body)
       parse(response)
     end
 
@@ -105,25 +121,18 @@ module Images
       body.merge(adjustments)
     end
 
-    def request_with_retries(body)
-      attempt = 0
-      begin
-        attempt += 1
-        post_json(body)
-      rescue *TRANSIENT_ERRORS => e
-        if attempt >= MAX_ATTEMPTS
-          raise Error, TIMEOUT_ERRORS.any? { |k| e.is_a?(k) } ?
-            "Image generation timed out waiting for the provider. Try again." :
-            "Could not reach the image provider (#{e.class}). Try again."
-        end
-
-        sleep(RETRY_BACKOFF_SECONDS * attempt)
-        retry
-      rescue Error
-        raise
-      rescue StandardError => e
-        raise Error, "Could not reach the image provider: #{e.message}"
-      end
+    # A lost response does not mean the provider did not generate/bill an image.
+    # Never automatically repeat this non-idempotent POST.
+    def request(body)
+      post_json(body)
+    rescue *TRANSIENT_ERRORS => e
+      raise Error, TIMEOUT_ERRORS.any? { |k| e.is_a?(k) } ?
+        "Image generation timed out. The provider may have charged for it; retry only deliberately." :
+        "The image provider connection failed. The request may have been charged; retry only deliberately."
+    rescue Error
+      raise
+    rescue StandardError
+      raise Error, "Could not reach the image provider. Retry only deliberately."
     end
 
     def post_json(body)
@@ -131,7 +140,8 @@ module Images
                                body: body.to_json,
                                headers: request_headers,
                                timeout: READ_TIMEOUT,
-                               open_timeout: OPEN_TIMEOUT)
+                               open_timeout: OPEN_TIMEOUT,
+                               max_retries: 0)
       check_response!(response)
       response
     end
@@ -147,11 +157,12 @@ module Images
       code = response.code.to_i
       return response if code.between?(200, 299)
 
+      raise RateLimited.new(retry_after: response.headers["retry-after"]) if code == 429
+
       message = provider_error_message(response)
       raise Error, case code
       when 401 then "The OpenAI API key was rejected. Update it in Settings."
       when 403 then "This OpenAI account is not allowed to generate images."
-      when 429 then "Image generation is rate limited right now; try again in a moment."
       when 400..499 then "The image provider rejected the request: #{message}"
       else "The image provider is unavailable (HTTP #{code}). Try again later."
       end

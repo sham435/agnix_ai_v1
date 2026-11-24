@@ -7,19 +7,23 @@ class Api::V1::RecoveryCodesController < ApplicationController
   before_action :authenticate_user!
 
   def create
-    unless current_user.second_factor_enabled?
-      return render json: {
-        error: "Set up two-factor first — backup codes only exist to replace an authenticator."
-      }, status: :conflict
-    end
-    unless current_user.authenticate(params[:password])
-      return render json: { error: "Wrong password. Nothing was changed." },
-        status: :unprocessable_entity
+    result = TwoFactor.regenerate_recovery_codes(user: current_user,
+      password: security_params[:password], code: security_params[:code])
+    unless result.status == :verified
+      status = { disabled: :conflict, locked: :too_many_requests }.fetch(result.status, :unprocessable_entity)
+      return render json: { error: result.error }, status: status
     end
 
+    response.headers["Cache-Control"] = "no-store"
     render json: security_snapshot.merge(
       message: "Here are your new backup codes. The old ones no longer work.",
-      recovery_codes: RecoveryCode.generate!(current_user)
+      recovery_codes: result.recovery_codes
     )
+  end
+
+  private
+
+  def security_params
+    params.permit(:password, :code)
   end
 end

@@ -86,8 +86,13 @@
         </div>
       </div>
     <% elsif current_organization&.tool_integrations&.any? %>
-      <p class="text-[11px] text-fg-subtle">No connected plugin currently exposes agent tools. Enable one on the
-        <%= link_to "Plugins", tool_integrations_path, class: "text-accent-text hover:underline" %> page.</p>
+      <p class="text-[11px] text-fg-subtle">No connected plugin currently exposes agent tools.
+        <% if current_user.admin?(current_organization) || current_user.owner?(current_organization) %>
+          Enable one on the <%= link_to "Plugins", tool_integrations_path, class: "text-accent-text hover:underline" %> page.
+        <% else %>
+          Ask an organization admin to enable one.
+        <% end %>
+      </p>
     <% end %>
   </div>
 

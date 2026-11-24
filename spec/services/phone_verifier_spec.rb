@@ -12,6 +12,11 @@ RSpec.describe PhoneVerifier do
 
   let(:phone) { "+94771234567" }
 
+  before do
+    allow(SmsService).to receive(:driver).and_return("dev")
+    allow(PhoneVerification).to receive(:random_code).and_return("123456")
+  end
+
   def request_as(other = user, raw_phone = phone, ip: nil)
     described_class.request(other, phone: raw_phone, ip: ip)
   end
@@ -27,7 +32,7 @@ RSpec.describe PhoneVerifier do
 
     it "accepts the ways people actually type it" do
       [ "+94 77 123 4567", "+94-77-123-4567", "0094 77 123 4567" ].each do |raw|
-        user.phone_verifications.delete_all
+        travel PhoneVerification::RESEND_COOLDOWN + 1.second
         result = request_as(user, raw)
 
         expect(result.status).to eq(:sent), "#{raw} was refused"
@@ -39,6 +44,20 @@ RSpec.describe PhoneVerifier do
 
     it "refuses a number it would have to guess a country for" do
       expect(request_as(user, "771234567").status).to eq(:invalid_number)
+    end
+
+    it "extracts the full international number without dropping any digit" do
+      expect(PhoneVerification.normalize("+94771234567")).to eq(phone)
+      expect(PhoneVerification.normalize("0094771234567")).to eq(phone)
+      allow(PhoneVerification).to receive(:default_country_code).and_return("94")
+      expect(PhoneVerification.normalize("0771234567")).to eq(phone)
+    end
+
+    it "rejects embedded junk and ambiguous prefixes instead of stripping them" do
+      [ "call +94771234567", "+94771234567x", "++94771234567", "+94+771234567", "+94771234567\n" ].each do |raw|
+        expect(request_as(user, raw).status).to eq(:invalid_number)
+      end
+      expect(user.phone_verifications.count).to eq(0)
     end
   end
 
@@ -99,23 +118,26 @@ RSpec.describe PhoneVerifier do
       expect(user.phone_verifications.count).to eq(0)
     end
 
-    it "throws the code away when the gateway fails to send it" do
+    it "expires an undelivered code but preserves the send budget and cooldown" do
       allow(SmsService).to receive(:deliver).and_return({ ok: false, error: "Gateway said no" })
 
       result = request_as
 
       expect(result.status).to eq(:undelivered)
-      expect(result.message).to eq("Gateway said no")
-      expect(user.phone_verifications.count).to eq(0)
+      expect(result.message).to eq("The code could not be sent.")
+      expect(user.phone_verifications.count).to eq(1)
+      expect(user.phone_verifications.last).to be_expired
+      expect(described_class.confirm(user, code: "123456").status).to eq(:expired)
+      expect(request_as.status).to eq(:cooldown)
     end
 
-    it "keeps the code out of what a failure reports" do
-      allow(SmsService).to receive(:deliver).and_return({ ok: false, error: "Gateway said no" })
+    it "keeps gateway details and the code out of what a failure reports" do
+      allow(SmsService).to receive(:deliver).and_return({ ok: false, error: "Gateway rejected code 123456" })
 
       result = request_as
 
       expect(result.code).to be_nil
-      expect(result.message).to eq("Gateway said no")
+      expect(result.message).to eq("The code could not be sent.")
       expect(result.message).not_to match(/\d{6}/)
     end
   end
@@ -131,7 +153,8 @@ RSpec.describe PhoneVerifier do
       result = described_class.confirm(user, code: code)
 
       expect(result.status).to eq(:verified)
-      expect(user.reload.phone).to eq(phone)
+      # The same instance feeds the immediate panel/API response, not a later GET.
+      expect(user.phone).to eq(phone)
       expect(user.phone_verified_at).to be_present
       expect(user.phone_verifications.last.consumed?).to be(true)
     end
@@ -166,12 +189,62 @@ RSpec.describe PhoneVerifier do
       code = request_as.code
       described_class.confirm(user, code: code)
 
-      # A spent row is out of the running: #current_for only looks at rows that
-      # can still be verified, so the honest answer to a second try is "there is
-      # no open code". Keeping it that way is what lets a fresh request go
-      # through right away instead of hitting the old row's cooldown.
+      # A spent row is out of the running for confirmation, but still counts
+      # toward the send budget and cooldown.
       expect(described_class.confirm(user, code: code).status).to eq(:no_code)
       expect(user.reload.phone).to eq(phone)
+    end
+
+    it "accepts only six ASCII digits with optional spaces or dashes" do
+      request_as
+
+      [ "123456x", "x123456", "１２３４５６", "123456\n" ].each do |input|
+        expect(described_class.confirm(user, code: input).status).to eq(:invalid)
+      end
+      expect(user.reload).not_to be_phone_verified
+      expect(described_class.confirm(user, code: " 123-456 ").status).to eq(:verified)
+    end
+
+    it "rejects non-string codes rather than coercing them into valid input" do
+      request_as
+
+      [ 123456, nil, [ "123456" ], { code: "123456" } ].each do |input|
+        expect(described_class.confirm(user, code: input).status).to eq(:invalid)
+      end
+      expect(user.reload).not_to be_phone_verified
+      expect(user.phone_verifications.last.attempts).to eq(4)
+    end
+
+    it "does not verify an already consumed row through a stale instance" do
+      request_as
+      stale = PhoneVerification.find(user.phone_verifications.last.id)
+      expect(described_class.confirm(user, code: "123456").status).to eq(:verified)
+
+      expect(stale.verify("123456")).to eq(PhoneVerification::ALREADY_CONSUMED)
+      expect(stale.reload.attempts).to eq(1)
+      expect(request_as.status).to eq(:cooldown)
+    end
+
+    it "does not grant more guesses through a stale instance" do
+      request_as
+      stale = PhoneVerification.find(user.phone_verifications.last.id)
+      PhoneVerification::MAX_ATTEMPTS.times { described_class.confirm(user, code: "000000") }
+
+      expect(stale.verify("123456")).to eq(PhoneVerification::EXHAUSTED)
+      expect(stale.reload.attempts).to eq(PhoneVerification::MAX_ATTEMPTS)
+      expect(user.reload).not_to be_phone_verified
+    end
+
+    it "never transfers a phone already verified by another account" do
+      owner = create(:user, phone: phone, phone_verified_at: 1.day.ago)
+      request_as
+
+      expect(described_class.confirm(user, code: "123456").status).to eq(:invalid)
+      expect(owner.reload.phone).to eq(phone)
+      expect(user.reload.phone).to be_nil
+      expect(user).not_to be_phone_verified
+      expect(user.phone_verifications.last).not_to be_consumed
+      expect(user.phone_verifications.last.attempts).to eq(1)
     end
 
     it "does not verify someone else's code" do

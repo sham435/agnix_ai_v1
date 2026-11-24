@@ -1,0 +1,38 @@
+<%#
+  Coding Workspace panel. One slide-over for the Docker sandbox this
+  conversation is running in: files, live preview, execution, logs, tests.
+  It lives in the shell so any page can open it, and its frame has no `src`
+  until opened — reading a sandbox costs a manager round-trip, so a normal
+  page view should not pay for it.
+-%>
+<div class="workspace-panel"
+     id="workspace-panel"
+     role="dialog"
+     aria-modal="true"
+     aria-labelledby="workspace-panel-title"
+     data-workspace-panel-target="panel"
+     data-open="false"
+     inert
+     tabindex="-1">
+  <div class="workspace-panel__backdrop" data-action="click->workspace-panel#close"></div>
+
+  <section class="workspace-panel__surface">
+    <header class="workspace-panel__header">
+      <div class="min-w-0">
+        <p class="text-[10px] font-semibold uppercase tracking-[0.14em] text-fg-subtle">Shams AI</p>
+        <h2 id="workspace-panel-title" class="truncate text-[15px] font-semibold text-fg">Coding Workspace</h2>
+      </div>
+
+      <button type="button"
+              class="workspace-panel__close"
+              data-action="workspace-panel#close"
+              aria-label="Close coding workspace">
+        <svg class="size-[18px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>
+      </button>
+    </header>
+
+    <div class="workspace-panel__scroll" data-workspace-panel-target="scroll" data-busy="false">
+      <%= turbo_frame_tag "workspace_panel_body", data: { workspace_panel_target: "frame" } %>
+    </div>
+  </section>
+</div>

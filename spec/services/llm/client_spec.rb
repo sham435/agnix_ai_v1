@@ -15,6 +15,8 @@ RSpec.describe Llm::Client do
     ENV["BONSAI2_BASE_URL"] = "http://127.0.0.1:8080/v1"
     ENV["BONSAI_MODEL"] = "bonsai-2-27b"
     ENV["OPENROUTER_BASE_URL"] = "https://openrouter.ai/api/v1"
+    ENV.delete("ANTHROPIC_BASE_URL")
+    ENV.delete("OLLAMA_BASE_URL")
     example.run
   ensure
     ENV.replace(original)
@@ -132,7 +134,7 @@ RSpec.describe Llm::Client do
           .chat(messages: [ { role: "user", content: "hi" } ], tools: [])
       end
 
-      expect(kwargs[:base_url]).to eq("https://generativelanguage.googleapis.com/v1beta/openai/v1")
+      expect(kwargs[:base_url]).to eq("https://generativelanguage.googleapis.com/v1beta/openai")
       expect(kwargs[:model]).to eq("gemini-2.5-flash")
       expect(kwargs[:api_key]).to eq("AIza-test-key")
     end
@@ -145,7 +147,7 @@ RSpec.describe Llm::Client do
           .chat(messages: [ { role: "user", content: "hi" } ], tools: [])
       end
 
-      expect(kwargs[:base_url]).to eq("https://proxy.example.test/v1beta/openai/v1")
+      expect(kwargs[:base_url]).to eq("https://proxy.example.test/v1beta/openai")
     end
 
     it "never falls through to another provider when the key is missing" do
@@ -154,7 +156,7 @@ RSpec.describe Llm::Client do
           .chat(messages: [ { role: "user", content: "hi" } ], tools: [])
       end
 
-      expect(kwargs[:base_url]).to eq("https://generativelanguage.googleapis.com/v1beta/openai/v1")
+      expect(kwargs[:base_url]).to eq("https://generativelanguage.googleapis.com/v1beta/openai")
       expect(kwargs[:api_key]).to be_nil
     end
   end
@@ -225,6 +227,86 @@ RSpec.describe Llm::Client do
 
       expect(kwargs[:base_url]).to eq("https://openrouter.ai/api/v1")
       expect(kwargs[:model]).to eq("recursive/flint-v1.0:free")
+    end
+
+    it "accepts the rerouted connection resolved from a persisted legacy OpenAI row" do
+      organization = create(:organization)
+      create(:tool_integration, organization: organization, provider: "openai",
+                                credentials: { "api_key" => "sk-or-v1-persisted-legacy" })
+      connection = Llm::ProviderConnection.resolve(
+        organization: organization, provider: "openai", model: "vendor/model"
+      )
+
+      kwargs = built_with do
+        described_class.new(provider: "openai", model: "vendor/model", connection: connection)
+          .chat(messages: [ { role: "user", content: "hi" } ], tools: [])
+      end
+
+      expect(kwargs[:connection]).to eq(connection)
+      expect(kwargs[:connection].provider).to eq("openrouter")
+      expect(kwargs[:base_url]).to eq("https://openrouter.ai/api/v1")
+      expect(kwargs[:api_key]).to eq("sk-or-v1-persisted-legacy")
+    end
+  end
+
+  it "keeps a disabled organization connection authoritative over environment credentials" do
+    organization = create(:organization)
+    create(:tool_integration, organization: organization, provider: "anthropic", is_active: false,
+                              credentials: { "api_key" => "test-only-disabled-key" })
+    ENV["ANTHROPIC_API_KEY"] = "test-only-environment-key"
+    connection = Llm::ProviderConnection.resolve(
+      organization: organization, provider: "anthropic", model: "claude-test"
+    )
+    client = described_class.new(provider: "anthropic", model: "claude-test", connection: connection,
+                                 api_key: "test-only-environment-key")
+
+    expect(client.api_key).to be_nil
+    expect(client.send(:adapter).api_key).to be_nil
+  end
+
+  it "passes the effective connection to Anthropic for shared endpoint and transport policy" do
+    connection = Llm::ProviderConnection.new(provider: "anthropic", api_key: "test-only-key", model: "claude-test",
+      model_config: { "supports_streaming" => false })
+    adapter = instance_double(Llm::AnthropicAdapter, chat: nil)
+    allow(Llm::AnthropicAdapter).to receive(:new).and_return(adapter)
+
+    described_class.new(provider: "anthropic", model: "claude-test", connection: connection)
+      .chat(messages: [], tools: [])
+
+    expect(Llm::AnthropicAdapter).to have_received(:new)
+      .with(api_key: "test-only-key", model: "claude-test", connection: connection)
+  end
+
+  describe "streaming capabilities" do
+    { "anthropic" => Llm::AnthropicAdapter, "ollama" => Llm::OllamaAdapter }.each do |provider, adapter_class|
+      context "with #{provider}" do
+        let(:adapter) { instance_double(adapter_class, chat: nil, stream_chat: nil) }
+        let(:model) { provider == "anthropic" ? "claude-test" : "llama-test" }
+
+        before { allow(adapter_class).to receive(:new).and_return(adapter) }
+
+        it "honors an explicitly disabled streaming capability in chat and direct streaming" do
+          client = described_class.new(provider: provider, model: model, api_key: "test-only-key",
+            model_config: { "supports_streaming" => false })
+
+          client.chat(messages: [], tools: [], stream: true)
+
+          expect(client.streaming_supported?).to be(false)
+          expect(adapter).to have_received(:chat).with(hash_including(stream: false))
+          expect(adapter).not_to have_received(:stream_chat)
+          expect { client.stream_chat(messages: [], tools: []) }
+            .to raise_error(Llm::ProviderError) { |error| expect(error.code).to eq("streaming_unavailable") }
+        end
+
+        it "defaults to streaming when the capability is unspecified" do
+          client = described_class.new(provider: provider, model: model, api_key: "test-only-key")
+
+          client.chat(messages: [], tools: [], stream: true)
+
+          expect(client.streaming_supported?).to be(true)
+          expect(adapter).to have_received(:chat).with(hash_including(stream: true))
+        end
+      end
     end
   end
 

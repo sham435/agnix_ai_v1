@@ -40,12 +40,26 @@ class ImageGeneration < ApplicationRecord
   QUALITIES = %w[auto low medium high].freeze
   MODELS = %w[gpt-image-1 dall-e-3].freeze
 
+  # A running row's updated_at is its lease timestamp. This is deliberately
+  # well beyond the provider's 60-second read timeout: recovery must never race
+  # a legitimate generation, and it must never repeat a possibly billed POST.
+  RUNNING_LEASE = 15.minutes
+  STALE_RUNNING_ERROR = "Image generation was interrupted before completion. " \
+                        "The provider may have charged for it; retry only deliberately."
+
   # Queued or running: blocks a second in-chat generation for the same
   # conversation and renders a skeleton in the gallery.
   scope :in_flight, -> { where(status: %w[queued running]) }
   scope :for_conversation, ->(conversation_id) {
     where("metadata->>'conversation_id' = ?", conversation_id.to_s)
   }
+
+  # Single source of truth for the gallery subscription and worker broadcast.
+  # Rendered cards contain private prompts and download URLs, so the stream is
+  # always scoped to the generation owner rather than shared application-wide.
+  def self.gallery_stream_name(user)
+    "image_generations:#{user.id}"
+  end
 
   validates :prompt, presence: true
   validates :provider, inclusion: { in: PROVIDERS }
@@ -62,22 +76,52 @@ class ImageGeneration < ApplicationRecord
     in_flight.for_conversation(conversation_id).exists?
   end
 
-  # Merge provider detail / chat linkage into the jsonb metadata. Tolerates
-  # the raw-string column default ("{}") a fresh row carries before its first
-  # DB round-trip deserializes the jsonb value into a Hash.
-  def merge_metadata!(hash)
-    current = metadata
-    if current.is_a?(String)
-      current = begin
-        JSON.parse(current)
-      rescue JSON::ParserError, TypeError
-        {}
-      end
-    end
-    update!(metadata: (current || {}).merge(hash.compact.stringify_keys))
+  # Fresh or legacy rows can carry raw JSON strings instead of a deserialized
+  # Hash. Malformed JSON and non-object values behave as empty metadata.
+  def normalized_metadata
+    value = metadata
+    value = JSON.parse(value) if value.is_a?(String)
+    value.is_a?(Hash) ? value : {}
+  rescue JSON::ParserError, TypeError
+    {}
   end
 
-  def mark_failed!(message)
-    update!(status: "failed", error: message.to_s.truncate(1000))
+  # Merge provider detail / chat linkage into the jsonb metadata.
+  def merge_metadata!(hash)
+    update!(metadata: normalized_metadata.merge(hash.compact.stringify_keys))
+  end
+
+  def retry_available?
+    return false if queued? || running?
+
+    retry_at = normalized_metadata["retry_at"]
+    retry_at.blank? || Time.iso8601(retry_at) <= Time.current
+  end
+
+  # Reload under lock so stale deliveries cannot both claim a billable request.
+  def claim!
+    with_lock do
+      return false unless queued?
+
+      update!(status: "running", error: nil)
+      true
+    end
+  end
+
+  # A hard-killed worker leaves no terminal transition. Only a redelivery may
+  # close an expired lease, under the same row lock used by claim!, and recovery
+  # never submits another provider request. Manual regenerate creates a new row.
+  def recover_stale_running!
+    with_lock do
+      return false unless running? && updated_at <= RUNNING_LEASE.ago
+
+      mark_failed!(STALE_RUNNING_ERROR, metadata: { "recovered_stale_at" => Time.current.utc.iso8601 })
+      true
+    end
+  end
+
+  def mark_failed!(message, metadata: {})
+    update!(status: "failed", error: message.to_s.truncate(1000),
+            metadata: normalized_metadata.merge(metadata.compact.stringify_keys))
   end
 end

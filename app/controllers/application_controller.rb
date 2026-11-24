@@ -51,6 +51,9 @@ class ApplicationController < ActionController::Base
   def sign_out_current_request
     reset_session
     clear_sign_in_cookies
+    Current.user = nil
+    Current.auth_session = nil
+    remove_instance_variable(:@current_organization) if defined?(@current_organization)
   end
 
   def clear_sign_in_cookies
@@ -97,13 +100,17 @@ class ApplicationController < ActionController::Base
   # Each sign-in also opens a device row, which is what makes "signed-in
   # devices" a list instead of a guess, and gives this browser a token that can
   # be revoked without touching anybody else's.
-  def complete_sign_in(user)
+  def complete_sign_in(user, mfa_verified: false)
     reset_session
     auth = AuthSession.start(user, user_agent: request.user_agent, ip: request.remote_ip)
     persist = { expires: 2.weeks.from_now, httponly: true, secure: Rails.env.production?, same_site: :lax }
 
     session[:user_id] = user.id
     session[:auth_token] = auth.token
+    if mfa_verified
+      session[:mfa_verified_at] = Time.current.iso8601
+      session[:mfa_auth_digest] = auth.token_digest
+    end
     cookies.signed[:user_id] = persist.merge(value: user.id)
     cookies.signed[:auth_token] = persist.merge(value: auth.token)
     Current.auth_session = auth
@@ -120,6 +127,7 @@ class ApplicationController < ActionController::Base
   # Records that a user still has to prove their second factor. Nothing outside
   # the sign-in path reads these keys, so a pending visitor stays anonymous.
   def request_two_factor(user)
+    sign_out_current_request
     session[:otp_user_id] = user.id
     session[:otp_requested_at] = Time.current.iso8601
   end

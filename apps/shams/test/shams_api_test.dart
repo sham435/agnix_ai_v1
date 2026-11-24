@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shams_app/src/api/http_transport.dart';
 import 'package:shams_app/src/api/models.dart';
@@ -338,6 +340,60 @@ void main() {
         },
       );
 
+      test('retries a challenge using the same cookies and credentials', () async {
+        final transport = FakeTransport({
+          'GET /api/v1/csrf': [json(200, '{"token":"tok"}')],
+          'POST /api/v1/sessions': [
+            twoFactorChallenge(),
+            json(
+              200,
+              '{"user":{"id":1}}',
+              headers: const {
+                'set-cookie': ['_shams_session=signed-in; path=/; HttpOnly'],
+              },
+            ),
+          ],
+          'GET /api/v1/security': [json(200, securityPayload(twoFactorEnabled: true))],
+        });
+        final api = apiWith(transport);
+        await api.fetchCsrfToken();
+        final error = await refused(() => api.login('dev@shams.ai', 'secret'));
+        expect(error.statusCode, 401);
+        expect(error.twoFactorRequired, isTrue);
+
+        await api.login('dev@shams.ai', 'secret', code: ' ABCD2EFGHJ ');
+        final requests = transport.sent.where((r) => r.uri.path == '/api/v1/sessions').toList();
+        expect(jsonDecode(requests.first.body!), {
+          'email': 'dev@shams.ai', 'password': 'secret',
+        });
+        expect(jsonDecode(requests.last.body!), {
+          'email': 'dev@shams.ai', 'password': 'secret', 'code': 'ABCD2EFGHJ',
+        });
+        expect(requests.last.headers['Cookie'], contains('_shams_session=pending-challenge'));
+        expect(requests.last.headers['X-CSRF-Token'], 'tok');
+        await api.security();
+        expect(transport.sent.last.headers['Cookie'], contains('_shams_session=signed-in'));
+      });
+
+      test('absent and expired challenges stay server-requested 401s', () async {
+        final transport = FakeTransport({
+          'POST /api/v1/sessions': [
+            twoFactorChallenge(),
+            twoFactorChallenge(expired: true),
+          ],
+        });
+        final api = apiWith(transport);
+        // Even a supplied code does not let the client skip a missing challenge.
+        for (var attempt = 0; attempt < 2; attempt++) {
+          final error = await refused(
+            () => api.login('dev@shams.ai', 'secret', code: '429117'),
+          );
+          expect(error.statusCode, 401);
+          expect(error.twoFactorRequired, isTrue);
+        }
+        expect(transport.sent, hasLength(2), reason: 'no automatic client retries');
+      });
+
       test('never calls a plain bad password a request for a code', () async {
         final api = apiWith(
           FakeTransport({
@@ -379,6 +435,7 @@ void main() {
             startsWith('otpauth://totp/'),
           );
           expect(panel.enrollment?.expiresInSeconds, 600);
+          expect(panel.enrollment?.qrSvg, isNull);
         },
       );
 
@@ -406,17 +463,29 @@ void main() {
         },
       );
 
-      test('turns two-factor off only with the password', () async {
-        final transport = FakeTransport({
-          'DELETE /api/v1/security/two_factor': [json(200, securityPayload())],
+      for (final code in ['429117', '2K4QX7ZR9T']) {
+        test('turns two-factor off with password and $code', () async {
+          final transport = FakeTransport({
+            'DELETE /api/v1/security/two_factor': [json(200, securityPayload())],
+          });
+          final panel = await apiWith(transport).disableTwoFactor(
+            ' secret ',
+            code: code,
+          );
+
+          final request = transport.sent.single;
+          expect(request.method, 'DELETE');
+          expect(request.uri.path, '/api/v1/security/two_factor');
+          expect(request.headers['Content-Type'], 'application/json');
+          expect(jsonDecode(request.body!), {
+            'password': ' secret ',
+            'code': code,
+          });
+          expect(panel.twoFactorEnabled, isFalse);
         });
-        await apiWith(transport).disableTwoFactor('secret');
+      }
 
-        expect(transport.sent.single.method, 'DELETE');
-        expect(transport.sent.single.body, '{"password":"secret"}');
-      });
-
-      test('asks the server for the code instead of inventing one', () async {
+      test('keeps the server password refusal', () async {
         final transport = FakeTransport({
           'DELETE /api/v1/security/two_factor': [
             json(422, '{"error":"That password is not right."}'),
@@ -424,7 +493,7 @@ void main() {
         });
 
         await expectLater(
-          apiWith(transport).disableTwoFactor('nope'),
+          apiWith(transport).disableTwoFactor('nope', code: '429117'),
           throwsA(
             isA<ApiException>()
                 .having(
@@ -437,26 +506,67 @@ void main() {
         );
       });
 
-      test('regenerates backup codes with the password', () async {
-        final transport = FakeTransport({
-          'POST /api/v1/security/recovery_codes': [
-            json(
-              200,
-              securityPayload(
-                twoFactorEnabled: true,
-                recoveryCodesLeft: 10,
-                recoveryCodes: ['2K4QX7ZR9T'],
+      for (final code in ['429117', 'ABCD2EFGHJ']) {
+        test('regenerates backup codes with password and $code', () async {
+          final transport = FakeTransport({
+            'POST /api/v1/security/recovery_codes': [
+              json(
+                200,
+                securityPayload(
+                  twoFactorEnabled: true,
+                  recoveryCodesLeft: 1,
+                  recoveryCodes: ['2K4QX7ZR9T'],
+                ),
               ),
-            ),
-          ],
-        });
-        final panel = await apiWith(
-          transport,
-        ).regenerateRecoveryCodes('secret');
+            ],
+          });
+          final panel = await apiWith(transport).regenerateRecoveryCodes(
+            'secret',
+            code: code,
+          );
 
-        expect(transport.sent.single.body, '{"password":"secret"}');
-        expect(panel.recoveryCodes, ['2K4QX7ZR9T']);
-      });
+          final request = transport.sent.single;
+          expect(request.method, 'POST');
+          expect(request.uri.path, '/api/v1/security/recovery_codes');
+          expect(request.headers['Content-Type'], 'application/json');
+          expect(jsonDecode(request.body!), {'password': 'secret', 'code': code});
+          expect(panel.recoveryCodes, ['2K4QX7ZR9T']);
+        });
+      }
+
+      for (final disable in [true, false]) {
+        for (final fields in [
+          (password: '', code: '429117'),
+          (password: 'secret', code: ''),
+          (password: 'secret', code: 'spent-code'),
+        ]) {
+          test('surfaces missing/invalid factor refusal: $disable $fields',
+              () async {
+            const message = 'Password and a valid two-factor code are required.';
+            final path = disable
+                ? '/api/v1/security/two_factor'
+                : '/api/v1/security/recovery_codes';
+            final method = disable ? 'DELETE' : 'POST';
+            final transport = FakeTransport({
+              '$method $path': [json(422, '{"error":"$message"}')],
+            });
+            final api = apiWith(transport);
+            final error = await refused(
+              () => disable
+                  ? api.disableTwoFactor(fields.password, code: fields.code)
+                  : api.regenerateRecoveryCodes(fields.password, code: fields.code),
+            );
+
+            expect(jsonDecode(transport.sent.single.body!), {
+              'password': fields.password,
+              'code': fields.code,
+            });
+            expect(error.statusCode, 422);
+            expect(error.message, message);
+            expect(error.twoFactorRequired, isFalse);
+          });
+        }
+      }
 
       test('a phone cooldown keeps the server message and the wait', () async {
         // A refusal sends no snapshot, only `status`/`message`/`retry_in`, so
@@ -787,6 +897,264 @@ void main() {
               'message',
               contains('/api/v1/conversations'),
             ),
+          ),
+        );
+      });
+    });
+
+    group('workspace', () {
+      test('lists the conversation\'s sandboxes, newest first', () async {
+        final transport = FakeTransport({
+          'GET /api/v1/workspaces': [json(200, workspacesListPayload())],
+        });
+        final workspaces = await apiWith(transport).listWorkspaces(
+          conversationId: conversationId,
+        );
+
+        expect(
+          transport.sent.single.uri.toString(),
+          'http://localhost:3001/api/v1/workspaces'
+          '?conversation_id=$conversationId',
+        );
+        expect(workspaces.single.id, workspaceId);
+        expect(workspaces.single.name, 'Flask landing page');
+        // A list row is the row only: no manager state, no files, no runs.
+        expect(workspaces.single.runtimeStatus, isNull);
+        expect(workspaces.single.files, isEmpty);
+      });
+
+      test('reads the whole snapshot in one call', () async {
+        final api = apiWith(
+          FakeTransport({
+            'GET /api/v1/workspaces/$workspaceId': [
+              json(
+                200,
+                workspaceDetailPayload(
+                  previewLink: true,
+                  runs: [
+                    workspaceRunJson(),
+                    workspaceRunJson(
+                      id: testRunId,
+                      kind: 'test',
+                      argv: const ['python3', '-m', 'pytest', '-q'],
+                      stdout: '2 passed in 1.14s',
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          }),
+        );
+        final workspace = await api.workspace(workspaceId);
+
+        expect(workspace.state, 'ready');
+        // The container's state is the manager's answer, not the column's.
+        expect(workspace.runtimeStatus, 'running');
+        expect(workspace.container, 'shams-ws-$workspaceId');
+        expect(workspace.files.map((f) => f.path), [
+          'app.py',
+          'templates/index.html',
+        ]);
+        expect(workspace.files.first.sizeLabel, '338 B');
+        expect(workspace.runs.length, 2);
+        expect(workspace.runs.last.kind, 'test');
+        expect(workspace.runs.last.title, 'python3 -m pytest -q');
+        // The row's `preview` is the link this installation issued.
+        expect(workspace.preview!.url, previewGatewayPath);
+        expect(workspace.preview!.isLive, isTrue);
+        expect(workspace.preview!.lifetimeLabel, '10 min left');
+      });
+
+      test('names an unreachable manager instead of an empty project',
+          () async {
+        final workspace = await apiWith(
+          FakeTransport({
+            'GET /api/v1/workspaces/$workspaceId': [
+              json(
+                200,
+                workspaceDetailPayload(
+                  statusError: 'workspace manager is not answering',
+                  files: 'null',
+                  filesError: 'workspace manager is not answering',
+                ),
+              ),
+            ],
+          }),
+        ).workspace(workspaceId);
+
+        expect(workspace.runtimeStatus, 'unavailable');
+        expect(workspace.statusLabel, 'Manager unavailable');
+        expect(workspace.files, isEmpty);
+        expect(workspace.filesError, 'workspace manager is not answering');
+        expect(workspace.preview, isNull);
+      });
+
+      test('says a stopped sandbox is stopped, and keeps its runs', () async {
+        final workspace = await apiWith(
+          FakeTransport({
+            'GET /api/v1/workspaces/$workspaceId': [
+              json(
+                200,
+                workspaceDetailPayload(
+                  state: 'destroyed',
+                  runtimeStatus: 'absent',
+                  files: '[]',
+                  runs: [workspaceRunJson()],
+                ),
+              ),
+            ],
+          }),
+        ).workspace(workspaceId);
+
+        expect(workspace.isStopped, isTrue);
+        expect(workspace.statusLabel, 'Stopped');
+        expect(workspace.runs.single.kind, 'exec');
+      });
+
+      test('reads one file by its relative path', () async {
+        final transport = FakeTransport({
+          'GET /api/v1/workspaces/$workspaceId/file': [
+            json(200, workspaceFilePayload()),
+          ],
+        });
+        final file = await apiWith(
+          transport,
+        ).readWorkspaceFile(workspaceId, 'templates/index.html');
+
+        expect(
+          transport.sent.single.uri.query,
+          'path=${Uri.encodeComponent('templates/index.html')}',
+        );
+        expect(file.path, 'app.py');
+        expect(file.content, contains('Flask'));
+        expect(file.truncated, isFalse);
+      });
+
+      test('sends argv tokens and reads the container\'s verdict', () async {
+        final transport = FakeTransport({
+          'POST /api/v1/workspaces/$workspaceId/exec': [
+            json(200, workspaceExecPayload()),
+          ],
+        });
+        final result = await apiWith(transport).runWorkspaceCommand(
+          workspaceId,
+          argv: const ['python3', '-c', "print('hi')"],
+          timeout: 20,
+        );
+
+        expect(transport.sent.single.body,
+            '{"argv":["python3","-c","print(\'hi\')"],"timeout":20}');
+        expect(result.ok, isTrue);
+        expect(result.exitCode, 0);
+        expect(result.stdout, 'hi');
+        expect(result.summary, 'Exit 0 in 0.1s.');
+      });
+
+      test('hands one typed line to the server to split', () async {
+        final transport = FakeTransport({
+          'POST /api/v1/workspaces/$workspaceId/exec': [
+            json(200, workspaceExecPayload()),
+          ],
+        });
+        await apiWith(transport).runWorkspaceCommand(
+          workspaceId,
+          command: 'python3 "run tests.py"',
+        );
+
+        // The client never splits it: the command travels as one field.
+        expect(
+          transport.sent.single.body,
+          '{"command":"python3 \\"run tests.py\\""}',
+        );
+      });
+
+      test('a refusal is an answer with the manager\'s own reason', () async {
+        final result = await apiWith(
+          FakeTransport({
+            'POST /api/v1/workspaces/$workspaceId/exec': [
+              workspaceRefusal(409, 'workspace_destroyed',
+                  'this workspace has already been stopped'),
+            ],
+          }),
+        ).runWorkspaceCommand(workspaceId, argv: const ['python3', '-V']);
+
+        expect(result.ok, isFalse);
+        expect(result.errorCode, 'workspace_destroyed');
+        expect(result.summary, 'this workspace has already been stopped');
+        expect(result.transcript, contains('workspace_destroyed'));
+      });
+
+      test('runs the provider\'s test command', () async {
+        final result = await apiWith(
+          FakeTransport({
+            'POST /api/v1/workspaces/$workspaceId/tests': [
+              json(200, workspaceTestsPayload()),
+            ],
+          }),
+        ).runWorkspaceTests(workspaceId);
+
+        expect(result.ok, isTrue);
+        expect(result.command, 'python3 -m pytest -q');
+        expect(result.output, '2 passed in 1.14s');
+        expect(result.transcript, '2 passed in 1.14s');
+      });
+
+      test('starts a preview and keeps the link the server issued', () async {
+        final result = await apiWith(
+          FakeTransport({
+            'POST /api/v1/workspaces/$workspaceId/preview': [
+              json(200, workspacePreviewStartPayload()),
+            ],
+          }),
+        ).startWorkspacePreview(workspaceId, port: 8000);
+
+        expect(result.previewUrl, previewGatewayPath);
+        expect(result.expiresIn, 600);
+        expect(result.summary, 'Preview is live on port 8000.');
+      });
+
+      test('stops a preview', () async {
+        final transport = FakeTransport({
+          'DELETE /api/v1/workspaces/$workspaceId/preview': [
+            json(200, workspacePreviewStopPayload()),
+          ],
+        });
+        final result = await apiWith(
+          transport,
+        ).stopWorkspacePreview(workspaceId);
+
+        expect(result.ok, isTrue);
+        expect(transport.sent.single.method, 'DELETE');
+      });
+
+      test('stops the sandbox and reports what the manager removed', () async {
+        final result = await apiWith(
+          FakeTransport({
+            'DELETE /api/v1/workspaces/$workspaceId': [
+              json(200, workspaceDestroyPayload()),
+            ],
+          }),
+        ).stopWorkspace(workspaceId);
+
+        expect(result.ok, isTrue);
+        expect(result.raw['state'], 'destroyed');
+        expect(result.raw['container_removed'], isTrue);
+      });
+
+      test('a session that has ended is still an exception, not a result',
+          () async {
+        await expectLater(
+          apiWith(
+            FakeTransport({
+              'GET /api/v1/workspaces': [
+                json(401, '{"error":"Please sign in to continue."}'),
+              ],
+            }),
+          ).listWorkspaces(),
+          throwsA(
+            isA<ApiException>()
+                .having((e) => e.statusCode, 'statusCode', 401)
+                .having((e) => e.unauthorized, 'unauthorized', isTrue),
           ),
         );
       });

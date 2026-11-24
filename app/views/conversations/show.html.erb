@@ -1,5 +1,5 @@
 <!-- Header -->
-<header class="sticky top-0 z-20 flex h-[64px] items-center justify-between gap-3 overflow-hidden border-b border-border bg-sidebar/80 glass px-4">
+<header class="sticky top-0 z-20 flex h-[64px] items-center justify-between gap-3 border-b border-border bg-sidebar/80 glass px-4">
   <div class="flex items-center gap-2 min-w-0">
     <button id="menuBtn" class="lg:hidden grid size-9 place-items-center rounded-xl bg-hover hover:bg-border text-fg-muted shrink-0">
       <svg class="size-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
@@ -17,11 +17,20 @@
           </span>
         </div>
         <div class="flex items-center gap-1.5 text-[11px] text-fg-subtle">
-          <%= form_with model: @conversation.agent, url: agent_path(@conversation.agent), method: :patch, class: "inline-flex items-center", data: { turbo: true } do |f| %>
-            <%= hidden_field_tag :return_to, conversation_path(@conversation) %>
-            <span class="text-fg-subtle">Model</span>
-            <%= f.select :model, @conversation.agent.model_select_options, { selected: @conversation.agent.model }, class: "text-[11px] font-mono text-accent-text bg-transparent border-0 outline-none cursor-pointer appearance-none pr-3 hover:underline transition", data: { controller: "auto-submit", action: "change->auto-submit#submit" } %>
-          <% end %>
+          <div class="relative" data-controller="model-selector" data-model-selector-conversation-id-value="<%= @conversation.id %>">
+            <button type="button" class="text-accent-text hover:underline py-2" data-action="model-selector#toggle" aria-label="Select chat model">
+              Model · <span data-model-selector-target="label"><%= @conversation.agent.model %></span>
+            </button>
+            <div hidden data-model-selector-target="panel" class="absolute left-0 top-full z-50 w-80 max-w-[85vw] rounded-xl border border-border bg-surface-raised p-3 shadow-xl">
+              <input type="search" placeholder="Search models" aria-label="Search models" class="input-field w-full" data-model-selector-target="search" data-action="input->model-selector#search">
+              <div class="max-h-72 overflow-y-auto" data-model-selector-target="list"></div>
+              <p role="status" class="text-xs text-fg-subtle my-2" data-model-selector-target="status"></p>
+              <div class="flex justify-between gap-2">
+                <button type="button" class="text-xs text-accent-text py-2" data-action="model-selector#refresh">Refresh catalogue</button>
+                <button type="button" class="text-xs text-accent-text py-2" data-action="model-selector#reset">Use organization default</button>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -36,12 +45,26 @@
 
     <%= render "mode_toggle" %>
 
+    <%# Opens the Coding Workspace slide-over for this conversation's sandbox.
+        Nothing is fetched until it is clicked — the frame has no src. %>
+    <button type="button"
+            class="inline-flex items-center gap-2 rounded-full bg-panel hover:bg-hover border border-border px-2.5 py-2 text-sm text-fg-muted hover:text-fg transition shrink-0"
+            data-action="click->workspace-panel#open"
+            data-workspace-panel-url-param="<%= workspace_panel_path(conversation_id: @conversation.id) %>"
+            aria-label="Open coding workspace">
+      <svg class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m8 8-4 4 4 4M16 8l4 4-4 4M13 5l-2 14"/></svg>
+      <span class="hidden sm:inline">Workspace</span>
+    </button>
+
     <div class="shrink-0"><%= render "shared/user_menu" %></div>
   </div>
 </header>
 
 <!-- Messages -->
-<main class="flex-1 overflow-y-auto overflow-x-hidden" id="messages-container" data-controller="chat" data-conversation-id="<%= @conversation.id %>">
+<main class="flex-1 overflow-y-auto overflow-x-hidden" id="messages-container" data-controller="chat" data-conversation-id="<%= @conversation.id %>"
+      data-background-active="<%= @background_tasks[:active] %>"
+      data-background-queued="<%= @background_tasks[:queued] %>"
+      data-background-request-id="<%= @background_tasks[:active_request_id] %>">
   <div class="mx-auto w-full max-w-[820px] px-4 sm:px-5 lg:px-6 py-6 sm:py-8 space-y-6 sm:space-y-8" id="messages-list">
     <% @messages.each do |message| %>
       <%= render "messages/message", message: message %>

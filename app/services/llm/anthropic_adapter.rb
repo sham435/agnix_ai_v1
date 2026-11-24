@@ -1,25 +1,17 @@
+# frozen_string_literal: true
+
 # Anthropic Claude API adapter.
 # API docs: https://docs.anthropic.com/en/api/messages
 module Llm
   class AnthropicAdapter
-    BASE_URL = "https://api.anthropic.com/v1"
-
-    OPEN_TIMEOUT = 10
-    READ_TIMEOUT = 120
-
     # A streaming turn is judged by its status line, not by what the body happens
     # to parse into: only 2xx is a response, anything else is a gateway or API
-    # failure. The error body is kept (truncated) so the raised message carries
-    # Anthropic's own complaint instead of a bare status code.
+    # failure. Error bodies are retained only for bounded classification and are
+    # never copied into user-facing errors or logs.
     SUCCESS_STATUSES = (200..299).freeze
-    MAX_ERROR_BODY = 500
 
-    # We keep more of the error body than we show. MAX_ERROR_BODY bounds the
-    # single-line reason echoed into the raised message, but classification
-    # (parsing error.type and the credit sniff) needs the provider's full JSON,
-    # which can run past that display window. Retaining up to this many bytes
-    # for parsing keeps an out-of-credit 400 from being misfiled as a generic
-    # rejection just because its message happened to be long.
+    # Retaining a bounded JSON prefix keeps an out-of-credit 400 from being
+    # misfiled as a generic rejection just because its message was long.
     ERROR_CLASSIFY_LIMIT = 2_048
 
     # Transient-failure resilience, mirroring Llm::OpenaiAdapter. A brief
@@ -43,6 +35,15 @@ module Llm
       Errno::ECONNREFUSED, Errno::EHOSTUNREACH, Errno::ENETUNREACH,
       Errno::ENETDOWN, SocketError
     ].freeze
+    TRANSPORT_ERROR_CODES = %i[
+      endpoint_invalid endpoint_forbidden request_too_large response_too_large
+      invalid_provider_response configuration_invalid
+    ].freeze
+    ERROR_MESSAGES = {
+      "provider_permission_denied" => ProviderError::MESSAGES["provider_access_restricted"],
+      "provider_overloaded" => ProviderError::MESSAGES["provider_unavailable"],
+      "provider_unreachable" => ProviderError::MESSAGES["provider_network_error"]
+    }.freeze
 
     # Anthropic's documented status -> (code, retryable) table. Everything 4xx
     # except 429 is permanent (redelivering a bad key or empty credit can't help);
@@ -85,10 +86,11 @@ module Llm
     # those to :provider_credit_insufficient - the exact defect this fixes.
     CREDIT_MESSAGE_PATTERNS = /credit balance|insufficient credits|out of funded credits|funded credits|spending limit|exceeded your (?:current )?(?:budget|spending)|payment (?:required|needed|problem)|billing/.freeze
 
-    attr_reader :api_key, :model
+    attr_reader :api_key, :model, :connection
 
-    def initialize(api_key:, model:)
-      @api_key = api_key
+    def initialize(api_key:, model:, connection: nil)
+      @connection = connection || ProviderConnection.new(provider: "anthropic", api_key: api_key, model: model)
+      @api_key = @connection.api_key
       @model = model
     end
 
@@ -128,8 +130,8 @@ module Llm
         # that honors retryable? would re-run the turn and duplicate the reply.
         raise provider_error(e, retryable: !streamed_any)
       rescue LlmError => e
-        if e.retryable? && !streamed_any && attempt < MAX_RETRIES
-          Rails.logger.warn "[shams] anthropic stream retry #{attempt}/#{MAX_RETRIES} after HTTP #{e.status} #{e.code}"
+        if e.retryable? && !streamed_any && attempt < retry_budget_for(e)
+          Rails.logger.warn "[shams] anthropic stream retry #{attempt}/#{retry_budget_for(e)} after #{e.code}"
           sleep(retry_wait(e, attempt))
           retry
         end
@@ -149,13 +151,7 @@ module Llm
       error_body = +""
       finish_reason = nil
 
-      response = HTTParty.post("#{BASE_URL}/messages",
-        headers: headers,
-        body: body.to_json,
-        stream_body: true,
-        timeout: READ_TIMEOUT,
-        open_timeout: OPEN_TIMEOUT
-      ) do |chunk|
+      response = post(body) do |chunk|
         # HTTParty yields a ResponseFragment while streaming, which answers
         # #code as soon as the headers arrive. A rejection is not an SSE stream
         # - Anthropic answers 4xx/5xx with one JSON object, a proxy may answer
@@ -165,7 +161,8 @@ module Llm
         if status
           stream_status = status
           unless SUCCESS_STATUSES.cover?(status)
-            error_body << chunk.to_s if error_body.bytesize < ERROR_CLASSIFY_LIMIT
+            remaining = ERROR_CLASSIFY_LIMIT - error_body.bytesize
+            error_body << chunk.to_s.byteslice(0, remaining) if remaining.positive?
             next
           end
         end
@@ -238,20 +235,15 @@ module Llm
       if !saw_sse && full_content.empty? && tool_calls.empty? && !raw.empty?
         parsed = (JSON.parse(raw) rescue nil)
 
-        # A rejected request (bad key, out of credit, unknown model) also arrives
-        # as one JSON object — but an error, not a message. The SSE parser finds
-        # no deltas, so without this the turn finalizes as an empty reply and the
-        # UI blames the user's phrasing while the provider's actual complaint is
-        # thrown away. Raise instead: the runner records it on the run and on the
-        # message metadata.
+        # A rejected request also arrives as one JSON object, not a message.
+        # Classify its bounded metadata but never expose the provider's body.
         if parsed.is_a?(Hash) && parsed["type"] == "error"
           err = parsed["error"].is_a?(Hash) ? parsed["error"] : {}
-          detail = err["message"].to_s.presence ||
-                   err["type"].to_s.presence ||
-                   raw.to_s.truncate(300)
-          code, retryable = classify(nil, err["type"], err["message"])
-          raise LlmError.new("Anthropic API error: #{detail}",
-            code: code, retryable: retryable, provider_error_type: err["type"].to_s.presence)
+          message = err["message"].to_s.byteslice(0, ERROR_CLASSIFY_LIMIT).scrub
+          code, retryable = classify(nil, err["type"], message)
+          raise LlmError.new("Anthropic API error. #{safe_error_message(code)}",
+            code: code, retryable: retryable,
+            provider_error_type: err["type"].to_s.byteslice(0, 256).scrub.presence)
         end
 
         # A complete message carries its own terminal stop_reason at the top
@@ -296,8 +288,8 @@ module Llm
         end
         raise provider_error(e)
       rescue LlmError => e
-        if e.retryable? && attempt < MAX_RETRIES
-          Rails.logger.warn "[shams] anthropic sync retry #{attempt}/#{MAX_RETRIES} after HTTP #{e.status} #{e.code}"
+        if e.retryable? && attempt < retry_budget_for(e)
+          Rails.logger.warn "[shams] anthropic sync retry #{attempt}/#{retry_budget_for(e)} after #{e.code}"
           sleep(retry_wait(e, attempt))
           retry
         end
@@ -308,20 +300,19 @@ module Llm
     # One non-streaming request. Raises a typed LlmError for a rejection so
     # sync_chat can decide whether the failure is worth replaying.
     def do_sync_chat(body)
-      response = HTTParty.post("#{BASE_URL}/messages",
-        headers: headers,
-        body: body.to_json,
-        timeout: READ_TIMEOUT,
-        open_timeout: OPEN_TIMEOUT
-      )
+      response = post(body)
 
       raise build_sync_error(response) unless response.success?
 
       data = JSON.parse(response.body)
-      content = ""
+      raise invalid_sync_response(response) unless data.is_a?(Hash) && data["content"].is_a?(Array)
+
+      content = +""
       tool_calls = []
 
       data["content"].each do |part|
+        raise invalid_sync_response(response) unless part.is_a?(Hash)
+
         case part["type"]
         when "text"
           content << part["text"]
@@ -343,6 +334,8 @@ module Llm
         tokens: data.dig("usage", "output_tokens") || estimate_tokens(content),
         finish_reason: data.dig("stop_reason") || "stop"
       }
+    rescue JSON::ParserError, TypeError
+      raise invalid_sync_response(response)
     end
 
     def embeddings(text)
@@ -352,6 +345,14 @@ module Llm
     end
 
     private
+
+    def post(body, &block)
+      SecureHttp.post(connection, "messages", body: body, headers: headers, &block)
+    rescue ProviderError => error
+      raise if error.is_a?(LlmError)
+
+      raise provider_error(error)
+    end
 
     def build_request_body(messages, tools, temperature, max_tokens, top_p = nil)
       system_message = messages.find { |m| m[:role] == "system" }
@@ -387,11 +388,7 @@ module Llm
     end
 
     def headers
-      {
-        "x-api-key" => api_key,
-        "anthropic-version" => "2024-02-01",
-        "content-type" => "application/json"
-      }
+      connection.headers.merge("anthropic-version" => ENV.fetch("ANTHROPIC_API_VERSION", "2023-06-01"))
     end
 
     # The numeric HTTP status of a streaming turn. HTTParty yields a
@@ -407,41 +404,51 @@ module Llm
       nil
     end
 
-    # A non-2xx streaming turn is an API failure, not an empty answer. Phrased
-    # like sync_chat's error so the run records the status and the provider's
-    # own complaint instead of finalizing a blank reply. Whitespace is collapsed:
-    # a proxy's HTML failure would otherwise paint a multi-line blob into the
-    # single-line error bubble.
+    # A non-2xx turn is an API failure, not an empty answer. The bounded body is
+    # used only to classify the failure; logs and user-facing errors stay redacted.
     def stream_error(status, error_body, retry_after: nil)
-      reason = error_body.to_s.gsub(/\s+/, " ").strip[0, MAX_ERROR_BODY]
+      error_body = error_body.scrub
       provider_type, provider_msg = extract_error_meta(error_body)
-      Rails.logger.error "[shams] ERROR #{status} - #{(provider_msg.presence || reason).presence || "(empty body)"}"
-      detail = reason.presence ? " - #{reason}" : " with no response body"
-      code, retryable = classify(status, provider_type, provider_msg.presence || reason)
-      LlmError.new("Anthropic API error: HTTP #{status}#{detail}",
+      code, retryable = classify(status, provider_type, provider_msg.presence || error_body)
+      Rails.logger.error "[shams] anthropic request failed with HTTP #{status} (#{code})"
+      LlmError.new("Anthropic API error: HTTP #{status}. #{safe_error_message(code)}",
         code: code, retryable: retryable, status: status,
         provider_error_type: provider_type, retry_after: retry_after)
     end
 
-    # Build the typed error for a non-2xx non-streaming response. Keeps the
-    # "<code> - <body>" phrasing the specs assert while attaching the cause.
     def build_sync_error(response)
       status = response.code.to_i
       provider_type, provider_msg = extract_error_meta(response.body)
       code, retryable = classify(status, provider_type, provider_msg)
-      LlmError.new("Anthropic API error: #{response.code} - #{response.body}",
+      LlmError.new("Anthropic API error: HTTP #{status}. #{safe_error_message(code)}",
         code: code, retryable: retryable, status: status,
         provider_error_type: provider_type, retry_after: retry_after_seconds(response))
+    end
+
+    def invalid_sync_response(response)
+      LlmError.new("Anthropic API error. #{safe_error_message(:invalid_provider_response)}",
+        code: :invalid_provider_response, retryable: false, status: response.code.to_i)
+    end
+
+    def safe_error_message(code)
+      key = code.to_s
+      message = ERROR_MESSAGES[key] || ProviderError::MESSAGES[key]
+      return message if message
+      return "The model request exceeds the configured size limit." if code == :request_too_large
+
+      "The provider request failed."
     end
 
     # Anthropic's error body is {"type":"error","error":{"type":..,"message":..}};
     # a proxy may return a flat {"error":..} or {"message":..}. Return
     # [error_type, error_message] using whichever shape is present.
     def extract_error_meta(body_str)
-      parsed = (JSON.parse(body_str.to_s) rescue nil)
+      parsed = (JSON.parse(body_str.to_s.scrub) rescue nil)
       return [ nil, nil ] unless parsed.is_a?(Hash)
       err = parsed["error"].is_a?(Hash) ? parsed["error"] : parsed
-      [ err["type"].to_s.presence, (err["message"].to_s.presence || parsed["message"].to_s.presence) ]
+      type = err["type"].to_s.byteslice(0, 256).scrub.presence
+      message = (err["message"].to_s.presence || parsed["message"].to_s.presence)
+      [ type, message&.byteslice(0, ERROR_CLASSIFY_LIMIT)&.scrub ]
     end
 
     # Turn (HTTP status, provider error.type, message) into [symbol_code,
@@ -465,14 +472,28 @@ module Llm
     # :provider_unavailable. These are retryable by default, but the streaming
     # wrapper forces retryable: false once content reached the consumer, since a
     # replay would duplicate what the user already saw.
-    def provider_error(e, retryable: true)
-      code =
-        if connection_error?(e) then :provider_unreachable
-        elsif timed_out?(e) then :provider_timeout
-        else :provider_unavailable
-        end
-      LlmError.new("Anthropic request failed (#{e.class}): #{e.message.to_s[0, 200]}",
-        code: code, retryable: retryable)
+    def provider_error(error, retryable: nil)
+      cause = error.respond_to?(:cause_error) ? error.cause_error : nil
+      failure = cause || error
+      provider_code = error.code.to_s.to_sym if error.respond_to?(:code)
+      code = if TRANSPORT_ERROR_CODES.include?(provider_code)
+               provider_code
+      elsif connection_error?(failure)
+               :provider_unreachable
+      elsif timed_out?(failure) || provider_code == :provider_timeout
+               :provider_timeout
+      else
+               :provider_unavailable
+      end
+      message = safe_error_message(code)
+      message = "#{message} (#{failure.class})" if cause
+      retryable = error.respond_to?(:retryable?) ? error.retryable? : true if retryable.nil?
+      LlmError.new(message, code: code, retryable: retryable,
+        status: error.respond_to?(:status) ? error.status : nil,
+        provider_error_type: error.respond_to?(:provider_error_type) ? error.provider_error_type : nil,
+        provider_error_code: error.respond_to?(:provider_error_code) ? error.provider_error_code : nil,
+        request_id: error.respond_to?(:request_id) ? error.request_id : nil,
+        retry_after: error.respond_to?(:retry_after) ? error.retry_after : nil, cause_error: cause)
     end
 
     # Re-issue a retryable error as terminal: the code still names the cause, but
@@ -483,7 +504,8 @@ module Llm
 
       LlmError.new(error.message, code: error.code, retryable: false,
         status: error.status, provider_error_type: error.provider_error_type,
-        retry_after: error.retry_after)
+        provider_error_code: error.provider_error_code, request_id: error.request_id,
+        retry_after: error.retry_after, cause_error: error.cause_error)
     end
 
     def connection_error?(e)
@@ -496,12 +518,16 @@ module Llm
 
     # Connection errors get the short fast-fail budget; genuine transients get the
     # full retry loop. Mirrors Llm::OpenaiAdapter so both providers behave alike.
-    def retry_budget_for(e)
-      connection_error?(e) ? (MAX_CONNECT_RETRIES + 1) : MAX_RETRIES
+    def retry_budget_for(error)
+      connection_error?(underlying_error(error)) ? (MAX_CONNECT_RETRIES + 1) : MAX_RETRIES
     end
 
-    def backoff_for(e)
-      connection_error?(e) ? CONNECT_BACKOFF : RETRY_BACKOFF
+    def backoff_for(error)
+      connection_error?(underlying_error(error)) ? CONNECT_BACKOFF : RETRY_BACKOFF
+    end
+
+    def underlying_error(error)
+      error.respond_to?(:cause_error) ? error.cause_error || error : error
     end
 
     # Honour the provider's Retry-After on a rate limit, capped at RETRY_AFTER_MAX
@@ -511,7 +537,8 @@ module Llm
     def retry_wait(e, attempt)
       hint = e.retry_after
       return [ hint, RETRY_AFTER_MAX ].min if hint&.positive?
-      RETRY_BACKOFF * attempt
+
+      backoff_for(e) * attempt
     end
 
     def retry_after_seconds(response)
@@ -532,17 +559,17 @@ module Llm
     # capacity/timeout vs a permanent bad key or empty credit), `status` and
     # `provider_error_type` preserve Anthropic's own signals for diagnostics, and
     # `retry_after` carries a rate-limit hint in seconds for the retry backoff.
-    class LlmError < StandardError
-      attr_reader :code, :status, :provider_error_type, :retry_after
+    class LlmError < ProviderError
+      attr_reader :code
 
       def initialize(message, code: :provider_unavailable, retryable: false,
-                     status: nil, provider_error_type: nil, retry_after: nil)
-        super(message)
+                     status: nil, provider_error_type: nil, provider_error_code: nil,
+                     request_id: nil, retry_after: nil, cause_error: nil)
+        super(message, code: code, retryable: retryable, status: status,
+          provider_error_type: provider_error_type, provider_error_code: provider_error_code,
+          request_id: request_id, retry_after: retry_after)
         @code = code
-        @retryable = retryable
-        @status = status
-        @provider_error_type = provider_error_type
-        @retry_after = retry_after
+        @cause_error = cause_error if cause_error
       end
 
       def retryable?

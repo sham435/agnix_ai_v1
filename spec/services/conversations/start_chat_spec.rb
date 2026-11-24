@@ -12,7 +12,11 @@ RSpec.describe Conversations::StartChat, type: :service do
   let(:user) { create(:user) }
   let(:agent) { create(:agent) }
 
-  before { allow(AgentStreamJob).to receive(:perform_later) }
+  before do
+    allow(AgentStreamJob).to receive(:perform_later)
+    agent.organization.update!(settings: { default_model: { provider_id: "bonsai", model_id: "bonsai-2-27b" } })
+    stub_request(:get, "http://127.0.0.1:8080/v1/models").to_return(status: 200, body: { data: [ { id: "local" } ] }.to_json)
+  end
 
   it "opens an empty conversation when there is no first message" do
     conversation = described_class.call(user: user, agent: agent, title: "Scratch space")
@@ -54,8 +58,19 @@ RSpec.describe Conversations::StartChat, type: :service do
       conversation_id: conversation.id,
       user_id: user.id,
       message_content: "Draft a subject line",
+      message_id: conversation.messages.find_by(role: "user").id,
       request_id: request_id
     )
+  end
+
+  it "freezes the first turn's model so a later switch cannot rewrite it" do
+    conversation = described_class.call(user: user, agent: agent, content: "First turn")
+    source = conversation.messages.find_by(role: "user")
+    expect(source.metadata["selected_model"]).to eq("provider_id" => "bonsai", "model_id" => "bonsai-2-27b")
+
+    conversation.update!(metadata: { selected_model: { provider_id: "anthropic", model_id: "claude-other" } })
+    runner = AgentRunner.new(agent: agent, user: user, conversation: conversation, source_message: source)
+    expect(runner.send(:effective_model)).to eq("bonsai-2-27b")
   end
 
   it "derives the title from content, truncated to 50 characters" do

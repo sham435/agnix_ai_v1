@@ -51,6 +51,8 @@ end
 
 require "spec_helper"
 ENV["RAILS_ENV"] ||= "test"
+ENV["SHAMS_WS_MANAGER_URL"] = "http://workspace-manager.invalid"
+ENV["SHAMS_WS_MANAGER_TOKEN"] = "unit-test-only"
 require_relative "../config/environment"
 
 # Prevent database truncation if wrong environment.
@@ -78,6 +80,13 @@ end
 # Include ActiveSupport time helpers for travel_to/freeze_time.
 RSpec.configure do |config|
   config.include ActiveSupport::Testing::TimeHelpers
+
+  config.before do
+    stub_request(:any, %r{\Ahttp://workspace-manager\.invalid(?:/|\z)})
+      .to_raise(Workspaces::Unavailable.new("workspace manager is disabled in unit tests"))
+    stub_request(:get, %r{\Ahttp://(127\.0\.0\.1|localhost):8080/v1/models})
+      .to_return(status: 200, body: { data: [ { id: "local", meta: { n_ctx: 32768 } } ] }.to_json)
+  end
 end
 
 # Configure Capybara.

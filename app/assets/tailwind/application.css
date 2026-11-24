@@ -594,4 +594,50 @@
     .account-panel__surface,
     .account-panel__backdrop { transition: none; }
   }
+
+  /* ── Coding Workspace panel ──────────────────────────────────────────────
+     The account panel's slide-over shape, widened so a live preview of the app
+     running inside the sandbox is actually readable, and full-bleed below that.
+     Same [data-open] state machine, same tokens, same inert-while-closed rule:
+     a hidden dialog must not be tab-reachable. */
+  .workspace-panel {
+    @apply fixed inset-0 z-50;
+    pointer-events: none;
+  }
+
+  .workspace-panel__backdrop {
+    @apply absolute inset-0 bg-black/50 backdrop-blur-[2px];
+    opacity: 0;
+    transition: opacity .22s ease;
+  }
+
+  .workspace-panel__surface {
+    @apply absolute inset-y-0 right-0 flex flex-col border-l bg-sidebar shadow-2xl;
+    border-color: var(--color-border);
+    width: min(680px, 100%);
+    transform: translateX(100%);
+    transition: transform .28s cubic-bezier(.2, .8, .2, 1);
+  }
+
+  @media (max-width: 680px) {
+    .workspace-panel__surface { width: 100%; }
+  }
+
+  .workspace-panel[data-open="true"] { pointer-events: auto; }
+  .workspace-panel[data-open="true"] .workspace-panel__backdrop { opacity: 1; }
+  .workspace-panel[data-open="true"] .workspace-panel__surface { transform: translateX(0); }
+
+  .workspace-panel__header { @apply flex h-[64px] shrink-0 items-center justify-between gap-3 border-b border-border px-4; }
+  .workspace-panel__close { @apply grid size-9 shrink-0 place-items-center rounded-xl bg-hover text-fg-muted transition hover:text-fg; }
+  .workspace-panel__scroll { @apply flex-1 overflow-y-auto; transition: opacity .15s ease; }
+  .workspace-panel__scroll[data-busy="true"] { @apply opacity-60; }
+
+  .workspace-panel__tabs { @apply sticky top-0 z-10 flex gap-1 overflow-x-auto border-b border-border bg-sidebar px-3 py-2; }
+  .workspace-panel__tab { @apply shrink-0 rounded-lg px-2.5 py-1.5 text-[12px] font-medium text-fg-muted transition hover:bg-hover hover:text-fg; }
+  .workspace-panel__tab--active { @apply bg-hover text-fg; }
+
+  @media (prefers-reduced-motion: reduce) {
+    .workspace-panel__surface,
+    .workspace-panel__backdrop { transition: none; }
+  }
 }

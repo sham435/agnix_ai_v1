@@ -42,7 +42,7 @@ module Conversations
     class << self
       def call(conversation:, user:)
         decision = conversation.with_lock do
-          if live_placeholder(conversation)
+          if live_placeholder(conversation) || conversation.runs.active.exists? || conversation.agent_runs.active.exists?
             { status: :busy, message: BUSY }
           else
             decide(conversation)

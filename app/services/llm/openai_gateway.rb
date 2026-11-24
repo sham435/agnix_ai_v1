@@ -65,7 +65,8 @@ module Llm
     def stream(messages:, tools: [], max_tokens: nil, temperature: nil, top_p: nil)
       client = build_client(max_tokens, temperature, top_p)
       chunks = []
-      final = client.stream_chat(messages: messages, tools: tools, max_tokens: max_tokens) do |piece, _full, _tool_calls, kind|
+      final = client.stream_chat(messages: to_internal_messages(messages), tools: to_internal_tools(tools),
+                                 max_tokens: max_tokens) do |piece, _full, _tool_calls, kind|
         next if piece.nil? || piece.to_s.empty?
 
         delta = if kind.to_s == "reasoning"
@@ -109,7 +110,7 @@ module Llm
     def to_internal_messages(openai_messages)
       Array(openai_messages).map do |m|
         role = value(m, "role").to_s
-        internal = { role: role, content: value(m, "content").to_s }
+        internal = { role: role, content: value(m, "content") }
         if role == "tool"
           internal[:tool_call_id] = value(m, "tool_call_id")
         elsif role == "assistant" && value(m, "tool_calls")

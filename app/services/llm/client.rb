@@ -1,175 +1,124 @@
-# LLM Client - Unified interface for multiple LLM providers.
-# Supports Anthropic Claude, OpenAI, Google (Gemini, through its
-# OpenAI-compatible endpoint), OpenRouter (its catalogue of third-party
-# routes, also OpenAI-compatible), Ollama (local), and Bonsai (local,
-# PrismML's compressed Qwen served by llama.cpp behind an OpenAI-compatible
-# API: 1-bit Bonsai 27B and ternary Bonsai 2 27B, each on its own port).
-# Sources:
-#   - https://docs.anthropic.com/en/api/messages
-#   - https://platform.openai.com/docs/api-reference/chat
-#   - https://ai.google.dev/gemini-api/docs/openai
-#   - https://openrouter.ai/docs/api-reference/overview
-#   - https://github.com/ollama/ollama/blob/main/docs/api.md
-#   - https://huggingface.co/prism-ml/Bonsai-27B-gguf
-#   - https://huggingface.co/collections/prism-ml/bonsai-2
+# frozen_string_literal: true
+
 module Llm
   class Client
-    attr_reader :provider, :model, :temperature, :max_tokens, :api_key, :top_p
+    attr_reader :provider, :model, :temperature, :max_tokens, :api_key, :top_p, :connection, :model_config
 
-    def initialize(provider:, model:, temperature: 0.7, max_tokens: 4096, api_key: nil, top_p: nil)
+    def initialize(provider:, model:, temperature: 0.7, max_tokens: 4096, api_key: nil, top_p: nil,
+                   connection: nil, model_config: nil)
       @provider = provider.to_s
       @model = model
       @temperature = temperature
       @max_tokens = max_tokens
-      @api_key = api_key
+      @api_key = connection ? connection.api_key : api_key
       @top_p = top_p
+      @connection = connection
+      @model_config = model_config
     end
 
-    # Send a chat completion request.
-    # Returns: { content: String, tokens: Integer, finish_reason: String }
-    # `max_tokens:` is a per-call override of the client's configured budget -
-    # a cheap tool-selection or plan turn asks for less than the agent's full
-    # cap so a single-slot local server never reserves/wastes the whole window,
-    # while the final answer leaves it nil and keeps the configured cap.
-    def chat(messages:, tools: [], stream: false, max_tokens: nil)
-      adapter.send(:chat,
-        messages: messages,
-        tools: tools,
-        temperature: temperature,
-        max_tokens: max_tokens || self.max_tokens,
-        top_p: top_p,
-        stream: stream
-      )
+    def chat(messages:, tools: [], stream: false, max_tokens: nil, &block)
+      stream = false unless streaming_supported?
+      adapter.send(:chat, messages: messages, tools: tools, temperature: temperature,
+                   max_tokens: max_tokens || self.max_tokens, top_p: top_p, stream: stream, &block)
     end
 
-    # Streaming chat via Action Cable.
-    # Yields chunks as they arrive.
+    def inference_model
+      provider == "bonsai" ? bonsai_model : model
+    end
+
+    def streaming_supported?
+      effective_connection.supports?("supports_streaming") != false
+    end
+
     def stream_chat(messages:, tools: [], max_tokens: nil, &block)
-      adapter.send(:stream_chat,
-        messages: messages,
-        tools: tools,
-        temperature: temperature,
-        max_tokens: max_tokens || self.max_tokens,
-        top_p: top_p,
-        &block
-      )
+      unless streaming_supported?
+        raise ProviderError.new("Streaming is not available for this model.", code: "streaming_unavailable")
+      end
+
+      adapter.send(:stream_chat, messages: messages, tools: tools, temperature: temperature,
+                   max_tokens: max_tokens || self.max_tokens, top_p: top_p, &block)
     end
 
-    # Generate embeddings for a text string.
     def embeddings(text)
       adapter.send(:embeddings, text)
     end
 
-    # Estimate token count for a message (rough approximation).
     def estimate_tokens(text)
-      # ~4 chars per token for English.
       (text.to_s.length / 4.0).ceil
     end
 
     private
 
     def adapter
-      case provider
+      @adapter ||= case provider
       when "anthropic"
-        Llm::AnthropicAdapter.new(api_key: api_key, model: model)
-      when "openai"
-        # Legacy path: before openrouter was its own provider, an OpenRouter key
-        # on an openai agent was the only way to reach the gateway. Kept so
-        # already-saved rows keep working; it now shares openrouter_base_url so
-        # both paths address the same endpoint.
-        if api_key.to_s.start_with?("sk-or-v1")
-          Llm::OpenaiAdapter.new(
-            api_key: api_key,
-            model: model,
-            base_url: openrouter_base_url
-          )
-        else
-          Llm::OpenaiAdapter.new(api_key: api_key, model: model)
-        end
-      when "openrouter"
-        # OpenRouter exposes third-party routes (Recursive's Flint among them)
-        # over the OpenAI wire format, so the shared adapter speaks it
-        # unchanged. Unlike the sniff above, this branch is chosen by the
-        # provider the user picked - it does not depend on the key's prefix,
-        # so an organization key pasted into Settings > Integrations routes
-        # correctly whatever it starts with.
-        Llm::OpenaiAdapter.new(
-          api_key: api_key,
-          model: model,
-          base_url: openrouter_base_url
-        )
+                     Llm::AnthropicAdapter.new(api_key: resolved_api_key, model: model,
+                       connection: effective_connection)
       when "ollama"
-        Llm::OllamaAdapter.new(api_key: api_key, model: model)
-      when "bonsai"
-        # Disable the server-side chain of thought. The Jinja template shipped
-        # inside the Bonsai GGUF defaults to `enable_thinking` true at
-        # `reasoning_effort` xhigh, so on any task with real volume the model
-        # spends the ENTIRE completion budget on reasoning_content and never
-        # emits an answer. Measured on a five-file request: 8192/8192 tokens
-        # arrived as `reasoning_content`, zero as `content`, finish_reason
-        # "length", after 7m24s - and the thread stored an empty reply, which
-        # `stream_chat` was right to keep blank. With thinking off the same
-        # request answers in 3112 tokens, finish_reason "stop", 10,377 chars,
-        # 2m42s. `reasoning_effort: low` is NOT enough (same 900-token budget:
-        # still 900 reasoning deltas, still no answer).
-        # Cost of the switch: Bonsai turns lose their visible thinking phase and
-        # the deliberation xhigh buys for hard tool-selection steps; they gain
-        # an answer that lands inside the token budget at all.
-        Llm::OpenaiAdapter.new(
-          api_key: api_key,
-          model: bonsai_model,
-          base_url: bonsai_base_url,
-          top_p: top_p,
-          chat_template_kwargs: { "enable_thinking" => false }
-        )
-      when "opencode"
-        Llm::OpenaiAdapter.new(
-          api_key: api_key,
-          model: model,
-          base_url: ENV.fetch("OPENCODE_BASE_URL", "https://opencode.ai/zen/v1")
-        )
-      when "google"
-        # Gemini publishes an OpenAI-compatible surface, so the shared adapter
-        # speaks it unchanged (Bearer key, /chat/completions, tool_calls). The
-        # base URL keeps its /v1 suffix because the adapter appends the path.
-        Llm::OpenaiAdapter.new(
-          api_key: api_key,
-          model: model,
-          base_url: google_base_url
-        )
+                     Llm::OllamaAdapter.new(api_key: resolved_api_key, model: model)
       else
-        raise ArgumentError, "Unknown LLM provider: #{provider}"
+                     openai_compatible_adapter
       end
+    end
+
+    def openai_compatible_adapter
+      selected_connection = effective_connection
+      adapter_class = selected_connection.api_family == "responses" ? Llm::ResponsesAdapter : Llm::OpenaiAdapter
+      kwargs = { api_key: selected_connection.api_key, model: adapter_model,
+                 base_url: adapter_base_url(selected_connection), top_p: top_p,
+                 connection: selected_connection }
+      kwargs[:chat_template_kwargs] = { "enable_thinking" => false } if provider == "bonsai"
+      adapter_class.new(**kwargs)
+    end
+
+    def effective_connection
+      return connection if connection && (connection.provider == provider || legacy_openrouter_connection?)
+      raise ProviderError.new("The provider connection does not match the selected provider.", code: "configuration_invalid") if connection
+
+      base_url = legacy_openrouter? ? openrouter_base_url : nil
+      ProviderConnection.new(provider: legacy_openrouter? ? "openrouter" : provider,
+        api_key: resolved_api_key, model: adapter_model, base_url: base_url, model_config: model_config)
+    end
+
+    def resolved_api_key
+      return connection.api_key if connection
+
+      api_key.presence || ProviderRegistry.environment_key(provider) || ProviderRegistry.credentials_key(provider) ||
+        (provider == "openai" ? ENV["OPENROUTER_API_KEY"].to_s.strip.presence : nil)
+    end
+
+    def legacy_openrouter?
+      ProviderConnection.resolve_provider(provider, resolved_api_key) == "openrouter" && provider == "openai"
+    end
+
+    def legacy_openrouter_connection?
+      provider == "openai" && connection&.provider == "openrouter" &&
+        ProviderConnection.resolve_provider(provider, connection.api_key) == "openrouter"
+    end
+
+    def adapter_model
+      inference_model
+    end
+
+    def adapter_base_url(selected_connection)
+      return if provider == "openai" && !legacy_openrouter? && selected_connection.config["base_url"].blank?
+
+      selected_connection.base_url
     end
 
     def google_base_url
       ENV.fetch("GOOGLE_BASE_URL", "https://generativelanguage.googleapis.com/v1beta/openai/v1")
     end
 
-    # OpenRouter's OpenAI-compatible ingress. The path already carries its
-    # version segment, so the adapter appends /chat/completions to it.
     def openrouter_base_url
       ENV.fetch("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
     end
 
-    # Endpoint selection is driven by the PROVIDER, never by a stored model
-    # label. A stale/foreign label (e.g. "claude-sonnet-4-6" left over from an
-    # earlier anthropic config) must not silently route to the wrong server.
-    #   bonsai-27b   - 1-bit Bonsai 27B (tutorial, ~3.9 GB)   -> :8910 (legacy)
-    #   everything else under provider "bonsai" defaults to the primary
-    #   ternary Bonsai 2 27B server on :8080.
     def bonsai_base_url
-      if model.to_s == "bonsai-27b"
-        ENV.fetch("BONSAI_BASE_URL", "http://127.0.0.1:8910/v1")
-      else
+      model.to_s == "bonsai-27b" ? ENV.fetch("BONSAI_BASE_URL", "http://127.0.0.1:8910/v1") :
         ENV.fetch("BONSAI2_BASE_URL", "http://127.0.0.1:8080/v1")
-      end
     end
 
-    # Canonical model id sent to the local server. The llama.cpp server accepts
-    # any alias, but sending a coherent id keeps logs/telemetry honest. Normalize
-    # obsolete or foreign labels to the configured Bonsai model; preserve the
-    # explicit 1-bit id so that endpoint stays reachable.
     def bonsai_model
       return model.to_s if model.to_s == "bonsai-27b"
 

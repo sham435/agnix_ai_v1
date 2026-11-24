@@ -279,10 +279,212 @@ String securityPayload({
 
 /// The key the server mints during enrollment: base32, and never stored.
 const pendingSecret = 'JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP';
+const pendingProvisioningUri =
+    'otpauth://totp/Shams%20AI:dev%40shams.ai'
+    '?secret=$pendingSecret&issuer=Shams%20AI';
 const pendingEnrollmentJson =
     '{"secret":"$pendingSecret",'
-    '"provisioning_uri":"otpauth://totp/Shams%20AI:dev%40shams.ai'
-    '?secret=$pendingSecret&issuer=Shams%20AI","expires_in":600}';
+    '"provisioning_uri":"$pendingProvisioningUri","expires_in":600}';
+
+/// A small SVG rendering fixture, not an enrollable QR. No external resources.
+const enrollmentSvg =
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 21 21">'
+    '<path fill="#000" d="M0 0h7v7H0z M14 0h7v7h-7z M0 14h7v7H0z"/>'
+    '</svg>';
+final pendingEnrollmentWithQrJson = jsonEncode({
+  'secret': pendingSecret,
+  'provisioning_uri': pendingProvisioningUri,
+  'expires_in': 600,
+  'qr_svg': enrollmentSvg,
+});
+
+/// The password step issues a challenge cookie even though it answers 401.
+TransportResponse twoFactorChallenge({bool expired = false}) => json(
+  401,
+  jsonEncode({
+    'error': expired
+        ? 'Two-factor challenge expired. Sign in again.'
+        : 'Two-factor authentication required.',
+    'two_factor_required': true,
+  }),
+  headers: const {
+    'set-cookie': ['_shams_session=pending-challenge; path=/; HttpOnly'],
+  },
+);
+
+// ---------------------------------------------------------------------------
+// Coding Workspace
+// ---------------------------------------------------------------------------
+
+const workspaceId = '2c7f0be4-5a1d-4b6e-8f3c-9d0e1f2a3b4c';
+const workspaceRunId = '7d3b9e14-6c25-4a07-9f81-5e2b6d0c4a19';
+const testRunId = '8e4c0f25-7d36-4b18-a092-6f3c7e1d5b20';
+
+/// The token `WorkspacePreviewSession` issues; a link is only ever the gateway
+/// route with this on it, so a test that shows a link can name the whole URL.
+const previewToken = 'a1b2c3d4e5f64a7b8c9d0e1f2a3b4c5d';
+
+String get previewGatewayPath =>
+    '/workspaces/$workspaceId/preview/8000?session=$previewToken';
+
+/// One `workspaces` row, as `workspace_json` writes it.
+///
+/// [previewLink] is the row's own `preview`: the issued gateway link, and the
+/// only link a client ever gets. The manager's answer about the preview
+/// *container* is a different field of the detail envelope and never a link.
+String workspaceRowJson({
+  String name = 'Flask landing page',
+  String state = 'ready',
+  bool previewLink = false,
+  String? lastError,
+}) {
+  final preview = previewLink
+      ? '{"url":${jsonEncode(previewGatewayPath)},"port":8000,'
+            '"expires_at":"2026-11-12T10:30:00.000Z","seconds_left":600}'
+      : 'null';
+
+  return '{"id":"$workspaceId","name":${jsonEncode(name)},"runtime":"python3",'
+      '"state":${jsonEncode(state)},"conversation_id":"$conversationId",'
+      '"preview":$preview,'
+      '"last_error":${lastError == null ? 'null' : jsonEncode(lastError)},'
+      '"created_at":"2026-11-12T09:00:00.000Z",'
+      '"updated_at":"2026-11-12T09:05:00.000Z"}';
+}
+
+/// `GET /api/v1/workspaces` - the rows only, newest first. An empty list is a
+/// conversation that has never run code, which is not the same as a read that
+/// failed.
+String workspacesListPayload({
+  String name = 'Flask landing page',
+  String state = 'ready',
+  bool previewLink = false,
+  bool empty = false,
+}) =>
+    '{"ok":true,"workspaces":[${empty
+        ? ''
+        : workspaceRowJson(
+            name: name,
+            state: state,
+            previewLink: previewLink,
+          )}]}';
+
+/// One `workspace_runs` row, as `run_json` writes it.
+String workspaceRunJson({
+  String id = workspaceRunId,
+  String kind = 'exec',
+  List<String> argv = const ['python3', '-V'],
+  bool ok = true,
+  int exitCode = 0,
+  bool timedOut = false,
+  int? durationMs = 120,
+  String stdout = 'Python 3.12.7',
+  String stderr = '',
+}) =>
+    '{"id":"$id","kind":${jsonEncode(kind)},'
+    '"argv":${jsonEncode(argv)},'
+    '"ok":$ok,"exit_code":$exitCode,"timed_out":$timedOut,'
+    '"duration_ms":${durationMs ?? 'null'},'
+    '"stdout":${jsonEncode(stdout)},"stderr":${jsonEncode(stderr)},'
+    '"created_at":"2026-11-12T09:05:00.000Z"}';
+
+/// `GET /api/v1/workspaces/:id` - row, manager state, files, run history.
+///
+/// The manager's half is what it answers for `GET /workspaces/:id`, including
+/// the `preview` container state. [statusError] replaces it with the
+/// `{state:"unavailable", error}` shape the controller renders when the
+/// manager is not answering, and [files] is a raw JSON array so a test can
+/// model an empty project, a truncated listing or a refusal without the
+/// fixture needing to know which.
+String workspaceDetailPayload({
+  String name = 'Flask landing page',
+  String state = 'ready',
+  bool previewLink = false,
+  String runtimeStatus = 'running',
+  String? statusError,
+  String files =
+      '[{"path":"app.py","bytes":338},'
+      '{"path":"templates/index.html","bytes":91}]',
+  bool filesTruncated = false,
+  String? filesError,
+  List<String> runs = const [],
+}) {
+  const absentPreview = '{"state":"absent","exit_code":null,"container":null}';
+  final silent = statusError != null;
+  final status = silent
+      ? '{"state":"unavailable","error":${jsonEncode(statusError)}}'
+      : '{"state":${jsonEncode(runtimeStatus)},"exit_code":null,'
+            '"container":"shams-ws-$workspaceId","preview":$absentPreview}';
+
+  return '{"ok":true,'
+      '"workspace":${workspaceRowJson(
+        name: name,
+        state: state,
+        previewLink: previewLink,
+      )},'
+      '"status":$status,'
+      '"preview":${silent ? 'null' : absentPreview},'
+      '"files":${filesError == null ? files : 'null'},'
+      '"files_truncated":$filesTruncated,'
+      '"files_error":${filesError == null ? 'null' : jsonEncode(filesError)},'
+      '"runs":[${runs.join(',')}]}';
+}
+
+/// `GET /api/v1/workspaces/:id/file` - the text the manager read.
+String workspaceFilePayload({
+  String path = 'app.py',
+  String content = "from flask import Flask\n\napp = Flask(__name__)\n",
+  bool truncated = false,
+}) =>
+    '{"ok":true,"path":${jsonEncode(path)},"content":${jsonEncode(content)},'
+    '"truncated":$truncated}';
+
+/// `POST /api/v1/workspaces/:id/exec` - the container's own verdict.
+String workspaceExecPayload({
+  bool ok = true,
+  int exitCode = 0,
+  String stdout = 'hi',
+  String stderr = '',
+  bool timedOut = false,
+  double durationSeconds = 0.11,
+}) =>
+    '{"ok":$ok,"exit_code":$exitCode,"timed_out":$timedOut,'
+    '"duration_seconds":$durationSeconds,'
+    '"stdout":${jsonEncode(stdout)},"stderr":${jsonEncode(stderr)}}';
+
+/// `POST /api/v1/workspaces/:id/tests` - the provider's command and its output.
+String workspaceTestsPayload({
+  bool ok = true,
+  String command = 'python3 -m pytest -q',
+  int exitCode = 0,
+  String output = '2 passed in 1.14s',
+}) =>
+    '{"ok":$ok,"command":${jsonEncode(command)},"exit_code":$exitCode,'
+    '"output":${jsonEncode(output)},"timed_out":false,'
+    '"duration_seconds":1.2,"workspace_id":"$workspaceId"}';
+
+/// `POST /api/v1/workspaces/:id/preview` - the link this call issued.
+String workspacePreviewStartPayload() =>
+    '{"ok":true,"port":8000,"preview_url":${jsonEncode(previewGatewayPath)},'
+    '"expires_in":600,"preview_session_token":"$previewToken"}';
+
+/// `DELETE /api/v1/workspaces/:id/preview`.
+String workspacePreviewStopPayload() =>
+    '{"ok":true,"preview":{"state":"absent","exit_code":null,'
+    '"container":null}}';
+
+/// `DELETE /api/v1/workspaces/:id` - what the manager removed.
+String workspaceDestroyPayload() =>
+    '{"ok":true,"workspace_id":"$workspaceId","state":"destroyed",'
+    '"container_removed":true,"volume_removed":false}';
+
+/// The words a refusal travels in: the manager's status, its code and its own
+/// reason. The client repeats the reason; it never writes one.
+TransportResponse workspaceRefusal(int status, String code, String reason) =>
+    json(
+      status,
+      '{"ok":false,"error_code":${jsonEncode(code)},'
+      '"error":${jsonEncode(reason)}}',
+    );
 
 ShamsApi apiWith(HttpTransport transport) =>
     ShamsApi(baseUrl: 'http://localhost:3001/', transport: transport);

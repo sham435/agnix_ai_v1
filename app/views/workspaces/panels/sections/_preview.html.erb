@@ -1,0 +1,59 @@
+<%#
+  The live preview, served through this app's own authenticated gateway: the
+  sandbox publishes no port, so everything the iframe shows arrived over the
+  same session link that drew this panel, and it stops working when that link
+  expires.
+-%>
+<div class="card space-y-3">
+  <p class="text-[12px] font-semibold uppercase tracking-wide text-fg-subtle">Preview</p>
+
+  <% if @preview_session %>
+    <iframe src="<%= @preview_session.gateway_path %>"
+            title="Workspace preview on port <%= @preview_session.port %>"
+            loading="lazy"
+            sandbox="allow-scripts allow-forms"
+            referrerpolicy="no-referrer"
+            class="h-[420px] w-full rounded-xl border border-border bg-white"></iframe>
+
+    <div class="flex flex-wrap items-center justify-between gap-2 text-[11px] text-fg-subtle">
+      <span>port <%= @preview_session.port %> · link expires in <%= (@preview_session.seconds_left / 60.0).round(1) %> min</span>
+      <span class="flex items-center gap-3">
+        <%= link_to "Reload", workspace_path(workspace, section: "preview"), class: "text-accent-text hover:underline" %>
+        <%= link_to "Open in new tab", @preview_session.gateway_path,
+              target: "_blank", rel: "noopener", class: "text-accent-text hover:underline" %>
+      </span>
+    </div>
+
+    <%= button_to "Stop preview", workspace_preview_stop_path(workspace), method: :delete,
+          class: "btn-secondary text-[12px]",
+          form: { data: { turbo_frame: "workspace_panel_body" } } %>
+  <% else %>
+    <p class="text-[12px] leading-relaxed text-fg-muted">
+      Nothing is serving a port right now. Start one below, or ask the agent to
+      run the app — it uses this same route, and the link it gives you is the
+      one that renders here.
+    </p>
+  <% end %>
+
+  <%= form_with url: workspace_preview_start_path(workspace), method: :post,
+        class: "space-y-2", data: { turbo_frame: "workspace_panel_body" } do |f| %>
+    <div class="grid grid-cols-[110px_1fr] gap-2">
+      <%= f.number_field :port, value: 8000, min: 1024, max: 65535,
+            class: "rounded-lg border border-border bg-canvas px-2 py-1.5 text-[12px] text-fg",
+            aria: { label: "Port the sandbox server listens on" } %>
+      <%= f.text_field :command, value: "python3 app.py",
+            class: "min-w-0 rounded-lg border border-border bg-canvas px-2 py-1.5 font-mono text-[12px] text-fg",
+            aria: { label: "Command to start the server" } %>
+    </div>
+    <%= f.submit @preview_session ? "Restart preview" : "Start preview",
+          class: "btn-primary w-full cursor-pointer text-[13px]" %>
+  <% end %>
+
+  <p class="text-[11px] leading-relaxed text-fg-subtle">
+    The gateway forwards HTTP only, so a dev server's live-reload socket will
+    not connect here — reload the frame instead.
+    <% if (state = @preview_state.presence) && state["state"].present? %>
+      <span class="font-mono">manager says: <%= state["state"] %></span>
+    <% end %>
+  </p>
+</div>

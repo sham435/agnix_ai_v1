@@ -7,7 +7,7 @@ require "rails_helper"
 # The account & security panel: every section it renders, and the enrollment
 # order it exists to enforce — a secret stays in the session until a code
 # proves the user can generate one, backup codes appear exactly once, and
-# turning the protection off costs a password.
+# turning the protection off costs a fresh password and second-factor proof.
 #
 # Requests carry the Turbo-Frame header because that is what the panel sends;
 # without it the controllers answer with redirects and the section ERB never
@@ -115,12 +115,12 @@ RSpec.describe "Account panel", type: :request do
     grouped.to_s.delete(" \n\t")
   end
 
-  def disable_two_factor(password)
-    panel_destroy account_disable_two_factor_path, "two_factor", password: password
+  def disable_two_factor(password, code: nil)
+    panel_destroy account_disable_two_factor_path, "two_factor", password: password, code: code
   end
 
-  def regenerate_recovery_codes(password)
-    panel_request account_recovery_codes_path, "recovery", password: password
+  def regenerate_recovery_codes(password, code: nil)
+    panel_request account_recovery_codes_path, "recovery", password: password, code: code
   end
 
   def send_phone_code(phone)
@@ -220,7 +220,7 @@ RSpec.describe "Account panel", type: :request do
       start_enrollment
 
       expect(response).to have_http_status(:ok)
-      expect(response.body).to include("Add this account to your authenticator")
+      expect(response.body).to include("Scan this QR code with your authenticator")
       expect(user.reload).not_to be_second_factor_enabled
       expect(user.otp_secret).to be_nil
       expect(user.recovery_codes).to be_empty
@@ -244,6 +244,20 @@ RSpec.describe "Account panel", type: :request do
       expect(user.reload).to be_second_factor_enabled
       expect(user.recovery_codes.count).to eq(RecoveryCode::COUNT)
       expect(response.body).to include("save them now")
+    end
+
+    it "spends the enrollment step before any sensitive change" do
+      freeze_time do
+        start_enrollment
+        pending = pending_secret
+        code = code_for(pending)
+        confirm_enrollment(code)
+
+        expect(user.reload.otp_last_step).to eq(Time.current.to_i / TwoFactor::STEP_SECONDS)
+        disable_two_factor("password123", code: code)
+        expect(response).to have_http_status(:unprocessable_entity)
+        expect(user.reload).to be_second_factor_enabled
+      end
     end
 
     it "does not show the backup codes a second time" do
@@ -293,8 +307,25 @@ RSpec.describe "Account panel", type: :request do
       expect(user.recovery_codes.unused.count).to eq(RecoveryCode::COUNT)
     end
 
-    it "clears the secret and every backup code with the right password" do
+    it "refuses a password without second-factor proof" do
       disable_two_factor("password123")
+
+      expect(response).to have_http_status(:unprocessable_entity)
+      expect(user.reload).to be_second_factor_enabled
+      expect(user.recovery_codes.unused.count).to eq(RecoveryCode::COUNT)
+    end
+
+    it "accepts a recovery code with the password" do
+      code = RecoveryCode.generate!(user).first
+      disable_two_factor("password123", code: code)
+
+      expect(response).to have_http_status(:ok)
+      expect(user.reload).not_to be_second_factor_enabled
+      expect(user.recovery_codes).to be_empty
+    end
+
+    it "clears the secret and every backup code with the right password and authenticator proof" do
+      disable_two_factor("password123", code: code_for)
 
       expect(response).to have_http_status(:ok)
       user.reload
@@ -315,11 +346,33 @@ RSpec.describe "Account panel", type: :request do
     it "mints a fresh set on request and retires the old ones" do
       old_code = plaintext.first
 
-      regenerate_recovery_codes("password123")
+      regenerate_recovery_codes("password123", code: code_for)
 
       expect(response).to have_http_status(:ok)
       expect(user.recovery_codes.unused.count).to eq(RecoveryCode::COUNT)
       expect(RecoveryCode.consume!(user, old_code)).to be_nil
+    end
+
+    it "requires both the password and a second-factor proof to replace codes" do
+      regenerate_recovery_codes("wrong", code: plaintext.first)
+      expect(response).to have_http_status(:unprocessable_entity)
+      expect(user.recovery_codes.unused.count).to eq(RecoveryCode::COUNT)
+
+      regenerate_recovery_codes("password123")
+      expect(response).to have_http_status(:unprocessable_entity)
+      expect(user.recovery_codes.unused.count).to eq(RecoveryCode::COUNT)
+    end
+
+    it "does not reuse regeneration's authenticator step to disable the factor" do
+      freeze_time do
+        code = code_for
+        regenerate_recovery_codes("password123", code: code)
+        expect(response).to have_http_status(:ok)
+
+        disable_two_factor("password123", code: code)
+        expect(response).to have_http_status(:unprocessable_entity)
+        expect(user.reload).to be_second_factor_enabled
+      end
     end
 
     it "spends a code once and never twice" do
@@ -338,7 +391,10 @@ RSpec.describe "Account panel", type: :request do
   end
 
   describe "phone verification" do
-    before { sign_in }
+    before do
+      sign_in
+      allow(PhoneVerification).to receive(:random_code).and_return("123456")
+    end
 
     it "refuses a number it cannot place in E.164" do
       send_phone_code("12345")
@@ -355,6 +411,8 @@ RSpec.describe "Account panel", type: :request do
       confirm_phone_code(issued_phone_code)
 
       expect(response).to have_http_status(:ok)
+      expect(response.body).to include("+94771234567 is verified.")
+      expect(response.body).not_to include("Not verified")
       user.reload
       expect(user.phone).to eq("+94771234567")
       expect(user).to be_phone_verified
@@ -365,7 +423,7 @@ RSpec.describe "Account panel", type: :request do
       send_phone_code("+94771234567")
 
       expect(response).to have_http_status(:too_many_requests)
-      expect(response.body).to include("still valid")
+      expect(response.body).to include("Wait before asking for another code.")
       expect(user.phone_verifications.count).to eq(1)
     end
 

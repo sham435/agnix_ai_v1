@@ -58,7 +58,7 @@ class SessionsController < ApplicationController
 
   def finish_two_factor_sign_in(user, notice:)
     clear_two_factor_pending
-    complete_sign_in(user)
+    complete_sign_in(user, mfa_verified: true)
     redirect_to conversations_path, notice: notice
   end
 end

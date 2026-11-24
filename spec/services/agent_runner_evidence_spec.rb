@@ -1,12 +1,15 @@
 # frozen_string_literal: true
 
+# Narrative runner regressions keep the action, persisted evidence, and verdict together.
+# rubocop:disable RSpec/MultipleExpectations, RSpec/ExampleLength, RSpec/AnyInstance, RSpec/MessageSpies, RSpec/MultipleMemoizedHelpers
+
 require "rails_helper"
 
 # Regression specs for the school-build-run false-success bug (task
 # shams-agentic-os): plan steps were marked "done" on responses that executed
 # NO tool action at all — a text-only apology, or the max-iterations fallback.
 # Evidence gating: a step completes only with executed actions and no error /
-# iteration exhaustion. write_file additionally verifies bytes on disk.
+# iteration exhaustion. Workspace write results retain the provider's verification evidence.
 RSpec.describe AgentRunner, type: :service do
   let(:organization) { create(:organization) }
   let(:agent) { create(:agent) }
@@ -16,6 +19,7 @@ RSpec.describe AgentRunner, type: :service do
 
   before do
     allow(agent).to receive(:llm_client).and_return(client)
+    allow(Workspaces::Provider).to receive(:available?).and_return({ manager: false, docker: false })
     allow(Turbo::StreamsChannel).to receive(:broadcast_append_to)
     allow(Turbo::StreamsChannel).to receive(:broadcast_replace_to)
     allow_any_instance_of(AgentRun).to receive(:broadcast_reasoning)
@@ -31,7 +35,7 @@ RSpec.describe AgentRunner, type: :service do
         { content: "I can't run or verify those steps myself — I have no shell access.", tool_calls: [], tokens: 8 }
       )
 
-      runner = AgentRunner.new(agent: agent, conversation: conversation, user: user)
+      runner = described_class.new(agent: agent, conversation: conversation, user: user)
       runner.resume_plan(agent_run, stream: false)
 
       todo = agent_run.reload.todos.first
@@ -41,8 +45,25 @@ RSpec.describe AgentRunner, type: :service do
       expect(conversation.messages.assistant.map(&:content).join).to include("no shell access")
     end
 
+    it "fails a step when a crafted host call is refused despite a model success claim" do
+      conversation.update!(mode: "auto_build")
+      allow(agent).to receive(:enabled_tools).and_return([ "write_file" ])
+      allow(client).to receive(:chat).and_return(
+        { content: nil, tool_calls: [ { id: "host", function: { name: "write_file", arguments: "{}" } } ], tokens: 1 },
+        { content: "Wrote it (allegedly).", tool_calls: [], tokens: 1 }
+      )
+      expect(Agents::ToolRegistry).not_to receive(:execute)
+      runner = described_class.new(agent: agent, conversation: conversation, user: user)
+
+      result = runner.send(:execute_step, "Write models.py", false)
+
+      expect(result[:ok]).to be(false)
+      expect(result[:actions]).to eq(0)
+      expect(Run.last.tool_checkpoint.first["ok"]).to be(false)
+    end
+
     it "marks a step FAILED when the loop hit the iteration limit (incomplete marker)" do
-      runner = AgentRunner.new(agent: agent, conversation: conversation, user: user)
+      runner = described_class.new(agent: agent, conversation: conversation, user: user)
       allow(runner).to receive(:execute_tool_loop).and_return(
         {
           content: "I was unable to complete your request within the allowed iterations.",
@@ -58,7 +79,7 @@ RSpec.describe AgentRunner, type: :service do
     end
 
     it "completes a step when actions executed and no error is present" do
-      runner = AgentRunner.new(agent: agent, conversation: conversation, user: user)
+      runner = described_class.new(agent: agent, conversation: conversation, user: user)
       allow(runner).to receive(:execute_tool_loop).and_return(
         { content: "wrote 3 files and ran tests", tool_calls: [], tokens: 0, actions: 5 }
       )
@@ -70,7 +91,7 @@ RSpec.describe AgentRunner, type: :service do
     end
 
     it "fails a step whose loop raised an error even when actions executed" do
-      runner = AgentRunner.new(agent: agent, conversation: conversation, user: user)
+      runner = described_class.new(agent: agent, conversation: conversation, user: user)
       allow(runner).to receive(:execute_tool_loop).and_return(
         { content: "boom", error: "total loss", tool_calls: [], tokens: 0, actions: 2 }
       )
@@ -82,29 +103,36 @@ RSpec.describe AgentRunner, type: :service do
     end
   end
 
-  describe "write_file disk verification" do
-    after do
-      [ "/tmp/shams-evidence" ].each { |dir| FileUtils.remove_entry(dir) rescue nil }
+  describe "workspace write evidence" do
+    let(:runner) { described_class.new(agent: agent, conversation: conversation, user: user) }
+    let(:workspace) { build_stubbed(:workspace, user: user, conversation: conversation) }
+    let(:args) { { "path" => "models.py", "content" => "class Student:\n    pass\n" } }
+
+    before do
+      allow(agent).to receive(:enabled_tools).and_return([ "workspace_write_file" ])
+      allow(Workspaces::ToolSupport).to receive(:with_workspace).and_yield(workspace)
     end
 
-    let(:tool) { Agents::ToolRegistry.get("write_file") }
+    it "preserves a workspace write verification failure instead of recording success" do
+      allow(Workspaces::Provider).to receive(:write_file)
+        .with(workspace, args["path"], args["content"])
+        .and_return({ ok: false, error: "write verification failed: file missing or empty after write" })
 
-    it "fails when the executor claims success but no bytes reach the disk" do
-      allow(Agents::OsExecutor).to receive(:write_file).and_return({ ok: true, path: "/nonexistent/void/models.py" })
+      result = runner.send(:dispatch_tool_call, "workspace_write_file", args)
 
-      result = Agents::ToolRegistry.execute("write_file", { "path" => "/nonexistent/void/models.py", "content" => "class Student" })
-
-      expect(result[:ok]).to be(false)
       expect(result[:error]).to include("write verification failed")
+      expect(runner.send(:action_succeeded?, result)).to be(false)
     end
 
-    it "succeeds with a real write and reports the verified byte size" do
-      FileUtils.mkdir_p("/tmp/shams-evidence")
-      path = "/tmp/shams-evidence/models.py"
-      result = Agents::ToolRegistry.execute("write_file", { "path" => path, "content" => "class Student:\n    pass\n" })
+    it "preserves the verified byte size returned by the sandbox provider" do
+      allow(Workspaces::Provider).to receive(:write_file)
+        .with(workspace, args["path"], args["content"])
+        .and_return({ ok: true, path: args["path"], bytes_written: args["content"].bytesize })
+
+      result = runner.send(:dispatch_tool_call, "workspace_write_file", args)
 
       expect(result[:ok]).to be(true)
-      expect(result[:bytes_written]).to eq(File.size(result[:path]))
+      expect(result[:bytes_written]).to eq(args["content"].bytesize)
     end
   end
 end

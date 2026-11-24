@@ -124,6 +124,14 @@ RSpec.describe Llm::OpenaiAdapter do
 
       expect(body).not_to have_key(:chat_template_kwargs)
     end
+
+    it "preserves structured multimodal content instead of stringifying it" do
+      content = [ { type: "text", text: "Describe this" },
+                  { type: "image_url", image_url: { url: "data:image/png;base64,test-only" } } ]
+      body = adapter.send(:build_request_body, [ { role: "user", content: content } ], [], 0.7, 512)
+
+      expect(body[:messages]).to eq([ { role: "user", content: content } ])
+    end
   end
 
   describe "#stream_chat" do
@@ -324,7 +332,7 @@ RSpec.describe Llm::OpenaiAdapter do
                           temperature: 0.7, max_tokens: 100, &block)
     end
 
-    it "raises with the server's own reason instead of returning an empty answer" do
+    it "raises a sanitized typed error instead of returning an empty answer" do
       stub_stream_fragments([
         stream_fragment(%({"error":{"message":"upstream rate limited","type":"rate_limit"}}), 429)
       ], returns: double(code: "429"))
@@ -332,7 +340,10 @@ RSpec.describe Llm::OpenaiAdapter do
       frames = []
       expect { stream { |piece, *_| frames << piece } }
         .to raise_error(Llm::OpenaiAdapter::LlmError) { |error|
-          expect(error.message).to include("https://openrouter.ai/api/v1", "HTTP 429", "upstream rate limited")
+          expect(error.code).to eq("provider_rate_limited")
+          expect(error.status).to eq(429)
+          expect(error.retryable?).to be(true)
+          expect(error.message).not_to include("openrouter.ai", "upstream rate limited")
         }
       expect(frames).to be_empty
     end
@@ -344,38 +355,40 @@ RSpec.describe Llm::OpenaiAdapter do
 
       frames = []
       expect { stream { |piece, *_| frames << piece } }
-        .to raise_error(Llm::OpenaiAdapter::LlmError, /HTTP 500/)
+        .to raise_error(Llm::OpenaiAdapter::LlmError) { |error|
+          expect(error.code).to eq("provider_unavailable")
+          expect(error.status).to eq(500)
+        }
       expect(frames.join).not_to include("SHOULD-NOT-LEAK")
     end
 
-    it "keeps a multi-line failure page on one line of the message" do
-      # A reverse proxy in front of the gateway answers with an HTML page. Its
-      # text is quoted as the reason, so the newlines must not spill into the
-      # single-line error bubble the job renders.
+    it "does not expose a multi-line upstream failure page" do
       page = "<html>\n  <head><title>502 Bad Gateway</title></head>\n  <body>upstream gone</body>\n</html>"
       stub_stream_fragments([ stream_fragment(page, 502) ])
 
       expect { stream }.to raise_error(Llm::OpenaiAdapter::LlmError) { |error|
-        expect(error.message).to include("HTTP 502", "502 Bad Gateway", "upstream gone")
-        expect(error.message).not_to include("\n")
+        expect(error.code).to eq("provider_unavailable")
+        expect(error.status).to eq(502)
+        expect(error.message).not_to include("502 Bad Gateway", "upstream gone", "\n")
       }
     end
 
-    it "names the status when the error response has no body to show" do
-      # A 0-length 502 still streams exactly one fragment: the status line, with
-      # nothing but an empty chunk attached to it.
+    it "preserves the status when the error response has no body" do
       stub_stream_fragments([ stream_fragment("", 502) ])
 
-      expect { stream }.to raise_error(Llm::OpenaiAdapter::LlmError, /HTTP 502 with no response body/)
+      expect { stream }.to raise_error(Llm::OpenaiAdapter::LlmError) { |error|
+        expect(error.code).to eq("provider_unavailable")
+        expect(error.status).to eq(502)
+      }
     end
 
     it "reads the status from the completed response when no fragment is streamed" do
-      # If the transport yields nothing at all, the status HTTParty reports once
-      # the request finishes is the only signal - an error must not be able to
-      # pass as a completed empty turn.
       allow(HTTParty).to receive(:post).and_return(double(code: "503"))
 
-      expect { stream }.to raise_error(Llm::OpenaiAdapter::LlmError, /HTTP 503 with no response body/)
+      expect { stream }.to raise_error(Llm::OpenaiAdapter::LlmError) { |error|
+        expect(error.code).to eq("provider_unavailable")
+        expect(error.status).to eq(503)
+      }
     end
 
     it "streams normally while the transport reports 2xx" do
@@ -398,7 +411,7 @@ RSpec.describe Llm::OpenaiAdapter do
   describe "connection fast-fail" do
     before { allow(adapter).to receive(:sleep) }
 
-    it "retries the sync path only briefly, then raises an actionable error naming the endpoint" do
+    it "retries the sync path only briefly, then raises a sanitized network error" do
       posts = 0
       allow(HTTParty).to receive(:post) do
         posts += 1
@@ -408,7 +421,10 @@ RSpec.describe Llm::OpenaiAdapter do
       expect do
         adapter.sync_chat(messages: [ { role: "user", content: "hi" } ], tools: [],
                           temperature: 0.7, max_tokens: 10)
-      end.to raise_error(Llm::OpenaiAdapter::LlmError, /Could not reach the model server/)
+      end.to raise_error(Llm::OpenaiAdapter::LlmError) { |error|
+        expect(error.code).to eq("provider_network_error")
+        expect(error.retryable?).to be(true)
+      }
 
       # Bounded: initial + MAX_CONNECT_RETRIES(1) = 2 attempts — never a long
       # retry loop against a dead port.
@@ -425,7 +441,9 @@ RSpec.describe Llm::OpenaiAdapter do
       expect do
         adapter.stream_chat(messages: [ { role: "user", content: "hi" } ], tools: [],
                             temperature: 0.7, max_tokens: 10) { |_c, _f, _t, _k| }
-      end.to raise_error(Llm::OpenaiAdapter::LlmError, /Could not reach the model server/)
+      end.to raise_error(Llm::OpenaiAdapter::LlmError) { |error|
+        expect(error.code).to eq("provider_network_error")
+      }
 
       expect(posts).to eq(2)
     end

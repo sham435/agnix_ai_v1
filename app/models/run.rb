@@ -28,6 +28,8 @@ class Run < ApplicationRecord
 
   scope :active, -> { where(status: %w[pending running]) }
   scope :recent, -> { order(started_at: :desc) }
+  scope :for_user, ->(user) { joins(:conversation).where(conversations: { user_id: user.id }) }
+  scope :in_organization, ->(organization) { joins(:agent).where(agents: { organization_id: organization.id }) }
 
   # ── Process control block ──────────────────────────────────────────
   #

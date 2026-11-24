@@ -8,6 +8,7 @@ import 'src/config.dart';
 import 'src/screens/app_screens.dart';
 import 'src/screens/chat_screen.dart';
 import 'src/screens/security_screen.dart';
+import 'src/screens/workspace_screen.dart';
 import 'src/theme/app_theme.dart';
 import 'src/theme/theme_controller.dart';
 
@@ -204,6 +205,20 @@ class _SessionGateState extends State<SessionGate> {
         .then((_) => _loadHome());
   }
 
+  /// The mobile counterpart of the web's right-side Coding Workspace panel:
+  /// the same endpoints, drawn as a full-height screen for the sandbox this
+  /// conversation's coding turns run in.
+  void _openWorkspace(String conversationId) {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => WorkspaceScreen(
+          api: widget.api,
+          conversationId: conversationId,
+        ),
+      ),
+    );
+  }
+
   void _openConversation(Conversation conversation, {Agent? seedAgent}) {
     Navigator.of(context)
         .push(
@@ -213,6 +228,7 @@ class _SessionGateState extends State<SessionGate> {
               conversationId: conversation.id,
               title: conversation.displayName,
               agent: seedAgent ?? conversation.effectiveAgent,
+              onOpenWorkspace: () => _openWorkspace(conversation.id),
             ),
           ),
         )

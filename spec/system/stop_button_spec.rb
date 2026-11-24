@@ -93,20 +93,23 @@ RSpec.describe "Stop button", :js, type: :system do
     # No spinner left, and the trace names what happened rather than faking a
     # completion.
     expect(page).to have_no_css("[data-thinking-indicator]", wait: 5)
+    expect(page).to have_content("Stopping the current run.", wait: 5)
     expect(js("document.querySelector('[data-execution-trace] [data-execution-trace-target=phase]').textContent"))
       .to eq("Stopped")
     # The composer's generation guard is released by the same press.
     expect(page).to have_no_css("#messages-container[data-composer-busy]", wait: 5)
-    # The tab is told, in the thread, that the press did something.
-    expect(page).to have_content("Stopping the current run.", wait: 5)
+    expect(page).to have_css(
+      "[data-chat-input-target='taskStatus']",
+      text: "Background tasks queued: 1",
+      wait: 5
+    )
+    expect(conversation.reload.metadata["m18_followups"].sole["content"]).to eq("tell me a long story")
     # And the run the job polls is flagged, which is what aborts the model.
     expect(run.reload.status).to eq("cancelled")
     expect(run.finished_at).to be_present
   end
 
   it "says so when there is nothing to stop" do
-    submit_and_send("hello")
-
     stop_form_button.click
 
     expect(page).to have_content("Nothing is running in this conversation.", wait: 5)

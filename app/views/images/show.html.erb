@@ -50,7 +50,8 @@
           <%= link_to "Download", download_image_path(@image_generation),
                 class: "rounded-xl border border-border bg-panel px-3.5 py-2 text-[13px] font-medium text-fg-muted transition hover:bg-hover hover:text-fg" %>
         <% end %>
-        <%= button_to "Regenerate", regenerate_image_path(@image_generation), method: :post,
+        <%= button_to (@image_generation.failed? ? "Retry" : "Regenerate"), regenerate_image_path(@image_generation), method: :post,
+              disabled: !@image_generation.retry_available?,
               class: "rounded-xl bg-accent px-3.5 py-2 text-[13px] font-semibold text-accent-fg transition hover:brightness-110" %>
       </div>
     </div>

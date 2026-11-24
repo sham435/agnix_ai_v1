@@ -1,0 +1,13 @@
+<section class="mx-auto max-w-3xl p-6 text-neutral-100">
+  <h1 class="text-xl font-semibold">Confirm GitHub write</h1>
+  <% if @result[:ok] %>
+    <p class="my-4">No issue has been created. Review the exact operation and arguments below. Confirmation executes once; failures are not retried.</p>
+    <pre class="overflow-auto whitespace-pre-wrap rounded bg-neutral-900 p-4"><%= JSON.pretty_generate(@result[:binding].except("nonce")) %></pre>
+    <%= form_with url: github_approval_path, method: :post, data: { turbo: false }, class: "mt-4" do |form| %>
+      <%= form.hidden_field :token, value: @approval_token %>
+      <%= form.submit "Confirm and create this exact issue", class: "rounded bg-amber-600 px-4 py-2 text-white" %>
+    <% end %>
+  <% else %>
+    <p class="mt-4">This approval is unavailable, expired, already consumed, or not yours.</p>
+  <% end %>
+</section>

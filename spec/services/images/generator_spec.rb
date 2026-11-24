@@ -4,7 +4,7 @@
 # Proves the provider contract the rest of the app relies on: gpt-image-1
 # never sends response_format, the dall-e-3 fallback does, readable
 # user-facing errors replace raw provider bodies, and transport timeouts are
-# retried exactly once then surfaced honestly.
+# never retried automatically and surfaced honestly.
 # rubocop:disable RSpec/ExampleLength, RSpec/MultipleExpectations, RSpec/MultipleMemoizedHelpers, RSpec/SubjectStub
 
 require "rails_helper"
@@ -127,15 +127,39 @@ RSpec.describe Images::Generator do
     end
   end
 
+  describe "rate limits" do
+    it "preserves Retry-After without repeating the POST" do
+      stub = stub_request(:post, url).to_return(status: 429, headers: { "Retry-After" => "120" })
+      expect { generator.generate(prompt: "a lake") }.to raise_error(described_class::RateLimited) { |error|
+        expect(error.retry_after).to eq("120")
+        expect(error.retry_at).to be_within(2.seconds).of(Time.current + 120.seconds)
+        expect(error.message).to include("Retry manually after")
+      }
+      expect(stub).to have_been_requested.once
+    end
+
+    it "accepts an HTTP date cooldown" do
+      date = (Time.current + 5.minutes).utc.change(usec: 0)
+      error = described_class::RateLimited.new(retry_after: date.httpdate)
+      expect(error.retry_at).to eq(date)
+    end
+
+    it "handles invalid cooldown headers safely" do
+      error = described_class::RateLimited.new(retry_after: "invalid")
+      expect(error.retry_at).to be_nil
+      expect(error.message).to include("Wait")
+    end
+  end
+
   describe "timeout path" do
-    it "retries transport timeouts then reports a readable timeout error" do
+    it "does not repeat potentially charged requests on timeout" do
       stub_request(:post, url).to_timeout
       allow(generator).to receive(:sleep)
 
       expect { generator.generate(prompt: "a lake") }
         .to raise_error(described_class::Error, /timed out/i)
 
-      expect(a_request(:post, url)).to have_been_requested.times(described_class::MAX_ATTEMPTS)
+      expect(a_request(:post, url)).to have_been_requested.once
     end
   end
 end

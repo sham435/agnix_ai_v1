@@ -12,7 +12,7 @@
 <% if @two_factor_enrolling %>
   <div class="card space-y-4">
     <div>
-      <h3 class="text-[14px] font-medium text-fg">1. Add this account to your authenticator</h3>
+      <h3 class="text-[14px] font-medium text-fg">1. Scan this QR code with your authenticator</h3>
       <p class="mt-1 text-[12px] leading-relaxed text-fg-subtle">
         Google Authenticator, Microsoft Authenticator, Aegis or any other TOTP app.
         The setup window closes in <%= (TwoFactor::ENROLLMENT_TTL / 60).to_i %> minutes.
@@ -86,8 +86,7 @@
   <div class="card space-y-3">
     <h3 class="text-[14px] font-medium text-fg">Turn it off</h3>
     <p class="text-[12px] leading-relaxed text-fg-subtle">
-      Your password, because this is the change a hijacked session would most
-      like to make. Backup codes go with it.
+      Your password and a fresh authenticator code are required. Backup codes go with it.
     </p>
 
     <%= form_with url: account_disable_two_factor_path, method: :delete, class: "space-y-3" do %>
@@ -98,6 +97,9 @@
              aria-label="Current password"
              class="input-field"
              required>
+      <input type="text" name="code" inputmode="numeric" autocomplete="one-time-code"
+             pattern="[0-9]{6}" maxlength="6" placeholder="Authenticator code"
+             aria-label="Authenticator code" class="input-field" required>
       <button type="submit" class="btn-secondary w-full text-[13px] text-red-600 dark:text-red-400">
         Disable two-factor
       </button>

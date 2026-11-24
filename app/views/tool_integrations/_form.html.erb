@@ -29,11 +29,11 @@
           </div>
           <div>
             <label class="block text-[13px] font-medium text-fg mb-1">API Key</label>
-            <%= password_field_tag "tool_integration[credentials][api_key]", integration.credentials.is_a?(Hash) ? integration.credentials["api_key"] : nil, placeholder: "sk-...", class: "input-field font-mono" %>
+            <%= password_field_tag "tool_integration[credentials][api_key]", nil, placeholder: integration.persisted? ? "Leave blank to keep current key" : "sk-...", class: "input-field font-mono", autocomplete: "new-password" %>
           </div>
           <div>
             <label class="block text-[13px] font-medium text-fg mb-1">Webhook Secret</label>
-            <%= password_field_tag "tool_integration[credentials][webhook_secret]", integration.credentials.is_a?(Hash) ? integration.credentials["webhook_secret"] : nil, placeholder: "whsec_...", class: "input-field font-mono" %>
+            <%= password_field_tag "tool_integration[credentials][webhook_secret]", nil, placeholder: integration.persisted? ? "Leave blank to keep current secret" : "whsec_...", class: "input-field font-mono", autocomplete: "new-password" %>
           </div>
           <label class="flex items-center gap-2 text-[13px] text-fg">
             <%= f.check_box :is_active, class: "rounded border-border bg-hover text-accent-text" %>

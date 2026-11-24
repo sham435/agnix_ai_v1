@@ -12,10 +12,17 @@ class ApiException implements Exception {
     this.statusCode,
     this.twoFactorRequired = false,
     this.retryInSeconds,
+    this.payload,
   });
 
   final String message;
   final int? statusCode;
+
+  /// The refusal's own JSON body, when it had one. A workspace action answers a
+  /// rejection with `{ ok:false, error_code, error }` - the reason and its code
+  /// are the data the screen has to show, not a transport failure, so the
+  /// action methods read them back from here instead of only the message.
+  final Map<String, dynamic>? payload;
 
   /// `authenticate_user!` answers 401 with JSON for API requests, which is how
   /// the client knows it has to show the login screen again.
@@ -118,18 +125,25 @@ class ShamsApi {
   Future<SecurityPanel> confirmTwoFactor(String code) =>
       _postSecurity('/api/v1/security/two_factor/confirm', {'code': code});
 
-  /// Turn the factor off, which costs the account password and takes the backup
-  /// codes with it.
-  Future<SecurityPanel> disableTwoFactor(String password) => _sendSecurity(
-    'DELETE',
-    '/api/v1/security/two_factor',
-    {'password': password},
-  );
+  /// Turn the factor off using the current password and an authenticator or
+  /// single-use recovery [code]. The server verifies both and retires the codes.
+  Future<SecurityPanel> disableTwoFactor(
+    String password, {
+    required String code,
+  }) => _sendSecurity('DELETE', '/api/v1/security/two_factor', {
+    'password': password,
+    'code': code,
+  });
 
-  /// A fresh set of backup codes, retiring the old set. Password too, because
-  /// these strings open the account.
-  Future<SecurityPanel> regenerateRecoveryCodes(String password) =>
-      _postSecurity('/api/v1/security/recovery_codes', {'password': password});
+  /// A fresh set of backup codes, retiring the old set. Requires the current
+  /// password and an authenticator or single-use recovery [code].
+  Future<SecurityPanel> regenerateRecoveryCodes(
+    String password, {
+    required String code,
+  }) => _postSecurity('/api/v1/security/recovery_codes', {
+    'password': password,
+    'code': code,
+  });
 
   /// Ask for an SMS code. Refusals come back as [ApiException] carrying the
   /// server's own reason; a cooldown also reports how long to wait.
@@ -177,6 +191,52 @@ class ShamsApi {
       body: fields == null ? null : jsonEncode(fields),
     );
     return SecurityPanel.fromJson(_map(response, path));
+  }
+
+  Future<ModelCatalogue> modelCatalogue(String conversationId) async {
+    final path =
+        '/api/v1/models?conversation_id=${Uri.encodeComponent(conversationId)}';
+    return ModelCatalogue.fromJson(_map(await _send('GET', path), path));
+  }
+
+  Future<ModelCatalogue> refreshModels(String conversationId) async {
+    const path = '/api/v1/models/refresh';
+    return ModelCatalogue.fromJson(
+      _map(
+        await _send(
+          'POST',
+          path,
+          body: jsonEncode({'conversation_id': conversationId}),
+        ),
+        path,
+      ),
+    );
+  }
+
+  /// A null selection resets only this conversation to its organization default.
+  Future<ModelCatalogue> selectConversationModel(
+    String conversationId,
+    ModelReference? selection,
+  ) async {
+    final path =
+        '/api/v1/conversations/${Uri.encodeComponent(conversationId)}/model';
+    return ModelCatalogue.fromJson(
+      _map(
+        await _send(
+          'PATCH',
+          path,
+          body: jsonEncode(
+            selection == null
+                ? {'use_organization_default': true}
+                : {
+                    'provider_id': selection.providerId,
+                    'model_id': selection.modelId,
+                  },
+          ),
+        ),
+        path,
+      ),
+    );
   }
 
   /// `GET /api/v1/agents` - agents of the active organization.
@@ -243,6 +303,142 @@ class ShamsApi {
     return Message.fromJson(message);
   }
 
+  /// `GET /api/v1/workspaces` — the sandboxes this account owns, newest first.
+  ///
+  /// [conversationId] asks for the one that chat runs in, which is how the
+  /// screen opened from a conversation finds its own workspace. A conversation
+  /// this account does not own simply lists nothing.
+  Future<List<Workspace>> listWorkspaces({String? conversationId}) async {
+    var path = '/api/v1/workspaces';
+    if (conversationId != null) {
+      path += '?conversation_id=${Uri.encodeComponent(conversationId)}';
+    }
+    final response = await _send('GET', path);
+    final body = _map(response, path);
+    return (body['workspaces'] is List)
+        ? (body['workspaces'] as List)
+              .whereType<Map<String, dynamic>>()
+              .map(Workspace.fromJson)
+              .toList(growable: false)
+        : const [];
+  }
+
+  /// `GET /api/v1/workspaces/:id` — everything the screen draws in one read:
+  /// the row, the manager's word about the container, the files and the runs.
+  Future<Workspace> workspace(String id) async {
+    final path = '/api/v1/workspaces/$id';
+    final response = await _send('GET', path);
+    final body = _map(response, path);
+    final row = body['workspace'];
+    if (row is! Map<String, dynamic>) {
+      throw ApiException('Expected a "workspace" object from $path.');
+    }
+    // The row carries the preview *link*; the envelope's `preview` is the
+    // container's state, a different fact with the same name, so the halves are
+    // merged by key instead of one spreading over the other.
+    return Workspace.fromJson(<String, dynamic>{
+      ...row,
+      'status': body['status'],
+      'files': body['files'],
+      'files_truncated': body['files_truncated'],
+      'files_error': body['files_error'],
+      'runs': body['runs'],
+    });
+  }
+
+  /// `GET /api/v1/workspaces/:id/file` — one project file, by its relative path.
+  Future<WorkspaceFileContent> readWorkspaceFile(
+    String workspaceId,
+    String filePath,
+  ) async {
+    final path =
+        '/api/v1/workspaces/$workspaceId/file'
+        '?path=${Uri.encodeComponent(filePath)}';
+    final response = await _send('GET', path);
+    return WorkspaceFileContent.fromJson(_map(response, path));
+  }
+
+  /// `POST /api/v1/workspaces/:id/exec`.
+  ///
+  /// [argv] runs the tokens as given; [command] is one typed line, which the
+  /// *server* splits into argv tokens. Both mean "no shell ever parses this",
+  /// and the splitting rule lives in one place rather than being guessed at
+  /// here.
+  Future<WorkspaceActionResult> runWorkspaceCommand(
+    String workspaceId, {
+    List<String>? argv,
+    String? command,
+    int? timeout,
+  }) => _workspaceAction(
+    'POST',
+    '/api/v1/workspaces/$workspaceId/exec',
+    body: {
+      if (argv != null) 'argv': argv else 'command': command ?? '',
+      if (timeout != null) 'timeout': timeout,
+    },
+  );
+
+  /// `POST /api/v1/workspaces/:id/tests` — the test command the provider chose.
+  Future<WorkspaceActionResult> runWorkspaceTests(String workspaceId) =>
+      _workspaceAction(
+        'POST',
+        '/api/v1/workspaces/$workspaceId/tests',
+        body: const {},
+      );
+
+  /// `POST /api/v1/workspaces/:id/preview` — start the preview server and get
+  /// the gateway link this session was issued.
+  Future<WorkspaceActionResult> startWorkspacePreview(
+    String workspaceId, {
+    int? port,
+    String? command,
+  }) => _workspaceAction(
+    'POST',
+    '/api/v1/workspaces/$workspaceId/preview',
+    body: {
+      if (port != null) 'port': port,
+      if (command != null && command.isNotEmpty) 'command': command,
+    },
+  );
+
+  Future<WorkspaceActionResult> stopWorkspacePreview(String workspaceId) =>
+      _workspaceAction(
+        'DELETE',
+        '/api/v1/workspaces/$workspaceId/preview',
+        body: null,
+      );
+
+  /// `DELETE /api/v1/workspaces/:id` — stop the sandbox. The files stay in the
+  /// volume until the manager says otherwise; what it removed is its answer.
+  Future<WorkspaceActionResult> stopWorkspace(String workspaceId) =>
+      _workspaceAction('DELETE', '/api/v1/workspaces/$workspaceId', body: null);
+
+  /// A workspace action, whether the server ran it or refused it.
+  ///
+  /// A refusal arrives as a 4xx/5xx with `{ ok:false, error_code, error }`, so
+  /// the record caught from the exception is the same shape as a success: the
+  /// screen shows the manager's own reason either way and never invents one.
+  Future<WorkspaceActionResult> _workspaceAction(
+    String method,
+    String path, {
+    Map<String, Object?>? body,
+  }) async {
+    try {
+      final response = await _send(
+        method,
+        path,
+        body: body == null ? null : jsonEncode(body),
+      );
+      return WorkspaceActionResult.fromJson(_map(response, path));
+    } on ApiException catch (error) {
+      final payload = error.payload;
+      if (payload != null && payload.containsKey('ok')) {
+        return WorkspaceActionResult.fromJson(payload);
+      }
+      rethrow;
+    }
+  }
+
   void close() => _transport.close();
 
   Future<TransportResponse> _send(
@@ -280,6 +476,7 @@ class ShamsApi {
         statusCode: response.statusCode,
         twoFactorRequired: failure.twoFactorRequired,
         retryInSeconds: failure.retryInSeconds,
+        payload: failure.payload,
       );
     }
 
@@ -337,12 +534,16 @@ class ShamsApi {
   /// What a rejection actually said, read once from its body.
   ///
   /// `authenticate_user!` and the security endpoints write `{ "error": ... }`;
-  /// the phone verifier writes `{ "status", "message", "retry_in" }`. Both are
+  /// the phone verifier writes `{ "status", "message", "retry_in" }`; a refused
+  /// workspace action writes `{ "ok": false, "error_code", "error" }`. All are
   /// the server's own words, and answering a cooldown with "Request failed
   /// with status 429" would hide the one number the user can act on.
-  ({String message, bool twoFactorRequired, int? retryInSeconds}) _failure(
-    TransportResponse response,
-  ) {
+  ({
+    String message,
+    bool twoFactorRequired,
+    int? retryInSeconds,
+    Map<String, dynamic>? payload,
+  }) _failure(TransportResponse response) {
     Map<String, dynamic>? body;
     if (response.body.trim().isNotEmpty) {
       try {
@@ -364,6 +565,7 @@ class ShamsApi {
       retryInSeconds: body?['retry_in'] is int
           ? body!['retry_in'] as int
           : null,
+      payload: body,
     );
   }
 

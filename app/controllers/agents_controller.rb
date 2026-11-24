@@ -32,7 +32,7 @@ class AgentsController < ApplicationController
 
   def show
     @conversations = @agent.conversations.where(status: "active").order(created_at: :desc).limit(10)
-    @runs = @agent.runs.order(created_at: :desc).limit(20)
+    @runs = @agent.runs.for_user(current_user).order(created_at: :desc).limit(20)
   end
 
   def edit

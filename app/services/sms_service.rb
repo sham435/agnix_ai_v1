@@ -40,7 +40,8 @@ class SmsService
       result = WhatsappService.send_message(phone, format(TEXT, code, (PhoneVerification::TTL / 60).to_i))
       error = result.is_a?(Hash) ? (result[:error] || result["error"]) : nil
       if error
-        { ok: false, channel: "whatsapp", error: "WhatsApp could not send the code: #{error}" }
+        Rails.logger.warn("SmsService: whatsapp delivery rejected")
+        { ok: false, channel: "whatsapp", error: "WhatsApp could not send the code right now." }
       else
         { ok: true, channel: "whatsapp" }
       end

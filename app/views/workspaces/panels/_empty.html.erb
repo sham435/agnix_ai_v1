@@ -1,0 +1,41 @@
+<%#
+  No sandbox for this chat yet. The panel says which half is missing instead
+  of showing an empty shell: a conversation gets its workspace the first time
+  the agent runs something, and that needs the manager and the daemon.
+-%>
+<%
+  health = Workspaces::Provider.available?
+%>
+<div class="card space-y-3">
+  <p class="text-[13px] font-semibold text-fg">
+    <% if stopped %>
+      Workspace stopped
+    <% else %>
+      <%= health[:manager] && health[:docker] ? "No workspace yet" : "Execution is unavailable" %>
+    <% end %>
+  </p>
+
+  <p class="text-[12px] leading-relaxed text-fg-muted">
+    <% if stopped %>
+      <%= stopped.name %> was destroyed on <%= stopped.updated_at.strftime("%Y-%m-%d at %H:%M") %>.
+      Its container, its volume and its preview link are gone, so nothing here can
+      be run or downloaded again. Ask the agent to start the work over and it
+      will create a new sandbox for this chat.
+    <% elsif !health[:manager] %>
+      The workspace manager is not answering on this machine, so nothing can be
+      created, run or previewed. Start it with
+      <code class="font-mono text-[11px] text-fg">docker compose -f deploy/compose.workspaces.yml up -d</code>.
+    <% elsif !health[:docker] %>
+      The manager is up, but the Docker daemon behind it is not answering. Until
+      it is, the agent will report that it could not run your request rather than
+      pretend it did.
+    <% elsif conversation.nil? %>
+      This panel needs a conversation to look at. Open a chat and ask the agent
+      to build something.
+    <% else %>
+      This conversation has not run anything yet. Ask the agent to write or run
+      code and it will create a sandbox for this chat, do the work inside it, and
+      show up here.
+    <% end %>
+  </p>
+</div>

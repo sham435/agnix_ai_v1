@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_11_12_000000) do
+ActiveRecord::Schema[8.1].define(version: 2026_11_12_020000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
   enable_extension "vector"
@@ -619,6 +619,52 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_12_000000) do
     t.index ["whatsapp_phone"], name: "index_users_on_whatsapp_phone", unique: true, where: "(whatsapp_phone IS NOT NULL)"
   end
 
+  create_table "workspace_preview_sessions", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
+    t.datetime "created_at", null: false
+    t.datetime "expires_at", null: false
+    t.integer "port", null: false
+    t.integer "request_count", default: 0, null: false
+    t.datetime "revoked_at"
+    t.string "token", null: false
+    t.datetime "updated_at", null: false
+    t.uuid "workspace_id", null: false
+    t.index ["token"], name: "index_workspace_preview_sessions_on_token", unique: true
+    t.index ["workspace_id"], name: "index_workspace_preview_sessions_on_workspace_id"
+  end
+
+  create_table "workspace_runs", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
+    t.jsonb "argv", default: "[]", null: false
+    t.datetime "created_at", null: false
+    t.integer "duration_ms"
+    t.integer "exit_code"
+    t.string "kind", null: false
+    t.boolean "ok", default: false, null: false
+    t.text "stderr"
+    t.integer "stderr_bytes", default: 0, null: false
+    t.text "stdout"
+    t.integer "stdout_bytes", default: 0, null: false
+    t.boolean "timed_out", default: false, null: false
+    t.datetime "updated_at", null: false
+    t.uuid "workspace_id", null: false
+    t.index ["workspace_id", "kind"], name: "index_workspace_runs_on_workspace_id_and_kind"
+    t.index ["workspace_id"], name: "index_workspace_runs_on_workspace_id"
+  end
+
+  create_table "workspaces", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
+    t.uuid "conversation_id"
+    t.datetime "created_at", null: false
+    t.datetime "destroyed_at"
+    t.string "last_error"
+    t.string "name", null: false
+    t.string "runtime", default: "python3", null: false
+    t.string "state", default: "pending", null: false
+    t.datetime "updated_at", null: false
+    t.uuid "user_id", null: false
+    t.index ["conversation_id"], name: "index_workspaces_on_conversation_id"
+    t.index ["user_id", "conversation_id"], name: "index_workspaces_on_user_and_conversation", unique: true, where: "(conversation_id IS NOT NULL)"
+    t.index ["user_id"], name: "index_workspaces_on_user_id"
+  end
+
   add_foreign_key "active_storage_attachments", "active_storage_blobs", column: "blob_id"
   add_foreign_key "active_storage_variant_records", "active_storage_blobs", column: "blob_id"
   add_foreign_key "agent_runs", "conversations"
@@ -673,4 +719,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_12_000000) do
   add_foreign_key "tool_integrations", "organizations"
   add_foreign_key "usage_events", "organizations"
   add_foreign_key "usage_events", "runs"
+  add_foreign_key "workspace_preview_sessions", "workspaces"
+  add_foreign_key "workspace_runs", "workspaces"
+  add_foreign_key "workspaces", "conversations"
+  add_foreign_key "workspaces", "users"
 end

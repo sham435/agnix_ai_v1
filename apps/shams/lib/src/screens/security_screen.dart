@@ -1,4 +1,7 @@
 import 'package:flutter/material.dart';
+// Already resolved through gpt_markdown; no new dependency is installed.
+// ignore: depend_on_referenced_packages
+import 'package:flutter_svg/flutter_svg.dart';
 
 import '../api/models.dart';
 import '../api/shams_api.dart';
@@ -22,6 +25,8 @@ class SecurityScreen extends StatefulWidget {
 
 class _SecurityScreenState extends State<SecurityScreen> {
   final _password = TextEditingController();
+  final _factorCode = TextEditingController();
+  final _factorForm = GlobalKey<FormState>();
   final _phone = TextEditingController();
   final _code = TextEditingController();
 
@@ -51,6 +56,7 @@ class _SecurityScreenState extends State<SecurityScreen> {
   @override
   void dispose() {
     _password.dispose();
+    _factorCode.dispose();
     _phone.dispose();
     _code.dispose();
     super.dispose();
@@ -115,12 +121,48 @@ class _SecurityScreenState extends State<SecurityScreen> {
     if (panel.recoveryCodes.isNotEmpty) _codes = panel.recoveryCodes;
     if (panel.enrollment != null) _enrollment = panel.enrollment;
     // Activation is the server's answer, not this screen's guess.
-    if (panel.twoFactorEnabled) _enrollment = null;
+    if (panel.twoFactorEnabled && _enrollment != null) {
+      _enrollment = null;
+      _code.clear();
+    }
     // The number the account already has, so re-sending a code does not mean
     // retyping it. An empty field is the only one this fills.
     if (_phone.text.isEmpty && panel.phone.number.isNotEmpty) {
       _phone.text = panel.phone.number;
     }
+  }
+
+  Future<void> _changeTwoFactor({required bool disable}) async {
+    if (_busy || _codes.isNotEmpty) return;
+    if (!(_factorForm.currentState?.validate() ?? false)) return;
+    try {
+      await _run(
+        () => disable
+            ? widget.api.disableTwoFactor(
+                _password.text,
+                code: _factorCode.text.trim(),
+              )
+            : widget.api.regenerateRecoveryCodes(
+                _password.text,
+                code: _factorCode.text.trim(),
+              ),
+      );
+    } finally {
+      // Do not retain a password or a possibly spent single-use code.
+      if (mounted) {
+        _password.clear();
+        _factorCode.clear();
+      }
+    }
+  }
+
+  void _remindToSaveCodes() {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('Save your backup codes, then select “I have saved them” '
+            'before leaving.'),
+      ),
+    );
   }
 
   Future<void> _cancelEnrollment() async {
@@ -156,6 +198,7 @@ class _SecurityScreenState extends State<SecurityScreen> {
   }
 
   Future<void> _revoke(DeviceSession device) async {
+    if (_codes.isNotEmpty) return;
     final panel = await _run(() => widget.api.revokeDevice(device.id));
     if (!mounted) return;
     // Revoking the row this client is signed in on ends this session, which is
@@ -164,7 +207,7 @@ class _SecurityScreenState extends State<SecurityScreen> {
   }
 
   Future<void> _signOutEverywhere() async {
-    if (_busy) return;
+    if (_busy || _codes.isNotEmpty) return;
     setState(() {
       _busy = true;
       _error = null;
@@ -184,34 +227,43 @@ class _SecurityScreenState extends State<SecurityScreen> {
   @override
   Widget build(BuildContext context) {
     final panel = _panel;
-    return Scaffold(
-      appBar: AppBar(title: const Text('Account & security')),
-      body: RefreshIndicator(
-        onRefresh: _refresh,
-        child: ListView(
-          padding: const EdgeInsets.fromLTRB(20, 16, 20, 40),
-          children: [
-            if (_error != null) _Problem(message: _error!),
-            if (panel == null)
-              if (_error != null)
-                const SizedBox(height: 8)
-              else
-                const Padding(
-                  padding: EdgeInsets.only(top: 48),
-                  child: Center(child: CircularProgressIndicator()),
-                )
-            else ...[
-              _twoFactor(panel),
-              const SizedBox(height: 24),
-              _backupCodes(),
-              const SizedBox(height: 24),
-              _phoneSection(panel),
-              const SizedBox(height: 24),
-              _devices(panel),
-              const SizedBox(height: 24),
-              _usage(panel),
+    return PopScope<Object?>(
+      // Also protect the gap while a response may be minting one-time codes.
+      canPop: !_busy && _codes.isEmpty,
+      onPopInvokedWithResult: (didPop, result) {
+        if (!didPop && _codes.isNotEmpty) _remindToSaveCodes();
+      },
+      child: Scaffold(
+        appBar: AppBar(title: const Text('Account & security')),
+        body: RefreshIndicator(
+          onRefresh: _refresh,
+          child: ListView(
+            padding: const EdgeInsets.fromLTRB(20, 16, 20, 40),
+            children: [
+              if (_error != null) _Problem(message: _error!),
+              if (panel == null)
+                if (_error != null)
+                  const SizedBox(height: 8)
+                else
+                  const Padding(
+                    padding: EdgeInsets.only(top: 48),
+                    child: Center(child: CircularProgressIndicator()),
+                  )
+              else ...[
+                if (_codes.isNotEmpty) ...[
+                  _backupCodes(),
+                  const SizedBox(height: 24),
+                ],
+                _twoFactor(panel),
+                const SizedBox(height: 24),
+                _phoneSection(panel),
+                const SizedBox(height: 24),
+                _devices(panel),
+                const SizedBox(height: 24),
+                _usage(panel),
+              ],
             ],
-          ],
+          ),
         ),
       ),
     );
@@ -261,41 +313,67 @@ class _SecurityScreenState extends State<SecurityScreen> {
             onCancel: _cancelEnrollment,
           )
         else if (panel.twoFactorEnabled)
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              TextField(
-                controller: _password,
-                enabled: !_busy,
-                obscureText: true,
-                autofillHints: const [AutofillHints.password],
-                decoration: const InputDecoration(
-                  labelText: 'Current password',
+          Form(
+            key: _factorForm,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                const Text(
+                  'Confirm changes with your current password and a six-digit '
+                  'authenticator code or one unused backup code. Generating a '
+                  'new set invalidates the old codes; turning two-factor off '
+                  'removes this protection.',
                 ),
-              ),
-              const SizedBox(height: 10),
-              FilledButton(
-                onPressed: _busy
-                    ? null
-                    : () => _run(
-                        () =>
-                            widget.api.regenerateRecoveryCodes(_password.text),
-                      ),
-                child: const Text('Generate new backup codes'),
-              ),
-              const SizedBox(height: 8),
-              OutlinedButton(
-                onPressed: _busy
-                    ? null
-                    : () => _run(
-                        () => widget.api.disableTwoFactor(_password.text),
-                      ),
-                style: OutlinedButton.styleFrom(
-                  foregroundColor: theme.colorScheme.error,
+                const SizedBox(height: 10),
+                TextFormField(
+                  controller: _password,
+                  enabled: !_busy && _codes.isEmpty,
+                  obscureText: true,
+                  autocorrect: false,
+                  enableSuggestions: false,
+                  autofillHints: const [AutofillHints.password],
+                  validator: (value) => value == null || value.isEmpty
+                      ? 'Enter your current password.'
+                      : null,
+                  decoration: const InputDecoration(
+                    labelText: 'Current password',
+                  ),
                 ),
-                child: const Text('Turn two-factor off'),
-              ),
-            ],
+                const SizedBox(height: 10),
+                TextFormField(
+                  controller: _factorCode,
+                  enabled: !_busy && _codes.isEmpty,
+                  keyboardType: TextInputType.text,
+                  obscureText: true,
+                  autocorrect: false,
+                  enableSuggestions: false,
+                  autofillHints: const [AutofillHints.oneTimeCode],
+                  validator: (value) => value == null || value.trim().isEmpty
+                      ? 'Enter an authenticator or backup code.'
+                      : null,
+                  decoration: const InputDecoration(
+                    labelText: 'Authenticator or backup code',
+                  ),
+                ),
+                const SizedBox(height: 10),
+                FilledButton(
+                  onPressed: _busy || _codes.isNotEmpty
+                      ? null
+                      : () => _changeTwoFactor(disable: false),
+                  child: const Text('Generate new backup codes'),
+                ),
+                const SizedBox(height: 8),
+                OutlinedButton(
+                  onPressed: _busy || _codes.isNotEmpty
+                      ? null
+                      : () => _changeTwoFactor(disable: true),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: theme.colorScheme.error,
+                  ),
+                  child: const Text('Turn two-factor off'),
+                ),
+              ],
+            ),
           )
         else
           FilledButton(
@@ -438,13 +516,15 @@ class _SecurityScreenState extends State<SecurityScreen> {
             trailing: device.isCurrent
                 ? null
                 : TextButton(
-                    onPressed: _busy ? null : () => _revoke(device),
+                    onPressed: _busy || _codes.isNotEmpty
+                        ? null
+                        : () => _revoke(device),
                     child: const Text('Revoke'),
                   ),
           ),
         const SizedBox(height: 8),
         OutlinedButton(
-          onPressed: _busy ? null : _signOutEverywhere,
+          onPressed: _busy || _codes.isNotEmpty ? null : _signOutEverywhere,
           style: OutlinedButton.styleFrom(
             foregroundColor: theme.colorScheme.error,
           ),
@@ -588,12 +668,39 @@ class _Enrollment extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         Text(
-          'Add this account to your authenticator app with the key below. '
-          'Nothing changes until a code built from it is confirmed — opening '
-          'this screen does not turn anything on.',
+          'Add this account to your authenticator app with the QR code or '
+          'manual key below. Nothing changes until a code built from it is '
+          'confirmed — opening this screen does not turn anything on.',
           style: theme.textTheme.bodyMedium,
         ),
         const SizedBox(height: 12),
+        if (enrollment.qrSvg?.trim().isNotEmpty ?? false) ...[
+          Center(
+            child: ColoredBox(
+              color: Colors.white,
+              child: Padding(
+                padding: const EdgeInsets.all(24),
+                child: SvgPicture.string(
+                  enrollment.qrSvg!,
+                  width: 220,
+                  height: 220,
+                  semanticsLabel: 'Authenticator setup QR code',
+                  errorBuilder: (context, error, stackTrace) => const SizedBox(
+                    width: 220,
+                    child: Text(
+                      'QR unavailable. Use the setup key below.',
+                      style: TextStyle(color: Colors.black),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(height: 12),
+        ] else ...[
+          const Text('QR unavailable. Use the setup key below.'),
+          const SizedBox(height: 12),
+        ],
         Text('Setup key', style: theme.textTheme.labelLarge),
         SelectableText(
           enrollment.secret,

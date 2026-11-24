@@ -1,5 +1,15 @@
 #!/usr/bin/env sh
 
+project_root=$(CDPATH= cd "$(dirname "$0")/.." && pwd)
+IFS= read -r ruby_version < "$project_root/.ruby-version"
+asdf_ruby_bin="$HOME/.asdf/installs/ruby/$ruby_version/bin"
+
+# Prefer the project's asdf Ruby when a broken rbenv shim shadows it.
+if [ -x "$asdf_ruby_bin/ruby" ]; then
+  PATH="$asdf_ruby_bin:$PATH"
+  export PATH
+fi
+
 # foreman reads .env with Ruby's locale-derived default encoding. Under a shell
 # with no UTF-8 locale (cron, CI, some editors' terminals) a single non-ASCII
 # character in .env - e.g. the em-dash in the "Bonsai local servers" comment -

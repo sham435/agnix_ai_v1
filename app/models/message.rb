@@ -63,19 +63,17 @@ class Message < ApplicationRecord
     nil
   end
 
-  # A streaming placeholder whose start stamp is present and older than the
-  # execution timeout is "stale": the job crashed, was lost, or never finalized.
-  # Rows with NO stamp are never stale, so genuine pre-existing in-flight runs
-  # keep showing the live indicator after a refresh. This gives us honest
-  # recovery without a background sweeper: a dead run stops rendering "thinking"
-  # once its configured execution window has elapsed.
+  # A streaming placeholder without a valid start stamp, or older than the
+  # execution timeout, is stale: the job crashed, was lost, or never finalized.
+  # Recovery needs no background sweeper, and malformed metadata cannot leave a
+  # dead run rendering "thinking" indefinitely.
   STREAMING_TIMEOUT = 2.minutes
 
   def stale_streaming?
     return false unless streaming?
 
     started = stream_started_at
-    return false if started.nil?
+    return true if started.nil?
 
     Time.now.utc - started.utc > STREAMING_TIMEOUT
   end

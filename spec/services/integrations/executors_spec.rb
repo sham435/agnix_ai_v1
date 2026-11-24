@@ -184,38 +184,11 @@ RSpec.describe "Integration plugin executors", type: :service do
   describe Integrations::Github::CreateIssue do
     let(:integration) { integration_for("github", credentials: { "api_key" => "ghp_tok" }) }
 
-    it "opens an issue with the PAT and version headers" do
-      stub = stub_request(:post, "https://api.github.com/repos/acme/widgets/issues")
-        .with(
-          headers: {
-            "Authorization" => "Bearer ghp_tok",
-            "Accept" => "application/vnd.github+json",
-            "X-GitHub-Api-Version" => "2022-11-28"
-          },
-          body: hash_including("title" => "Flaky spec")
-        )
-        .to_return(json_body(status: 201, body: { "number" => 12, "html_url" => "https://github.com/acme/widgets/issues/12", "title" => "Flaky spec" }))
-
+    it "never writes without an owned conversation and explicit confirmation" do
       result = described_class.call(integration: integration,
-                                    arguments: { "owner" => "acme", "repo" => "widgets", "title" => "Flaky spec", "labels" => [ "bug" ] })
-
-      expect(result).to include(ok: true, issue_number: 12)
-      expect(stub).to have_been_requested
-    end
-
-    it "refuses without owner/repo/title" do
-      result = described_class.call(integration: integration, arguments: {})
-      expect(result[:error_code]).to eq("invalid_request")
-      expect(result[:errors].length).to eq(3)
-    end
-
-    it "reports GitHub's message on failure" do
-      stub_request(:post, %r{api\.github\.com/repos})
-        .to_return(json_body(status: 404, body: { "message" => "Not Found" }))
-
-      result = described_class.call(integration: integration,
-                                    arguments: { "owner" => "acme", "repo" => "ghost", "title" => "x" })
-      expect(result).to include(ok: false, error_code: "provider_error", provider_error: "Not Found")
+        arguments: { "owner" => "acme", "repo" => "widgets", "title" => "Flaky spec" })
+      expect(result).to include(ok: false, error_code: "forbidden")
+      assert_not_requested(:post, %r{api\.github\.com/repos})
     end
   end
 

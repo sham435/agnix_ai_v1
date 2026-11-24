@@ -3,8 +3,10 @@
     Manage (PATCH -> update) from the frozen catalog so the editable fields
     always match what the dispatcher can actually use. Credentials map onto
     the encrypted `credentials` jsonb column and config fields onto `config`.
-    Nothing here writes credentials unencrypted. Prefilled from the persisted
-    row on update so PATCHing one field doesn't wipe the others. %>
+    Nothing here writes credentials unencrypted. Credential fields are
+    write-only (M15 H1): they always render empty and a blank submission
+    keeps the stored value — see ToolIntegrationsController#assign_credentials.
+    Non-secret config fields still prefill from the persisted row. %>
 <%= turbo_frame_tag "modal" do %>
   <div data-controller="images-modal"
        class="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-8"
@@ -43,21 +45,19 @@
             <%= f.text_field :name, class: "input-field", required: true %>
           </div>
 
-          <% creds = @integration.decrypted_credentials.is_a?(Hash) ? @integration.decrypted_credentials : {} %>
           <% @plugin[:credential_fields].each do |field| %>
             <div>
               <label class="mb-1 block text-[12.5px] font-medium text-fg-muted" for="cred-<%= field[:key] %>">
-                <%= field[:label] %><%= " (optional)" unless field[:required] %>
+                <%= field[:label] %><%= " (optional)" unless field[:required] && @connecting %>
               </label>
               <%= tag.input name: "tool_integration[credentials][#{field[:key]}]",
                     id: "cred-#{field[:key]}",
                     type: (field[:type] == "password" ? :password : :text),
-                    autocomplete: field[:type] == "password" ? "off" : "on",
-                    value: creds[field[:key].to_s],
+                    autocomplete: "new-password",
                     class: "input-field font-mono text-[13px]",
-                    required: field[:required],
-                    placeholder: field[:hint] %>
-              <% if field[:hint].present? %>
+                    required: field[:required] && @connecting,
+                    placeholder: (@connecting ? field[:hint] : "Leave blank to keep current value") %>
+              <% if field[:hint].present? && @connecting %>
                 <p class="mt-1 text-[11px] text-fg-subtle"><%= field[:hint] %></p>
               <% end %>
             </div>

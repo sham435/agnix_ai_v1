@@ -20,35 +20,9 @@ class Webhooks::WhatsappController < ApplicationController
   # Webhook events (POST).
   def create
     payload = request.body.read
-    results = WhatsappService.handle_webhook(payload)
+    return head :forbidden unless WhatsappService.valid_signature?(payload, request.headers["X-Hub-Signature-256"])
 
-    # Process inbound messages through the agent system.
-    results.each do |result|
-      next unless result[:user] && result[:content]
-
-      # Find or create a conversation for this WhatsApp user.
-      conversation = Conversation.find_or_create_by!(
-        user: result[:user],
-        agent: Agent.where(is_active: true).first # Default agent.
-      ) do |conv|
-        conv.title = "WhatsApp Chat #{result[:phone_number]}"
-      end
-
-      # Create message and queue agent response.
-      conversation.messages.create!(
-        role: "user",
-        content: result[:content]
-      )
-
-      AgentStreamJob.perform_later(
-        conversation_id: conversation.id,
-        user_id: result[:user].id,
-        message_content: result[:content],
-        channel: :whatsapp,
-        phone_number: result[:phone_number]
-      )
-    end
-
+    WhatsappService.handle_webhook(payload)
     render json: { received: true }, status: :ok
   end
 end

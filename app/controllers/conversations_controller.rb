@@ -1,8 +1,15 @@
 class ConversationsController < ApplicationController
   before_action :authenticate_user!
-  before_action :set_conversation, only: [ :show, :update, :destroy, :regenerate, :stop, :interrupt ]
+  rescue_from Llm::ModelCatalogue::Error do |error|
+    respond_to do |format|
+      format.json { render json: { error_code: error.code, error: error.message }, status: :unprocessable_entity }
+      format.any { redirect_to conversations_path(prompt: params[:content]), alert: error.message }
+    end
+  end
+  before_action :set_conversation, only: [ :show, :update, :destroy, :regenerate, :stop, :interrupt, :tasks ]
 
   def index
+    @composer_agent = Agent.chat_selection(current_organization, params[:agent_id])
     @conversations = current_user.conversations
       .where(status: "active")
       .order(updated_at: :desc)
@@ -22,11 +29,19 @@ class ConversationsController < ApplicationController
 
   def show
     @messages = @conversation.messages.order(created_at: :asc).limit(200)
+    @background_tasks = Conversations::TurnAdmission.task_summary(@conversation)
+  end
+
+  def tasks
+    render json: Conversations::TurnAdmission.task_summary(@conversation)
   end
 
   def create
-    @agent = Agent.find_by(id: params[:agent_id], organization: current_organization)
-    return redirect_to conversations_path, alert: "Agent not found." unless @agent
+    @agent = Agent.chat_selection(current_organization, params[:agent_id])
+    unless @agent
+      return redirect_to conversations_path(prompt: params[:content]),
+        alert: "Choose or create an active agent in your organization before sending a message."
+    end
 
     # Single startup path shared with Explore (Phase 5): conversation row,
     # optional first exchange, streaming placeholder, and the job hand-off.
@@ -83,8 +98,15 @@ class ConversationsController < ApplicationController
     live = live_streaming_message
     in_flight = runs.any? || plans.positive? || live.present?
 
+    if live
+      live.with_lock do
+        metadata = live.metadata.is_a?(Hash) ? live.metadata : {}
+        live.update!(metadata: metadata.merge("stop_requested" => true))
+      end
+    end
     runs.each(&:cancel!)
     broadcast_stopped(live) if in_flight
+    Conversations::TurnAdmission.publish_tasks(@conversation)
 
     render_stop_note(in_flight)
   end

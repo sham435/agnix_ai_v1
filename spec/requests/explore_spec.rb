@@ -180,6 +180,7 @@ RSpec.describe "Explore agents catalog", type: :request do
         conversation_id: conversation.id,
         user_id: user.id,
         message_content: "Chase the invoice politely",
+        message_id: user_row.id,
         request_id: placeholder.metadata["request_id"]
       )
     end

@@ -1,0 +1,6 @@
+<%# The one-line verdict of the action that redrew this panel, if any. -%>
+<% if flash[:workspace_note].present? %>
+  <p class="rounded-xl border px-3 py-2 text-[12px] <%= flash[:workspace_note] == "done" ? "border-border-subtle text-fg-muted" : "border-red-500/40 bg-red-500/10 text-red-600" %>">
+    <%= flash[:workspace_note] %>
+  </p>
+<% end %>

@@ -24,6 +24,7 @@ export default class extends Controller {
   PHASE_LABELS = {
     connecting: "Connecting…",
     thinking: "Shams AI is thinking",
+    waiting: "Still working — waiting for the agent",
     generating: "Generating response…",
     completed: "Completed",
     failed: "Failed",
@@ -66,7 +67,7 @@ export default class extends Controller {
     }
 
     // Leaving the thinking phase means the placeholder is dead: retire dots.
-    if (phase === "generating" || phase === "completed" || phase === "failed" || phase === "stopped") {
+    if (phase === "waiting" || phase === "generating" || phase === "completed" || phase === "failed" || phase === "stopped") {
       this.stopDots()
     }
 

@@ -76,7 +76,13 @@
             value: params[:prompt],
             "aria-label": "Message",
             data: { chat_input_target: "input" } %>
-          <%= f.hidden_field :agent_id, value: params[:agent_id] || Agent.where(is_active: true).first&.id %>
+          <%= f.hidden_field :agent_id, value: @composer_agent&.id %>
+          <% unless @composer_agent %>
+            <p class="text-[13px] text-fg-muted">
+              Choose an active agent to start chatting.
+              <%= link_to "Set up an agent", explore_path, class: "text-accent-text underline" %>
+            </p>
+          <% end %>
           <%# §3: when arriving via a quick-start chip or a feature card the
               composer already contains the prefill (rendered server-side above).
               We focus the textarea so the user can hit Enter (or ⌘↵ on macOS)
@@ -121,7 +127,7 @@
               <%# §6: the visible hint updates to match the platform's actual
                   submit combo (Enter on Windows/Linux/mobile, ⌘↵ on macOS). %>
               <span class="hidden sm:block text-[12px] text-fg-subtle mr-1" data-platform-hint-target="label">↵</span>
-              <button type="submit"
+              <button type="submit" <%= "disabled" unless @composer_agent %>
                       class="grid size-9 place-items-center rounded-xl bg-gradient-to-b from-emerald-400 to-emerald-600 text-black hover:brightness-110 active:scale-95 transition shadow-lg shadow-emerald-900/30"
                       aria-label="Send message"
                       title="Send">

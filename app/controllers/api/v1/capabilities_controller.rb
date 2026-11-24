@@ -9,7 +9,7 @@ module Api
       before_action :authenticate_user!
 
       def index
-        render json: { capabilities: Capabilities::Registry.index }
+        render json: { capabilities: Capabilities::Registry.index(organization: current_organization) }
       end
     end
   end

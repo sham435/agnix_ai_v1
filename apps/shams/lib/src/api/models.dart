@@ -11,6 +11,127 @@
 /// becomes 0, and any URL built from it points at nothing.
 library;
 
+/// Server-discovered catalogue; availability never verifies inference.
+class ModelReference {
+  const ModelReference(this.providerId, this.modelId);
+  final String providerId;
+  final String modelId;
+  factory ModelReference.fromJson(Map<String, dynamic> json) =>
+      ModelReference(_id(json['provider_id']), _id(json['model_id']));
+  bool matches(ModelReference? other) =>
+      other != null &&
+      providerId == other.providerId &&
+      modelId == other.modelId;
+}
+
+class CatalogueProvider {
+  CatalogueProvider.fromJson(Map<String, dynamic> json)
+    : providerId = _id(json['provider_id']),
+      providerName = _id(json['provider_name']),
+      connectionStatus = _id(json['connection_status']),
+      readiness = _id(json['readiness']),
+      errorCode = json['error_code'] is String
+          ? json['error_code'] as String
+          : null;
+  final String providerId, providerName, connectionStatus, readiness;
+  final String? errorCode;
+}
+
+class CatalogueModel extends ModelReference {
+  CatalogueModel.fromJson(Map<String, dynamic> json)
+    : providerName = _id(json['provider_name']),
+      displayName = _id(json['display_name']),
+      modelDescription = _optionalString(json['model_description']),
+      apiFamily = _optionalString(json['api_family']),
+      availabilityStatus = _id(json['availability_status']),
+      connectionStatus = _id(json['connection_status']),
+      disabled = _optionalBool(json['disabled']),
+      freeTier = _optionalBool(json['free_tier']),
+      rateLimits = _section(json['rate_limits']),
+      optionNames = _optionalStringList(json['option_names']) ?? const [],
+      supportedParameters = _optionalStringList(json['supported_parameters']),
+      contextWindow = _int(json['context_window']),
+      maxOutputTokens = _int(json['max_output_tokens']),
+      supportsTools = _optionalBool(json['supports_tools']),
+      supportsStreaming = _optionalBool(json['supports_streaming']),
+      supportsVision = _optionalBool(json['supports_vision']),
+      supportsImages = _optionalBool(json['supports_images']),
+      supportsJsonMode = _optionalBool(json['supports_json_mode']),
+      supportsReasoning = _optionalBool(json['supports_reasoning']),
+      reasoningParameters = _optionalStringList(json['reasoning_parameters']),
+      supportsParallelToolCalls = _optionalBool(
+        json['supports_parallel_tool_calls'],
+      ),
+      inferenceStatus = _optionalString(json['inference_status']),
+      inferenceVerifiedAt = _date(json['inference_verified_at']),
+      lastInferenceAttemptAt = _date(json['last_inference_attempt_at']),
+      lastInferenceErrorCode = _optionalString(
+        json['last_inference_error_code'],
+      ),
+      lastDiscoveredAt = _date(json['last_discovered_at']),
+      isDefault = _optionalBool(json['is_default']),
+      local = _optionalBool(json['local']),
+      manageable = _optionalBool(json['manageable']),
+      super(_id(json['provider_id']), _id(json['model_id']));
+  final String providerName, displayName, availabilityStatus, connectionStatus;
+  final String? modelDescription, apiFamily;
+  final bool? disabled, freeTier;
+  final Map<String, dynamic> rateLimits;
+  final List<String> optionNames;
+  final List<String>? supportedParameters;
+  final int? contextWindow, maxOutputTokens;
+  final bool? supportsTools, supportsStreaming, supportsVision;
+  final bool? supportsImages, supportsJsonMode, supportsReasoning;
+  final List<String>? reasoningParameters;
+  final bool? supportsParallelToolCalls;
+  final String? inferenceStatus;
+  final DateTime? inferenceVerifiedAt, lastInferenceAttemptAt;
+  final String? lastInferenceErrorCode;
+  final DateTime? lastDiscoveredAt;
+  final bool? isDefault, local, manageable;
+  bool get selectable =>
+      availabilityStatus == 'available' &&
+      providerId.isNotEmpty &&
+      modelId.isNotEmpty;
+  String get label => displayName.isEmpty ? modelId : displayName;
+}
+
+class ModelCatalogue {
+  ModelCatalogue.fromJson(Map<String, dynamic> json)
+    : providers =
+          (json['providers'] is List ? json['providers'] as List : const [])
+              .whereType<Map<String, dynamic>>()
+              .map(CatalogueProvider.fromJson)
+              .toList(),
+      models = (json['models'] is List ? json['models'] as List : const [])
+          .whereType<Map<String, dynamic>>()
+          .map(CatalogueModel.fromJson)
+          .toList(),
+      selectedModel = json['selected_model'] is Map<String, dynamic>
+          ? ModelReference.fromJson(
+              json['selected_model'] as Map<String, dynamic>,
+            )
+          : null,
+      defaultModel = json['default_model'] is Map<String, dynamic>
+          ? ModelReference.fromJson(
+              json['default_model'] as Map<String, dynamic>,
+            )
+          : null,
+      updatedAt = _date(json['catalogue_updated_at']);
+  final List<CatalogueProvider> providers;
+  final List<CatalogueModel> models;
+  final ModelReference? selectedModel, defaultModel;
+  final DateTime? updatedAt;
+  ModelReference? get effectiveModel => selectedModel ?? defaultModel;
+  String get selectionLabel {
+    final selected = effectiveModel;
+    for (final model in models) {
+      if (model.matches(selected)) return model.label;
+    }
+    return selected?.modelId ?? 'Organization default';
+  }
+}
+
 class Agent {
   const Agent({
     required this.id,
@@ -320,6 +441,9 @@ class SecurityPanel {
                   ? enrollment['provisioning_uri'] as String
                   : '',
               expiresInSeconds: _int(enrollment['expires_in']) ?? 0,
+              qrSvg: enrollment['qr_svg'] is String
+                  ? enrollment['qr_svg'] as String
+                  : null,
             ),
       message: json['message'] is String ? json['message'] as String : null,
       outcome: json['status'] is String ? json['status'] as String : null,
@@ -415,17 +539,390 @@ class TwoFactorEnrollment {
     required this.secret,
     required this.provisioningUri,
     required this.expiresInSeconds,
+    this.qrSvg,
   });
 
   final String secret;
   final String provisioningUri;
   final int expiresInSeconds;
+
+  /// Optional server-rendered QR. Older servers provide only the manual key.
+  final String? qrSvg;
+}
+
+/// One sandboxed Docker workspace: the project a conversation's coding turns
+/// actually run in.
+///
+/// Two states travel together and mean different things. [state] is this
+/// account's row, kept in step with what the manager confirmed; [runtimeStatus]
+/// is the manager's own answer for the container right now, which is what the
+/// screen shows as live. A stopped workspace has a row and no container, and
+/// the difference is the whole point of showing both.
+class Workspace {
+  const Workspace({
+    required this.id,
+    required this.name,
+    required this.state,
+    this.runtime = 'python3',
+    this.conversationId,
+    this.preview,
+    this.lastError,
+    this.runtimeStatus,
+    this.container,
+    this.files = const [],
+    this.filesTruncated = false,
+    this.filesError,
+    this.runs = const [],
+  });
+
+  final String id;
+  final String name;
+  final String state;
+  final String runtime;
+  final String? conversationId;
+  final PreviewLink? preview;
+  final String? lastError;
+
+  /// The manager's word for the container: `running`, `exited`, `absent`,
+  /// `unavailable`, `restarting`, or null when this read carried no status.
+  final String? runtimeStatus;
+  final String? container;
+
+  /// Project files, as the manager listed them - relative paths only.
+  final List<WorkspaceFile> files;
+  final bool filesTruncated;
+
+  /// Why the listing is empty, whenever it is: an unreachable manager is a
+  /// fact to report, never an empty project.
+  final String? filesError;
+
+  final List<WorkspaceRun> runs;
+
+  factory Workspace.fromJson(Map<String, dynamic> json) {
+    final status = _section(json['status']);
+    return Workspace(
+      id: _id(json['id']),
+      name: (json['name'] as String?) ?? 'Workspace',
+      state: (json['state'] as String?) ?? 'pending',
+      runtime: (json['runtime'] as String?) ?? 'python3',
+      conversationId: json['conversation_id'] == null
+          ? null
+          : _id(json['conversation_id']),
+      preview: json['preview'] is Map<String, dynamic>
+          ? PreviewLink.fromJson(json['preview'] as Map<String, dynamic>)
+          : null,
+      lastError: json['last_error'] as String?,
+      runtimeStatus: status['state'] as String?,
+      container: status['container'] as String?,
+      files: (json['files'] is List)
+          ? (json['files'] as List)
+                .whereType<Map<String, dynamic>>()
+                .map(WorkspaceFile.fromJson)
+                .toList(growable: false)
+          : const [],
+      filesTruncated: _flag(json['files_truncated']),
+      filesError: json['files_error'] as String?,
+      runs: (json['runs'] is List)
+          ? (json['runs'] as List)
+                .whereType<Map<String, dynamic>>()
+                .map(WorkspaceRun.fromJson)
+                .toList(growable: false)
+          : const [],
+    );
+  }
+
+  bool get isStopped => state == 'destroyed';
+
+  /// True while the manager itself confirms a container is up. Only ever used
+  /// to describe the sandbox, never to claim a step succeeded.
+  bool get isRunning => runtimeStatus == 'running';
+
+  /// What to print where the state lives, in the server's own words.
+  String get statusLabel {
+    if (isStopped) return 'Stopped';
+    final live = runtimeStatus;
+    if (live == null) {
+      return switch (state) {
+        'ready' => 'Ready',
+        'pending' => 'Starting',
+        'failed' => 'Failed',
+        'stopped' => 'Stopped',
+        _ => state,
+      };
+    }
+    return switch (live) {
+      'running' => 'Running',
+      'restarting' => 'Restarting',
+      'exited' => 'Exited',
+      'absent' => 'Not running',
+      'unavailable' => 'Manager unavailable',
+      _ => live,
+    };
+  }
+}
+
+/// One file inside /workspace, as the manager's tree walk reported it.
+class WorkspaceFile {
+  const WorkspaceFile({required this.path, required this.bytes});
+
+  final String path;
+  final int bytes;
+
+  factory WorkspaceFile.fromJson(Map<String, dynamic> json) => WorkspaceFile(
+    path: (json['path'] as String?) ?? '',
+    bytes: _int(json['bytes']) ?? 0,
+  );
+
+  bool get isText =>
+      path.endsWith('.py') ||
+      path.endsWith('.html') ||
+      path.endsWith('.css') ||
+      path.endsWith('.js') ||
+      path.endsWith('.md') ||
+      path.endsWith('.txt') ||
+      path.endsWith('.ini') ||
+      path.endsWith('.toml') ||
+      path.endsWith('.json') ||
+      path.endsWith('.yml') ||
+      path.endsWith('.yaml');
+
+  String get sizeLabel {
+    if (bytes < 1024) return '$bytes B';
+    final kb = bytes / 1024;
+    if (kb < 1024) return '${kb.toStringAsFixed(kb < 10 ? 1 : 0)} KB';
+    return '${(kb / 1024).toStringAsFixed(1)} MB';
+  }
+}
+
+/// One recorded step in the sandbox: a command, a test run, an install, an
+/// export. The server keeps the transcript, so the screen never has to.
+class WorkspaceRun {
+  const WorkspaceRun({
+    required this.id,
+    required this.kind,
+    required this.ok,
+    this.argv = const [],
+    this.exitCode,
+    this.timedOut = false,
+    this.durationMs,
+    this.stdout = '',
+    this.stderr = '',
+    this.createdAt,
+  });
+
+  final String id;
+
+  /// `exec | test | install | export | preview` - the server's own kinds.
+  final String kind;
+  final bool ok;
+  final List<String> argv;
+  final int? exitCode;
+  final bool timedOut;
+  final int? durationMs;
+  final String stdout;
+  final String stderr;
+  final DateTime? createdAt;
+
+  factory WorkspaceRun.fromJson(Map<String, dynamic> json) => WorkspaceRun(
+    id: _id(json['id']),
+    kind: (json['kind'] as String?) ?? 'exec',
+    ok: _flag(json['ok']),
+    argv: (json['argv'] is List)
+        ? (json['argv'] as List)
+              .map((token) => '$token')
+              .toList(growable: false)
+        : const [],
+    exitCode: _int(json['exit_code']),
+    timedOut: _flag(json['timed_out']),
+    durationMs: _int(json['duration_ms']),
+    stdout: (json['stdout'] as String?) ?? '',
+    stderr: (json['stderr'] as String?) ?? '',
+    createdAt: _date(json['created_at']),
+  );
+
+  /// Everything the step printed, in the order the server stored it.
+  String get output {
+    final parts = <String>[
+      if (stdout.trim().isNotEmpty) stdout.trimRight(),
+      if (stderr.trim().isNotEmpty) stderr.trimRight(),
+    ];
+    return parts.join('\n');
+  }
+
+  String get title {
+    if (argv.isNotEmpty) return argv.join(' ');
+    return switch (kind) {
+      'test' => 'Test run',
+      'install' => 'Dependency install',
+      'export' => 'Project export',
+      'preview' => 'Preview server',
+      _ => kind,
+    };
+  }
+}
+
+/// The preview link the server issued for a running preview.
+///
+/// [url] is the gateway path with this session's token on it: same-origin,
+/// expiring, and good for this workspace only.
+class PreviewLink {
+  const PreviewLink({
+    required this.url,
+    required this.port,
+    this.expiresAt,
+    this.secondsLeft,
+  });
+
+  final String url;
+  final int port;
+  final DateTime? expiresAt;
+  final int? secondsLeft;
+
+  factory PreviewLink.fromJson(Map<String, dynamic> json) => PreviewLink(
+    url: (json['url'] as String?) ?? '',
+    port: _int(json['port']) ?? 0,
+    expiresAt: _date(json['expires_at']),
+    secondsLeft: _int(json['seconds_left']),
+  );
+
+  bool get isLive => (secondsLeft ?? 0) > 0 && url.isNotEmpty;
+
+  /// How much life the server said the link still has, in its own words.
+  String get lifetimeLabel {
+    final left = secondsLeft;
+    if (left == null || left <= 0) return 'expired';
+    if (left < 60) return '$left s left';
+    return '${(left / 60).floor()} min left';
+  }
+}
+
+/// The answer to a command, a test run or a preview step.
+///
+/// [ok] is the server's verdict and nothing else: a refused call carries its
+/// `error_code` and the manager's own reason, and the screen repeats both
+/// instead of inventing a message.
+class WorkspaceActionResult {
+  const WorkspaceActionResult({
+    required this.ok,
+    this.exitCode,
+    this.timedOut = false,
+    this.durationSeconds,
+    this.stdout = '',
+    this.stderr = '',
+    this.command,
+    this.output,
+    this.port,
+    this.previewUrl,
+    this.expiresIn,
+    this.previewSessionToken,
+    this.errorCode,
+    this.error,
+    this.raw = const {},
+  });
+
+  final bool ok;
+  final int? exitCode;
+  final bool timedOut;
+  final double? durationSeconds;
+  final String stdout;
+  final String stderr;
+
+  /// The test step's own fields.
+  final String? command;
+  final String? output;
+
+  /// The preview step's own fields: the gateway link and its lifetime.
+  final int? port;
+  final String? previewUrl;
+  final int? expiresIn;
+  final String? previewSessionToken;
+
+  final String? errorCode;
+  final String? error;
+  final Map<String, dynamic> raw;
+
+  factory WorkspaceActionResult.fromJson(Map<String, dynamic> json) =>
+      WorkspaceActionResult(
+        ok: _flag(json['ok']),
+        exitCode: _int(json['exit_code']),
+        timedOut: _flag(json['timed_out']),
+        durationSeconds: json['duration_seconds'] is num
+            ? (json['duration_seconds'] as num).toDouble()
+            : null,
+        stdout: (json['stdout'] as String?) ?? '',
+        stderr: (json['stderr'] as String?) ?? '',
+        command: json['command'] as String?,
+        output: json['output'] as String?,
+        port: _int(json['port']),
+        previewUrl: json['preview_url'] as String?,
+        expiresIn: _int(json['expires_in']),
+        previewSessionToken: json['preview_session_token'] as String?,
+        errorCode: json['error_code'] as String?,
+        error: json['error'] as String?,
+        raw: json,
+      );
+
+  /// Everything this step produced, whichever shape the answer came in.
+  String get transcript {
+    final parts = <String>[
+      if (stdout.trim().isNotEmpty) stdout.trimRight(),
+      if (stderr.trim().isNotEmpty) stderr.trimRight(),
+      if ((output ?? '').trim().isNotEmpty) output!.trimRight(),
+      if (!ok && (errorCode != null || error != null))
+        <String>[
+          if (errorCode != null) errorCode!,
+          if (error != null) error!,
+        ].join(': '),
+      if (!ok && errorCode == null && error == null) 'The workspace refused.',
+    ];
+    return parts.join('\n');
+  }
+
+  String get summary {
+    if (ok) {
+      if (previewUrl != null) return 'Preview is live on port ${port ?? ''}.';
+      if (exitCode != null) return 'Exit 0 in ${_seconds(durationSeconds)}.';
+      return 'Done.';
+    }
+    if (timedOut) return 'Timed out after ${_seconds(durationSeconds)}.';
+    if (exitCode != null) {
+      return 'Exit $exitCode in ${_seconds(durationSeconds)}.';
+    }
+    return error ?? errorCode ?? 'The workspace refused.';
+  }
+
+  static String _seconds(double? value) =>
+      value == null ? 'unknown time' : '${value.toStringAsFixed(1)}s';
+}
+
+/// What a read of one file answered.
+class WorkspaceFileContent {
+  const WorkspaceFileContent({
+    required this.path,
+    required this.content,
+    this.truncated = false,
+  });
+
+  final String path;
+  final String content;
+  final bool truncated;
+
+  factory WorkspaceFileContent.fromJson(Map<String, dynamic> json) =>
+      WorkspaceFileContent(
+        path: (json['path'] as String?) ?? '',
+        content: (json['content'] as String?) ?? '',
+        truncated: _flag(json['truncated']),
+      );
 }
 
 Map<String, dynamic> _section(Object? value) =>
     value is Map<String, dynamic> ? value : const {};
-
 int? _int(Object? value) => value is int ? value : null;
+String? _optionalString(Object? value) => value is String ? value : null;
+bool? _optionalBool(Object? value) => value is bool ? value : null;
+List<String>? _optionalStringList(Object? value) => value is List
+    ? value.whereType<String>().toList(growable: false)
+    : null;
 
 /// A security flag, read as it is: an absent or malformed one is false. The
 /// `_bool` above defaults to true because a missing `is_active` on an agent

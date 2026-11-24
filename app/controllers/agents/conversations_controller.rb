@@ -22,6 +22,7 @@ class Agents::ConversationsController < ApplicationController
       AgentStreamJob.perform_later(
         conversation_id: @conversation.id,
         user_id: current_user.id,
+        message_id: message.id,
         message_content: message.content
       )
     end

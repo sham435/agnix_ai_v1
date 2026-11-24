@@ -50,10 +50,14 @@ RSpec.describe "Message send idempotency", type: :request do
   it "does not dedupe sends without a client_request_id (distinct messages)" do
     api_login(user)
 
-    2.times do
+    2.times do |index|
       post conversation_messages_path(conversation),
            params: { message: { content: "no cid" } },
            headers: api_headers
+      conversation.messages.where(role: "assistant").where("metadata->>'streaming' = 'true'").find_each do |message|
+        message.update!(metadata: message.metadata.except("streaming").merge("empty_response" => true))
+      end
+      expect(response.status).to be_in([ 200, 201 ]) if index.zero?
     end
 
     expect(conversation.messages.where(role: "user").count).to eq(2)

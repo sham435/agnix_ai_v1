@@ -67,7 +67,7 @@ RSpec.describe "attachment-aware message flow", type: :request do
          headers: api_headers
 
     expect(response.status).to be_in([ 200, 201, 302 ])
-    message = conversation.messages.order(:created_at).last
+    message = conversation.messages.where(role: "user").order(:created_at).last
     expect(message.assets).to contain_exactly(own)
     expect(message.content).to be_blank
   end
@@ -81,7 +81,7 @@ RSpec.describe "attachment-aware message flow", type: :request do
          headers: api_headers
 
     expect(response).to have_http_status(:created)
-    message = conversation.messages.order(:created_at).last
+    message = conversation.messages.where(role: "user").order(:created_at).last
     expect(message.assets).to contain_exactly(own)
   end
 

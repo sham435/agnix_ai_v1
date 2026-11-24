@@ -4,3 +4,6 @@
 <%= turbo_stream.update "message-form" do %>
   <%= render "messages/form", conversation: @message.conversation, message: Message.new %>
 <% end %>
+<% if @admission.status == :queued || @admission.status == :steering %>
+  <%= turbo_stream.append "messages-list", html: %(<div role="status" class="rounded-lg border border-border bg-panel px-3.5 py-2 text-[13px] text-fg-muted">#{@admission.status == :steering ? "Steering queued for the next safe step." : "Follow-up queued for the next turn."}</div>) %>
+<% end %>

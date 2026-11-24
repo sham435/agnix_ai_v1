@@ -14,7 +14,45 @@
 #  updated_at      :datetime         not null
 #
 class ToolIntegration < ApplicationRecord
-  PROVIDERS = %w[stripe whatsapp google github postmark resend slack notion webhook].freeze
+  PROVIDERS = %w[stripe whatsapp google github postmark resend slack notion webhook web_search figma].freeze
+
+  def self.connection_for(organization, provider)
+    return nil unless organization
+
+    organization.tool_integrations.active.find_by(provider: provider)
+  end
+
+  def self.connection_disabled?(organization, provider)
+    return false unless organization
+
+    organization.tool_integrations.exists?(provider: provider, is_active: false)
+  end
+
+  def self.whatsapp_integration_for(phone_number_id)
+    return nil if phone_number_id.blank?
+
+    matches = active.where(provider: "whatsapp")
+      .where("config->>'phone_number_id' = ?", phone_number_id.to_s)
+      .limit(2).to_a
+    matches.first if matches.length == 1
+  end
+
+  def self.whatsapp_organization_for(phone_number_id)
+    whatsapp_integration_for(phone_number_id)&.organization
+  end
+
+  def self.authorized_organization_for(user, context = {})
+    return nil unless user.is_a?(User)
+
+    organization = if context[:agent_id].present?
+      Agent.find_by(id: context[:agent_id])&.organization
+    else
+      context[:organization] || user.active_organization
+    end
+    return nil unless organization && (user.owner?(organization) || user.organizations.exists?(id: organization.id))
+
+    organization
+  end
 
   belongs_to :organization
 

@@ -3,10 +3,12 @@
 module Api
   module V1
     module Openai
-      class ChatCompletionsController < ActionController::API
+      class ChatCompletionsController < ApplicationController
         # OpenAI-compatible completions gateway for OpenCode.
         # Stateless proxy to the local Bonsai llama.cpp server.
-        # No authentication for local dev.
+        # Same session policy as every other API v1 endpoint: an unauthenticated
+        # caller must never reach the model behind it.
+        before_action :authenticate_user!
 
         def models
           models = [

@@ -27,11 +27,22 @@ class StreamingChannel < ApplicationCable::Channel
     conversation = current_user.conversations.find_by(id: conversation_id)
     return unless conversation
 
-    conversation.update(status: "paused")
+    runs = conversation.runs.active.to_a
+    plans = conversation.agent_runs.active.update_all(status: "interrupted")
+    live = conversation.messages.where(role: "assistant").order(created_at: :desc).limit(5)
+      .find { |message| message.streaming? && !message.stale_streaming? }
+    if live
+      live.with_lock do
+        metadata = live.metadata.is_a?(Hash) ? live.metadata : {}
+        live.update!(metadata: metadata.merge("stop_requested" => true))
+      end
+    end
+    runs.each(&:cancel!)
     ActionCable.server.broadcast(
       "streaming:#{current_user.id}",
       { type: "stopped" }
-    )
+    ) if runs.any? || plans.positive? || live
+    Conversations::TurnAdmission.publish_tasks(conversation)
   end
 
   def regenerate_last_response(conversation_id)

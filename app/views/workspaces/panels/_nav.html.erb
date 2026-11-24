@@ -1,0 +1,16 @@
+<%#
+  Tab navigation. Links live inside the frame, so Turbo swaps this panel and
+  leaves the conversation behind it alone.
+-%>
+<nav class="workspace-panel__tabs" aria-label="Workspace sections">
+  <% { "files"    => "Files",
+       "preview"  => "Preview",
+       "terminal" => "Terminal",
+       "logs"     => "Logs",
+       "tests"    => "Tests" }.each do |key, label| %>
+    <%= link_to label,
+          workspace_path(workspace, section: key),
+          class: "workspace-panel__tab #{'workspace-panel__tab--active' if section == key}",
+          "aria-current": ("page" if section == key) %>
+  <% end %>
+</nav>

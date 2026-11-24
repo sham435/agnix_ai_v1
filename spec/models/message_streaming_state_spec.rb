@@ -6,8 +6,8 @@ require "rails_helper"
 
 # Refresh-recovery contract (spec §2): a genuinely in-flight run keeps the
 # thinking indicator; a run that died mid-flight stops showing "thinking" once
-# its execution window elapses, using the persisted stream_started_at. Legacy
-# placeholders with no timestamp stay live for backward compatibility.
+# its execution window elapses, using the persisted stream_started_at. Missing
+# or malformed timestamps cannot keep a dead placeholder active indefinitely.
 RSpec.describe "Message streaming state", type: :model do
   let(:user) { create(:user) }
   let(:agent) { create(:agent) }
@@ -17,10 +17,16 @@ RSpec.describe "Message streaming state", type: :model do
     conversation.messages.create!(role: "assistant", content: "", metadata: metadata)
   end
 
-  it "treats a legacy placeholder (no stamp) as live, never stale" do
+  it "treats a placeholder without a start stamp as stale" do
     m = placeholder({ "streaming" => true })
     expect(m).to be_streaming
-    expect(m).not_to be_stale_streaming
+    expect(m).to be_stale_streaming
+  end
+
+  it "treats a malformed start stamp as stale" do
+    m = placeholder({ "streaming" => true, "stream_started_at" => "not-a-time" })
+    expect(m).to be_streaming
+    expect(m).to be_stale_streaming
   end
 
   it "keeps a freshly stamped placeholder live" do

@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../api/models.dart';
 import '../api/shams_api.dart';
 import '../widgets/brand_mark.dart';
+import '../widgets/model_selector.dart';
 import '../widgets/chat_composer.dart';
 import '../widgets/prompt_card.dart';
 import '../widgets/theme_button.dart';
@@ -43,6 +44,7 @@ class ChatScreen extends StatefulWidget {
     this.title,
     this.agent,
     this.onNewChat,
+    this.onOpenWorkspace,
   });
 
   final ShamsApi api;
@@ -61,6 +63,11 @@ class ChatScreen extends StatefulWidget {
   /// The home screen's new-chat flow, from the header action. Optional: only
   /// wired where a "start a different thread" affordance makes sense.
   final VoidCallback? onNewChat;
+
+  /// Opens this conversation's Coding Workspace screen. Optional, for the same
+  /// reason as [onNewChat]: the header only offers the affordance where a
+  /// navigation target was handed in.
+  final VoidCallback? onOpenWorkspace;
 
   @override
   State<ChatScreen> createState() => _ChatScreenState();
@@ -330,13 +337,14 @@ class _ChatScreenState extends State<ChatScreen> {
                     maxLines: 1,
                     style: theme.textTheme.titleLarge,
                   ),
-                  if (agent != null)
-                    Text(
-                      '${agent.name} · ${agent.subtitle}',
-                      overflow: TextOverflow.ellipsis,
-                      maxLines: 1,
-                      style: theme.textTheme.labelSmall,
-                    ),
+                  ModelSelector(
+                    api: widget.api,
+                    conversationId: widget.conversationId,
+                    enabled: !_sending && !awaiting,
+                    fallbackLabel: agent == null
+                        ? null
+                        : '${agent.name} · ${agent.subtitle}',
+                  ),
                 ],
               ),
             ),
@@ -344,6 +352,12 @@ class _ChatScreenState extends State<ChatScreen> {
         ),
         actions: [
           const ThemeButton(),
+          if (widget.onOpenWorkspace != null)
+            IconButton(
+              tooltip: 'Coding Workspace',
+              onPressed: widget.onOpenWorkspace,
+              icon: const Icon(Icons.code_outlined),
+            ),
           if (widget.onNewChat != null)
             IconButton(
               tooltip: 'New chat',
@@ -520,10 +534,8 @@ class _EmptyThread extends StatelessWidget {
   );
 }
 
-/// Picks an agent, which is also the model choice: `agents.model` and
-/// `agents.provider` are where the model lives, and a conversation's agent
-/// cannot be changed afterwards (`conversation_params` permits only title,
-/// status and mode).
+/// Picks the agent for a new conversation. The chat header independently
+/// selects a conversation-scoped model from the server catalogue.
 ///
 /// Returns the chosen [Agent], or null if the user backed out.
 Future<Agent?> pickAgent(BuildContext context, List<Agent> agents) {

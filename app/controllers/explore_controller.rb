@@ -31,6 +31,8 @@ class ExploreController < ApplicationController
       title: content ? nil : "New conversation with #{agent.name}"
     )
     redirect_to conversation_path(conversation), notice: "#{agent.name} is ready."
+  rescue Llm::ModelCatalogue::Error => error
+    redirect_to explore_path, alert: error.message
   rescue ActiveRecord::RecordNotFound
     head :not_found
   end

@@ -18,6 +18,7 @@ class Api::V1::TwoFactorController < ApplicationController
     session[:otp_enrollment] = TwoFactor.new_enrollment
     pending = TwoFactor.new(current_user, secret: session.dig(:otp_enrollment, "secret"))
 
+    response.headers["Cache-Control"] = "no-store"
     render json: security_snapshot.merge(enrollment: {
       secret: pending.secret,
       provisioning_uri: pending.provisioning_uri,
@@ -28,37 +29,35 @@ class Api::V1::TwoFactorController < ApplicationController
   # Activation, and the only moment the backup codes exist in plaintext. A
   # client that loses this response has to regenerate them.
   def confirm
-    enrollment = session[:otp_enrollment]
-    if enrollment.blank? || TwoFactor.enrollment_expired?(enrollment)
-      session.delete(:otp_enrollment)
-      return render json: { error: "That setup request expired. Start again." }, status: :gone
-    end
+    result = TwoFactor.confirm_enrollment(user: current_user, enrollment: session[:otp_enrollment],
+      code: security_params[:code])
+    session.delete(:otp_enrollment) if result.status.in?([ :verified, :expired, :already_enabled ])
+    return render_failure(result) unless result.status == :verified
 
-    unless TwoFactor.new(current_user, secret: enrollment.fetch("secret")).valid?(params[:code])
-      return render json: { error: "That code didn't work. Check your app and try again." },
-        status: :unprocessable_entity
-    end
-
-    codes = TwoFactor.activate!(current_user, enrollment.fetch("secret"))
-    session.delete(:otp_enrollment)
-
+    response.headers["Cache-Control"] = "no-store"
     render json: security_snapshot.merge(
       message: "Two-factor is on. These backup codes are shown once — save them now.",
-      recovery_codes: codes
+      recovery_codes: result.recovery_codes
     )
   end
 
-  # Off costs the password, exactly as it does in the browser: this is the
-  # change a hijacked session would most like to make.
   def destroy
-    unless current_user.authenticate(params[:password])
-      return render json: { error: "Wrong password. Nothing was changed." },
-        status: :unprocessable_entity
-    end
+    result = TwoFactor.disable(user: current_user, password: security_params[:password], code: security_params[:code])
+    return render_failure(result) unless result.status == :verified
 
-    TwoFactor.disable!(current_user)
     session.delete(:otp_enrollment)
-
     render json: security_snapshot.merge(message: "Two-factor authentication is off.")
+  end
+
+  private
+
+  def security_params
+    params.permit(:password, :code)
+  end
+
+  def render_failure(result)
+    status = { expired: :gone, already_enabled: :conflict, disabled: :conflict,
+               locked: :too_many_requests }.fetch(result.status, :unprocessable_entity)
+    render json: { error: result.error }, status: status
   end
 end

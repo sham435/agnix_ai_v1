@@ -1,0 +1,42 @@
+<%#
+  The volume's tree, read through the manager one path at a time. A file opens
+  inline — the content is the manager's, byte-verified on write, never a host
+  path the browser could name.
+-%>
+<div class="card space-y-3">
+  <div class="flex items-center justify-between gap-3">
+    <p class="text-[12px] font-semibold uppercase tracking-wide text-fg-subtle">Files</p>
+    <%= link_to "Refresh", workspace_path(workspace, section: "files"), class: "text-[12px] text-accent-text hover:underline" %>
+  </div>
+
+  <% if @files && @files[:ok] %>
+    <% if @files[:files].empty? %>
+      <p class="text-[12px] text-fg-subtle">The workspace is empty.</p>
+    <% else %>
+      <ul class="divide-y divide-border-subtle text-[12px]">
+        <% @files[:files].each do |file| %>
+          <li class="flex items-center justify-between gap-3 py-1.5">
+            <%= link_to file[:path],
+                  workspace_path(workspace, section: "files", path: file[:path]),
+                  class: "truncate font-mono text-accent-text hover:underline" %>
+            <span class="shrink-0 font-mono text-[11px] text-fg-subtle"><%= file[:bytes] %> B</span>
+          </li>
+        <% end %>
+      </ul>
+      <p class="text-[11px] text-fg-subtle">
+        <%= @files[:files].length %> file(s)<%= " · list truncated" if @files[:truncated] %>
+      </p>
+    <% end %>
+  <% else %>
+    <p class="text-[12px] text-fg-subtle"><%= @files&.dig(:error) || "the file list needs the workspace manager" %></p>
+  <% end %>
+
+  <% if @file && @file != false && @file[:ok] %>
+    <div class="space-y-1">
+      <p class="font-mono text-[11px] text-fg-muted"><%= @file[:path] %></p>
+      <pre class="max-h-80 overflow-auto rounded-xl bg-canvas p-3 text-[11px] leading-relaxed text-fg"><%= @file[:content] %><%= "… truncated" if @file[:truncated] %></pre>
+    </div>
+  <% elsif @file && @file != false %>
+    <p class="text-[12px] text-red-600"><%= @file[:error] %></p>
+  <% end %>
+</div>

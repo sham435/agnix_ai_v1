@@ -44,6 +44,10 @@ RSpec.describe "Conversation regenerate", type: :request do
     conversation.reload.messages.where(role: "assistant").order(:created_at).to_a
   end
 
+  def assistant_count
+    conversation.reload.messages.where(role: "assistant").count
+  end
+
   it "renders Regenerate as a Turbo POST link so the click is not a no-op GET" do
     get conversation_path(conversation)
 
@@ -66,7 +70,7 @@ RSpec.describe "Conversation regenerate", type: :request do
     prior = assistant_rows.last
 
     expect { post regenerate_conversation_path(conversation), headers: api_headers }
-      .to change { assistant_rows.size }.by(1)
+      .to change { assistant_count }.by(1)
 
     expect(response).to redirect_to(conversation_path(conversation))
     expect(flash[:notice]).to eq(Conversations::RegenerateChat::QUEUED)
@@ -114,13 +118,33 @@ RSpec.describe "Conversation regenerate", type: :request do
     rows_after_first = assistant_rows.size
 
     expect { post regenerate_conversation_path(conversation), headers: api_headers }
-      .not_to change { assistant_rows.size }
+      .not_to change { assistant_count }
 
     expect(rows_after_first).to eq(2)
     expect(enqueued.length).to eq(1)
     expect(flash[:alert]).to eq(Conversations::RegenerateChat::BUSY)
     # Nothing was destroyed by the rejected click.
     expect(conversation.messages.where(role: "user").count).to eq(1)
+  end
+
+  it "refuses to regenerate while a persisted run is active without a placeholder" do
+    create(:run, :running, agent: agent, conversation: conversation)
+
+    expect { post regenerate_conversation_path(conversation), headers: api_headers }
+      .not_to change { conversation.messages.count }
+
+    expect(enqueued).to be_empty
+    expect(flash[:alert]).to eq(Conversations::RegenerateChat::BUSY)
+  end
+
+  it "refuses to regenerate while a manual plan is waiting for approval" do
+    create(:agent_run, conversation: conversation, mode: "manual_plan", status: "planning")
+
+    expect { post regenerate_conversation_path(conversation), headers: api_headers }
+      .not_to change { conversation.messages.count }
+
+    expect(enqueued).to be_empty
+    expect(flash[:alert]).to eq(Conversations::RegenerateChat::BUSY)
   end
 
   it "treats a dead run's placeholder as no claim (a stale row cannot lock the thread)" do

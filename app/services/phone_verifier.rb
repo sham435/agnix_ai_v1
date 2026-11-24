@@ -24,21 +24,21 @@ class PhoneVerifier
   def request(raw_phone)
     phone = PhoneVerification.normalize(raw_phone)
     return failure(:invalid_number, "Enter a mobile number in international format, like +94771234567.") if phone.nil?
-    return failure(:limited, "Too many codes have been sent from here recently. Try again later.") if over_window?(phone)
-
-    pending = PhoneVerification.current_for(@user)
-    if pending&.resend_blocked?
-      return failure(:cooldown, "That code is still valid. Wait before asking for another.",
-        retry_in: (pending.resend_allowed_at - Time.current).ceil.clamp(1, PhoneVerification::RESEND_COOLDOWN.to_i))
+    issued = PhoneVerification.issue_with_limits!(@user, phone: phone, channel: SmsService.driver, ip: @ip)
+    case issued.status
+    when :limited
+      return failure(:limited, "Too many codes have been sent from here recently. Try again later.")
+    when :cooldown
+      return failure(:cooldown, "Wait before asking for another code.", retry_in: issued.retry_in)
+    when :unconfigured
+      return failure(:unconfigured, UNCONFIGURED)
     end
 
-    return failure(:unconfigured, UNCONFIGURED) if SmsService.driver == "none"
-
-    row = PhoneVerification.issue!(@user, phone: phone, channel: SmsService.driver, ip: @ip)
+    row = issued.row
     delivered = SmsService.deliver(phone: phone, code: row.code)
     unless delivered[:ok]
-      row.destroy
-      return failure(:undelivered, delivered[:error] || "The code could not be sent.")
+      row.delivery_failed!
+      return failure(:undelivered, "The code could not be sent.")
     end
 
     Result.new(status: :sent, code: SmsService.reveals_code? ? row.code : nil,
@@ -52,7 +52,10 @@ class PhoneVerifier
 
     case row.verify(input)
     when PhoneVerification::VERIFIED
-      Result.new(status: :verified, message: "#{@user.phone} is verified.")
+      # The row lock reloads its user association, so refresh the caller's
+      # instance too: panel/API snapshots must reflect the committed ownership.
+      @user.reload
+      Result.new(status: :verified, message: "#{row.phone} is verified.")
     when PhoneVerification::EXPIRED
       failure(:expired, "That code expired. Request a new one.")
     when PhoneVerification::EXHAUSTED
@@ -66,11 +69,6 @@ class PhoneVerifier
   end
 
   private
-
-  def over_window?(phone)
-    PhoneVerification.sent_by_user?(@user) || PhoneVerification.sent_to_phone?(phone) ||
-      PhoneVerification.sent_from_ip?(@ip)
-  end
 
   def failure(status, message, retry_in: nil)
     Result.new(status: status, message: message, retry_in: retry_in)

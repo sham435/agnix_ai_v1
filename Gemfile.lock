@@ -620,6 +620,7 @@ DEPENDENCIES
   jbuilder (~> 2.11)
   json_schemer (~> 2.5)
   letter_opener (~> 1.10)
+  nokogiri (~> 1.19)
   omniauth (~> 2.1)
   omniauth-github (~> 2.0)
   omniauth-google-oauth2 (~> 1.2)

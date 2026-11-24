@@ -17,6 +17,30 @@ module Tools
   class Catalog
     PLUGINS = [
       {
+        key: "web_search", name: "Web search", description: "Search with Tavily and return real cited sources.",
+        category: "Knowledge", icon: "book", docs_url: "https://docs.tavily.com/documentation/api-reference/endpoint/search",
+        credential_fields: [ { key: "api_key", label: "Tavily API key", type: "password", required: true, hint: "Tavily API key" } ],
+        tools: [ {
+          name: "search", summary: "Search the web with cited sources.", description: "Search the web using Tavily. Returns provider titles, URLs and snippets only.",
+          parameters: { type: "object", properties: {
+            query: { type: "string", minLength: 1, maxLength: 512 },
+            max_results: { type: "integer", minimum: 1, maximum: 10 }
+          }, required: [ "query" ] }, executor: "Integrations::WebSearch"
+        } ], capabilities: [ "web_search" ]
+      },
+      {
+        key: "figma", name: "Figma", description: "Read Figma files with a personal access token. No writes.",
+        category: "Design", icon: "code", docs_url: "https://developers.figma.com/docs/rest-api/file-endpoints/",
+        credential_fields: [ { key: "api_key", label: "Personal access token", type: "password", required: true, hint: "Requires file_content:read permission" } ],
+        tools: [ {
+          name: "get_file", summary: "Read a Figma file (no writes).", description: "Read a Figma file by its file key, with bounded tree depth. No Figma writes are supported.",
+          parameters: { type: "object", properties: {
+            file_key: { type: "string", pattern: "^[a-zA-Z0-9]{1,128}$" },
+            depth: { type: "integer", minimum: 1, maximum: 5 }
+          }, required: [ "file_key" ] }, executor: "Integrations::FigmaGetFile"
+        } ], capabilities: [ "figma" ]
+      },
+      {
         key: "stripe",
         name: "Stripe",
         description: "Payments and billing: look up recent charges and hand customers a checkout link.",

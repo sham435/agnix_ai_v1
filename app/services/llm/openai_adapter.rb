@@ -1,387 +1,402 @@
-# OpenAI API adapter.
-# API docs: https://platform.openai.com/docs/api-reference/chat
+# frozen_string_literal: true
+
 module Llm
   class OpenaiAdapter
     BASE_URL = "https://api.openai.com/v1"
-
-    # HTTParty timeouts (seconds): open_timeout for TCP handshake, timeout for read.
-    OPEN_TIMEOUT = 10
-    # Generous read timeout: local models (Bonsai/Ollama) can take minutes to
-    # process large prompts on CPU, and long agentic tool-turn generations
-    # legitimately run long. Remote APIs answer earlier and are unaffected.
-    READ_TIMEOUT = 600
-
-    # Transient-failure resilience. A local llama.cpp server can briefly be
-    # unreachable (crash + watchdog restart, laptop wake, socket reset). Retry
-    # connection-level errors with a short backoff instead of failing the run.
-    MAX_RETRIES = 3
-    RETRY_BACKOFF = 2 # seconds, multiplied by the attempt number
-    TRANSIENT_ERRORS = [
-      Errno::ECONNREFUSED, Errno::ECONNRESET, Errno::EHOSTUNREACH,
-      Errno::ENETUNREACH, Errno::EPIPE, Net::OpenTimeout, Net::ReadTimeout,
-      EOFError, IOError
-    ].freeze
-
-    # "Server isn't there" is NOT worth a long retry loop: if nothing is
-    # listening we fail fast (one quick retry for a watchdog restart) and raise
-    # an actionable error, rather than stalling the request for ~12s. Mid-stream
-    # resets/timeouts keep the more generous MAX_RETRIES budget above.
-    CONNECTION_ERRORS = [ Errno::ECONNREFUSED, Errno::EHOSTUNREACH, Errno::ENETUNREACH ].freeze
-    MAX_CONNECT_RETRIES = 1
-    CONNECT_BACKOFF = 0.5
-
-    # Streaming responses are judged by their status line, not by what the body
-    # happens to parse into: only 2xx is a stream, anything else is a gateway
-    # failure. Error bodies are kept (truncated) so the raised message carries
-    # the provider's own reason instead of a bare status code.
     SUCCESS_STATUSES = (200..299).freeze
-    MAX_ERROR_BODY = 500
+    MAX_ERROR_BODY = 8.kilobytes
+    MAX_TOOL_CALLS = 128
+    MAX_TOOL_INDEX = 10_000
+    PROTECTED_PARAMETERS = %w[model messages input tools tool_choice stream].freeze
+    LlmError = ProviderError
 
-    attr_reader :api_key, :model, :base_url, :top_p, :chat_template_kwargs
+    attr_reader :api_key, :model, :base_url, :top_p, :chat_template_kwargs, :connection
 
-    # `chat_template_kwargs` is forwarded verbatim to the server as
-    # `chat_template_kwargs`, which llama.cpp injects into the model's Jinja
-    # chat template. It is nil unless a route needs a template variable - see
-    # Llm::Client#adapter, where Bonsai uses it to switch chain-of-thought off.
-    def initialize(api_key:, model:, base_url: nil, top_p: nil, chat_template_kwargs: nil)
+    def initialize(api_key:, model:, base_url: nil, top_p: nil, chat_template_kwargs: nil, connection: nil)
       @api_key = api_key
       @model = model
-      @base_url = base_url || BASE_URL
       @top_p = top_p
       @chat_template_kwargs = chat_template_kwargs
+      @connection = connection || ProviderConnection.new(
+        provider: inferred_provider(base_url, api_key, chat_template_kwargs), api_key: api_key, model: model, base_url: base_url
+      )
+      @base_url = @connection.base_url
     end
 
-    def chat(messages:, tools:, temperature:, max_tokens:, top_p: nil, stream: false)
+    def chat(messages:, tools:, temperature:, max_tokens:, top_p: nil, stream: false, &block)
       Rails.logger.info "[shams] chat model=#{model} tools=#{tools.present?} stream=#{stream}"
       if stream
-        stream_chat(messages: messages, tools: tools, temperature: temperature, max_tokens: max_tokens, top_p: top_p)
+        stream_chat(messages: messages, tools: tools, temperature: temperature, max_tokens: max_tokens, top_p: top_p, &block)
       else
         sync_chat(messages: messages, tools: tools, temperature: temperature, max_tokens: max_tokens, top_p: top_p)
       end
     end
 
     def stream_chat(messages:, tools:, temperature:, max_tokens:, top_p: nil, &block)
+      raise ProviderError.new("Streaming is not enabled for this model.", code: "configuration_invalid") unless parameter_allowed?("stream")
+
       body = build_request_body(messages, tools, temperature, max_tokens, top_p)
       body[:stream] = true
-      body[:stream_options] = { include_usage: true }
-
-      full_content = +""
-      reasoning = +""
-      tool_calls = []
-      usage_tokens = nil
-      finish_reason = nil
+      body[:stream_options] = { include_usage: true } if parameter_allowed?("stream_options")
+      state = { content: +"", reasoning: +"", tool_calls: {}, tokens: nil, finish_reason: nil, done: false }
+      buffer = +""
       attempt = 0
 
       begin
         attempt += 1
-        # Reset buffers on each (re)attempt so a retry replays from scratch.
-        full_content = +""
-        reasoning = +""
-        tool_calls = []
-        usage_tokens = nil
-        finish_reason = nil
+        state = { content: +"", reasoning: +"", tool_calls: {}, tokens: nil, finish_reason: nil, done: false }
+        buffer = +""
         stream_status = nil
+        stream_retry_after = nil
         error_body = +""
-
-        response = HTTParty.post("#{base_url}/chat/completions",
-          headers: headers,
-          body: body.to_json,
-          stream_body: true,
-          timeout: READ_TIMEOUT,
-          open_timeout: OPEN_TIMEOUT
-        ) do |chunk|
-          # While streaming, HTTParty yields a ResponseFragment that exposes the
-          # numeric status line as soon as the headers arrive, so the turn is
-          # judged on the real HTTP result instead of on what the body happens
-          # to parse into. A gateway failure is not an SSE stream: OpenRouter
-          # answers a 429 with plain JSON, which used to yield no "data:" lines
-          # at all, and the run "succeeded" with an empty reply - the model was
-          # blamed for the provider's outage. Keep the server's own reason and
-          # skip the parse.
+        response = SecureHttp.post(connection, request_path, body: body) do |chunk|
           status = status_of(chunk)
           if status
             stream_status = status
+            stream_retry_after ||= ProviderError.retry_after_seconds(chunk.headers) if chunk.respond_to?(:headers)
             unless SUCCESS_STATUSES.cover?(status)
               error_body << chunk.to_s if error_body.bytesize < MAX_ERROR_BODY
               next
             end
           end
 
-          chunk.to_s.each_line do |line|
-            line = line.chomp
-            next unless line.start_with?("data: ")
-            data = line.delete_prefix("data: ")
-            next if data == "[DONE]"
-
-            begin
-              event = JSON.parse(data)
-
-              # The authoritative usage arrives on the final chunk (empty
-              # "choices"). Capture it so the reported token count matches the
-              # server instead of a chars/4 guess.
-              usage_tokens = event.dig("usage", "completion_tokens") if event["usage"]
-
-              choice = event.dig("choices", 0)
-              next unless choice
-
-              # llama.cpp and OpenAI-style gateways carry the terminal reason on
-              # the last choices[0] event - "stop" for a natural end, "length"
-              # when the completion hit max_tokens. Without capturing it a
-              # truncated answer is indistinguishable from a finished one, so
-              # the runner reports a cut-off reply as a success (the
-              # "truncated but succeeded" defect). Keep the last non-nil value.
-              finish_reason = choice["finish_reason"] if choice["finish_reason"]
-
-              delta = choice["delta"] || {}
-
-              # Reasoning models emit chain-of-thought before any visible
-              # "content": llama.cpp under "reasoning_content", OpenRouter-style
-              # gateways under "reasoning". Tag either as a "reasoning" frame so
-              # the UI can show a live "thinking" phase during the long
-              # pre-answer wait instead of a dead spinner. The payload is never
-              # answer text - Agents::AgentRunner drops it and forwards only a
-              # status, and nothing here may substitute it into the reply.
-              thought = delta["reasoning_content"].presence || delta["reasoning"].presence
-              if thought
-                reasoning << thought
-                yield(thought, reasoning, tool_calls, "reasoning") if block_given?
-              end
-
-              if delta["content"]
-                full_content << delta["content"]
-                yield(delta["content"], full_content, tool_calls, "content") if block_given?
-              end
-
-              if delta["tool_calls"]
-                delta["tool_calls"].each do |tc|
-                  if tc["index"] && tool_calls[tc["index"]]
-                    tool_calls[tc["index"]][:function][:arguments] << tc.dig("function", "arguments").to_s
-                  else
-                    tool_calls << {
-                      id: tc["id"],
-                      type: "function",
-                      function: { name: tc.dig("function", "name"), arguments: tc.dig("function", "arguments").to_s }
-                    }
-                  end
-                end
-              end
-            rescue JSON::ParserError
-              next
-            end
-          end
+          text = buffer + chunk.to_s
+          lines = text.lines
+          buffer = lines.pop.to_s unless text.end_with?("\n")
+          lines.each { |line| consume_line(line, state, &block) }
         end
-
-        # Error bodies and healthy streams both arrive through the fragment
-        # block above, but a response that streams no fragments at all leaves
-        # stream_status unset - the completed response still carries the status
-        # line, so read it there. nil means the transport never told us (a stub
-        # that yields bare String chunks does exactly this), which counts as
-        # unknown, not as a failure.
         stream_status ||= status_of(response)
+        stream_retry_after ||= ProviderError.retry_after_seconds(response_headers(response))
         if stream_status && !SUCCESS_STATUSES.cover?(stream_status)
-          raise stream_error(stream_status, error_body)
+          raise ProviderError.from_http(stream_status, error_body, request_id: request_id_from(response),
+            retry_after: stream_retry_after)
         end
-      rescue *TRANSIENT_ERRORS => e
-        # Safe to replay only while NOTHING VISIBLE has been forwarded to the
-        # caller. The buffers are reset at the top of each attempt, so a retry
-        # regenerates the whole turn; if the caller already received content
-        # deltas it would append the replay on top of the partial (duplicate
-        # text). That is why the guard is keyed on full_content, NOT tool_calls:
-        # a build turn streams its tool-call arguments first and emits little or
-        # no visible content, so an EOF part-way through the arguments forwarded
-        # nothing the caller will keep. Retrying there recovers the whole turn
-        # instead of failing it - and a half-accumulated tool call is useless
-        # anyway (truncated JSON just errors in dispatch). Once real content has
-        # streamed we stop replaying and let the caller keep its partial (§4b).
-        conn = CONNECTION_ERRORS.include?(e.class)
-        max_attempts = conn ? (MAX_CONNECT_RETRIES + 1) : MAX_RETRIES
-        backoff = conn ? CONNECT_BACKOFF : RETRY_BACKOFF
-        if full_content.empty? && attempt < max_attempts
-          Rails.logger.warn "[shams] stream retry #{attempt}/#{max_attempts} after #{e.class}: #{e.message.to_s[0, 120]}"
-          sleep(backoff * attempt)
-          retry
+        consume_line(buffer, state, &block) unless buffer.empty?
+        unless state[:done]
+          raise ProviderError.new(ProviderError::MESSAGES["provider_stream_interrupted"],
+            code: "provider_stream_interrupted", retryable: state[:content].empty? && state[:reasoning].empty?)
         end
-        raise provider_error(e)
+      rescue ProviderError => error
+        raise unless error.retryable? && state[:content].empty? && attempt < retry_limit(error)
+
+        Rails.logger.warn "[shams] stream retry #{attempt} after #{error.code}"
+        sleep(retry_delay(error, attempt))
+        retry
       end
 
-      # A stream can end without any visible content - a reasoning model that
-      # spent the whole completion budget thinking, or a gateway that answered
-      # with something other than events. Blank stays blank: AgentStreamJob
-      # marks the row metadata["empty_response"] and the UI tells the user the
-      # agent returned no text. Substituting the chain of thought here is what
-      # used to paste private reasoning into the answer bubble as if it were
-      # the reply, so it deliberately does not happen.
-      #
-      # finish_reason stays "stop" when the transport never reported a terminal
-      # reason (a stub, or a gateway that omits it), so callers only ever see an
-      # explicit "length" when the completion genuinely hit the max_tokens cap.
-      { content: full_content, tool_calls: tool_calls,
-        tokens: usage_tokens || estimate_tokens(full_content),
-        finish_reason: finish_reason || "stop" }
+      { content: state[:content], tool_calls: ordered_tool_calls(state),
+        tokens: state[:tokens] || estimate_tokens(state[:content]), finish_reason: state[:finish_reason] || "stop" }
     end
 
     def sync_chat(messages:, tools:, temperature:, max_tokens:, top_p: nil, **)
-      body = build_request_body(messages, tools, temperature, max_tokens, top_p)
+      response = sync_chat_with_retry(build_request_body(messages, tools, temperature, max_tokens, top_p))
+      data = parse_json(response.body)
+      choices = data["choices"]
+      raise ProviderError.new(ProviderError::MESSAGES["invalid_provider_response"],
+        code: "invalid_provider_response") unless choices.is_a?(Array) && choices.first.is_a?(Hash)
 
-      response = post_json("#{base_url}/chat/completions", body)
+      choice = choices.first
+      if choice["error"]
+        unless choice["error"].is_a?(Hash)
+          raise ProviderError.new(ProviderError::MESSAGES["invalid_provider_response"],
+            code: "invalid_provider_response")
+        end
 
-      unless response.success?
-        Rails.logger.error "[shams] ERROR #{response.code} - #{response.body.truncate(500)}"
-        raise LlmError, "OpenAI API error: #{response.code} - #{response.body}"
+        status = choice["error"]["status"]
+        raise ProviderError.from_http(status.to_i, choice.to_json) if status.is_a?(Numeric)
+
+        metadata = ProviderError.error_metadata(choice)
+        code = ProviderError::TYPE_CODES[metadata[:type]] || ProviderError::TYPE_CODES[metadata[:code]] || "provider_error"
+        raise ProviderError.new(ProviderError::MESSAGES.fetch(code, "The provider request failed."), code: code,
+          provider_error_type: metadata[:type], provider_error_code: metadata[:code])
       end
 
-      data = JSON.parse(response.body)
-      choice = data.dig("choices", 0, "message") || {}
-
-      # Only the visible answer is the reply. Reasoning-capable models keep
-      # their thinking in "reasoning_content" (llama.cpp) or "reasoning"
-      # (OpenRouter-style gateways) and can spend the whole completion budget
-      # there, leaving content empty; that is an empty answer, and the caller
-      # records metadata["empty_response"] so the UI says so. Falling back to
-      # the thinking text was a live defect - a truncated Recursive Flint turn
-      # returned its entire internal monologue as the message body.
-      content = choice["content"]
-
-      raw_tool_calls = choice["tool_calls"] || []
-
-      tool_calls = raw_tool_calls.map.with_index do |tc, i|
-        { id: tc["id"].presence || SecureRandom.hex(16), type: "function", function: tc["function"] }
+      message = choice["message"]
+      raise ProviderError.new(ProviderError::MESSAGES["invalid_provider_response"],
+        code: "invalid_provider_response") unless message.is_a?(Hash)
+      unless message["tool_calls"].nil? || message["tool_calls"].is_a?(Array)
+        raise ProviderError.new(ProviderError::MESSAGES["invalid_provider_response"],
+          code: "invalid_provider_response")
       end
+      calls = Array(message["tool_calls"])
+      raise ProviderError.new(ProviderError::MESSAGES["invalid_provider_response"],
+        code: "invalid_provider_response") if calls.length > MAX_TOOL_CALLS
 
-      {
-        content: content.to_s,
-        tool_calls: tool_calls,
+      tool_calls = calls.map do |tool_call|
+        raise ProviderError.new(ProviderError::MESSAGES["invalid_provider_response"],
+          code: "invalid_provider_response") unless tool_call.is_a?(Hash)
+
+        function = tool_call["function"]
+        raise ProviderError.new(ProviderError::MESSAGES["invalid_provider_response"],
+          code: "invalid_provider_response") unless function.is_a?(Hash)
+
+        { id: tool_call["id"].presence || SecureRandom.hex(16), type: "function",
+          function: normalize_function(function["name"], function["arguments"]) }
+      end
+      content = message["content"]
+      raise ProviderError.new(ProviderError::MESSAGES["invalid_provider_response"],
+        code: "invalid_provider_response") unless content.nil? || content.is_a?(String)
+      { content: content.to_s, tool_calls: tool_calls,
         tokens: data.dig("usage", "completion_tokens") || estimate_tokens(content),
-        finish_reason: data.dig("choices", 0, "finish_reason") || "stop"
-      }
+        finish_reason: choice["finish_reason"] || (tool_calls.any? ? "tool_calls" : "stop") }
     end
 
     def embeddings(text)
-      response = post_json("#{base_url}/embeddings",
-        { model: "text-embedding-3-small", input: text, encoding_format: "float" })
+      response = sync_chat_with_retry({ model: "text-embedding-3-small", input: text, encoding_format: "float" }, path: "embeddings")
+      data = parse_json(response.body).dig("data", 0, "embedding")
+      raise ProviderError.new(ProviderError::MESSAGES["invalid_provider_response"],
+        code: "invalid_provider_response") unless data.is_a?(Array)
 
-      unless response.success?
-        raise LlmError, "OpenAI Embedding error: #{response.code}"
-      end
-
-      data = JSON.parse(response.body)
-      data.dig("data", 0, "embedding")
+      data
     end
 
     private
 
-    # HTTParty POST with retry + linear backoff for transient connection
-    # errors (server restarting, socket reset, timeouts). Non-idempotent
-    # generation is acceptable to replay here because a connection-level
-    # failure means the request never completed on the server side.
-    def post_json(url, body)
+    def stream_tool_index(value, fallback)
+      index = if value.nil?
+                fallback
+      elsif value.is_a?(Integer)
+                value
+      else
+                Integer(value.to_s, 10)
+      end
+      unless index.between?(0, MAX_TOOL_INDEX)
+        raise ProviderError.new(ProviderError::MESSAGES["invalid_provider_response"],
+          code: "invalid_provider_response")
+      end
+
+      index
+    rescue ArgumentError, TypeError
+      raise ProviderError.new(ProviderError::MESSAGES["invalid_provider_response"],
+        code: "invalid_provider_response")
+    end
+
+    def ordered_tool_calls(state, validate: true)
+      state[:tool_calls].keys.sort.map do |index|
+        call = state[:tool_calls][index]
+        function = call[:function] || call["function"] || {}
+        name = function[:name] || function["name"]
+        arguments = function[:arguments] || function["arguments"]
+        normalized = validate ? normalize_function(name, arguments) : { "name" => name, "arguments" => arguments }
+        { id: (call[:id] || call["id"]).presence || SecureRandom.hex(16), type: "function",
+          function: normalized }
+      end
+    end
+
+    def normalize_function(name, arguments)
+      valid_name = name.is_a?(String) && name.bytesize.between?(1, 256) && name.match?(/\A[A-Za-z0-9_.-]+\z/)
+      valid_arguments = arguments.is_a?(String) && arguments.bytesize <= 1.megabyte
+      unless valid_name && valid_arguments
+        raise ProviderError.new(ProviderError::MESSAGES["invalid_provider_response"], code: "invalid_provider_response")
+      end
+
+      { "name" => name, "arguments" => arguments }
+    end
+
+    def inferred_provider(base_url, key, template)
+      return "bonsai" if template
+      return "bonsai" if base_url.to_s.match?(%r{\Ahttp://(?:127\.0\.0\.1|localhost|\[::1\]):(?:8080|8910)/})
+      return "ollama" if base_url.to_s.match?(%r{\Ahttp://(?:127\.0\.0\.1|localhost|\[::1\])})
+      return "openrouter" if base_url.to_s.include?("openrouter.ai") || key.to_s.start_with?("sk-or-v1")
+
+      "openai"
+    end
+
+    def request_path
+      "chat/completions"
+    end
+
+    def retry_limit(error)
+      error.connection_error? ? 2 : connection.max_retries + 1
+    end
+
+    def consume_line(line, state, &block)
+      line = line.chomp
+      return unless line.start_with?("data:")
+
+      data = line.delete_prefix("data:").strip
+      return if data.empty?
+      if data == "[DONE]"
+        state[:done] = true
+        return
+      end
+
+      event = JSON.parse(data)
+      if !event.is_a?(Hash)
+        raise ProviderError.new(ProviderError::MESSAGES["invalid_provider_response"],
+          code: "invalid_provider_response")
+      end
+      if event["error"]
+        error = event["error"]
+        unless error.is_a?(Hash)
+          raise ProviderError.new(ProviderError::MESSAGES["invalid_provider_response"],
+            code: "invalid_provider_response")
+        end
+
+        metadata = ProviderError.error_metadata(event)
+        status = error["status"]
+        raise ProviderError.from_http(status.to_i, event.to_json) if status.is_a?(Numeric)
+
+        code = ProviderError::TYPE_CODES[metadata[:type]] || ProviderError::TYPE_CODES[metadata[:code]] || "provider_error"
+        raise ProviderError.new(ProviderError::MESSAGES.fetch(code, "The provider request failed."), code: code,
+          retryable: code == "provider_rate_limited", provider_error_type: metadata[:type], provider_error_code: metadata[:code])
+      end
+
+      usage_tokens = event.dig("usage", "completion_tokens") if event["usage"]
+      state[:tokens] = usage_tokens if usage_tokens
+      choice = event.dig("choices", 0)
+      return unless choice
+
+      state[:finish_reason] = choice["finish_reason"] if choice["finish_reason"]
+      delta = choice["delta"] || {}
+      raise ProviderError.new(ProviderError::MESSAGES["invalid_provider_response"],
+        code: "invalid_provider_response") unless delta.is_a?(Hash)
+
+      %w[reasoning_content reasoning content].each do |name|
+        next if delta[name].nil? || delta[name].is_a?(String)
+
+        raise ProviderError.new(ProviderError::MESSAGES["invalid_provider_response"], code: "invalid_provider_response")
+      end
+      thought = delta["reasoning_content"].presence || delta["reasoning"].presence
+      if thought
+        state[:reasoning] << thought
+        block.call(thought, state[:reasoning], ordered_tool_calls(state, validate: false), "reasoning") if block
+      end
+      if delta["content"]
+        state[:content] << delta["content"]
+        block.call(delta["content"], state[:content], ordered_tool_calls(state, validate: false), "content") if block
+      end
+      calls = delta["tool_calls"]
+      unless calls.nil? || (calls.is_a?(Array) && calls.length <= MAX_TOOL_CALLS)
+        raise ProviderError.new(ProviderError::MESSAGES["invalid_provider_response"],
+          code: "invalid_provider_response")
+      end
+      Array(calls).each do |tool_call|
+        unless tool_call.is_a?(Hash) && (tool_call["function"].nil? || tool_call["function"].is_a?(Hash))
+          raise ProviderError.new(ProviderError::MESSAGES["invalid_provider_response"],
+            code: "invalid_provider_response")
+        end
+        index = stream_tool_index(tool_call["index"], state[:tool_calls].length)
+        if !state[:tool_calls].key?(index) && state[:tool_calls].length >= MAX_TOOL_CALLS
+          raise ProviderError.new(ProviderError::MESSAGES["invalid_provider_response"],
+            code: "invalid_provider_response")
+        end
+        current = state[:tool_calls][index] ||= { id: nil, type: "function",
+          function: { name: nil, arguments: +"" } }
+        current[:id] = tool_call["id"] if tool_call["id"].present?
+        function = tool_call["function"] || {}
+        if function["name"].present? && !function["name"].is_a?(String)
+          raise ProviderError.new(ProviderError::MESSAGES["invalid_provider_response"],
+            code: "invalid_provider_response")
+        end
+        current[:function][:name] = function["name"] if function["name"].present?
+        arguments = function["arguments"]
+        unless arguments.nil? || arguments.is_a?(String)
+          raise ProviderError.new(ProviderError::MESSAGES["invalid_provider_response"],
+            code: "invalid_provider_response")
+        end
+        current[:function][:arguments] << arguments.to_s
+      end
+    rescue JSON::ParserError
+      raise ProviderError.new(ProviderError::MESSAGES["invalid_provider_response"],
+        code: "invalid_provider_response")
+    end
+
+    def sync_chat_with_retry(body, path: request_path)
       attempt = 0
       begin
         attempt += 1
-        HTTParty.post(url,
-          headers: headers,
-          body: body.to_json,
-          timeout: READ_TIMEOUT,
-          open_timeout: OPEN_TIMEOUT
-        )
-      rescue *TRANSIENT_ERRORS => e
-        conn = CONNECTION_ERRORS.include?(e.class)
-        max_attempts = conn ? (MAX_CONNECT_RETRIES + 1) : MAX_RETRIES
-        backoff = conn ? CONNECT_BACKOFF : RETRY_BACKOFF
-        if attempt < max_attempts
-          Rails.logger.warn "[shams] retry #{attempt}/#{max_attempts} after #{e.class}: #{e.message.to_s[0, 120]}"
-          sleep(backoff * attempt)
-          retry
-        end
-        raise provider_error(e)
+        response = SecureHttp.post(connection, path, body: body)
+        status = status_of(response) || (response.success? ? 200 : 502)
+        raise ProviderError.from_http(status, response.body, request_id: request_id_from(response),
+          headers: response_headers(response)) unless SUCCESS_STATUSES.cover?(status)
+
+        response
+      rescue ProviderError => error
+        raise unless error.retryable? && attempt < retry_limit(error)
+
+        Rails.logger.warn "[shams] request retry #{attempt} after #{error.code}"
+        sleep(retry_delay(error, attempt))
+        retry
       end
     end
 
     def build_request_body(messages, tools, temperature, max_tokens, top_p = nil)
-      body = {
-        model: model,
-        messages: messages.map { |m| format_message(m) },
-        temperature: temperature,
-        max_tokens: max_tokens
-      }
-      body[:top_p] = top_p unless top_p.nil?
-      # Only routes that asked for a template variable grow the body; everyone
-      # else sends exactly what they sent before this field existed.
-      body[:chat_template_kwargs] = chat_template_kwargs if chat_template_kwargs
-
+      body = connection.options.except(*PROTECTED_PARAMETERS).dup
+      body["model"] = model
+      body["messages"] = messages.map { |message| format_message(message) }
+      body["temperature"] = temperature
+      body["max_tokens"] = capped_tokens(max_tokens)
+      body["top_p"] = top_p unless top_p.nil?
+      if tools.any? && !parameter_allowed?("tools")
+        raise ProviderError.new(ProviderError::MESSAGES["provider_tool_incompatible"],
+          code: "provider_tool_incompatible")
+      end
+      if !connection.model_config["supports_parallel_tool_calls"].nil? && connection.model_config["supports_parallel_tool_calls"] == false
+        body["parallel_tool_calls"] = false
+      end
+      body["chat_template_kwargs"] = chat_template_kwargs if chat_template_kwargs
       if tools.any?
-        body[:tools] = tools.map do |tool|
-          {
-            type: "function",
-            function: {
-              name: tool[:name],
-              description: tool[:description] || "",
-              parameters: tool[:parameters] || { type: "object", properties: {}, required: [] }
-            }
-          }
+        body["tools"] = tools.map do |tool|
+          { type: "function", function: { name: tool[:name], description: tool[:description] || "",
+                                           parameters: tool[:parameters] || { type: "object", properties: {}, required: [] } } }
         end
       end
-
-      body
+      body.reject { |name, _value| !parameter_allowed?(name) }.transform_keys(&:to_sym)
     end
 
-    def format_message(msg)
-      formatted = { role: msg[:role], content: msg[:content].to_s }
+    def capped_tokens(value)
+      limit = connection.model_config["max_output_tokens"]
+      limit.is_a?(Integer) && limit.positive? ? [ value.to_i, limit ].min : value
+    end
 
-      if msg[:role] == "tool"
-        formatted[:tool_call_id] = msg[:tool_call_id]
-      elsif msg[:role] == "assistant" && (msg[:tool_calls] || msg[:tool_call_id])
-        formatted[:tool_calls] = msg[:tool_calls]
+    def parameter_allowed?(name)
+      connection.parameter_allowed?(name)
+    end
+
+    def retry_delay(error, attempt)
+      error.retry_after || (error.connection_error? ? 0.5 * attempt : 2 * attempt)
+    end
+
+    def response_headers(response)
+      response.headers if response.respond_to?(:headers)
+    end
+
+    def request_id_from(response)
+      return unless response.respond_to?(:headers) && response.headers.respond_to?(:[])
+
+      response.headers["x-request-id"].presence
+    end
+
+    def format_message(message)
+      formatted = { role: message[:role], content: message[:content] }
+      if message[:role] == "tool"
+        formatted[:tool_call_id] = message[:tool_call_id]
+      elsif message[:role] == "assistant" && (message[:tool_calls] || message[:tool_call_id])
+        formatted[:tool_calls] = message[:tool_calls]
       end
-
       formatted
     end
 
-    def headers
-      {
-        "Authorization" => "Bearer #{api_key}",
-        "Content-Type" => "application/json"
-      }
+    def parse_json(body)
+      data = JSON.parse(body.to_s)
+      raise ProviderError.new("The provider returned an invalid response.", code: "invalid_provider_response") unless data.is_a?(Hash)
+
+      data
+    rescue JSON::ParserError
+      raise ProviderError.new("The provider returned an invalid response.", code: "invalid_provider_response")
     end
 
-    # The numeric HTTP status of a streaming turn. HTTParty yields a
-    # ResponseFragment that delegates the chunk text but also answers #code, and
-    # the completed response answers #code too; a bare String chunk (what test
-    # stubs yield) answers neither, so the caller gets nil and treats the status
-    # as unknown instead of inventing one.
     def status_of(source)
       return nil unless source.respond_to?(:code)
 
       Integer(source.code.to_s, 10)
-    rescue ArgumentError
+    rescue ArgumentError, TypeError
       nil
-    end
-
-    # A non-2xx streaming turn is a provider failure, not an empty answer. Say
-    # which endpoint refused, with the reason it gave, so the run is recorded
-    # failed with something actionable instead of a blank message. Whitespace is
-    # collapsed: a proxy's HTML failure would otherwise paint a multi-line blob
-    # into the single-line error bubble.
-    def stream_error(status, error_body)
-      reason = error_body.to_s.gsub(/\s+/, " ").strip[0, MAX_ERROR_BODY]
-      Rails.logger.error "[shams] ERROR #{status} - #{reason.presence || "(empty body)"}"
-      detail = reason.presence ? ": #{reason}" : " with no response body"
-      LlmError.new("Model server at #{base_url} answered HTTP #{status}#{detail}.")
-    end
-
-    def provider_error(e)
-      if CONNECTION_ERRORS.include?(e.class)
-        LlmError.new("Could not reach the model server at #{base_url} (#{e.class}). " \
-                     "Check that the local LLM server is running and listening on this port.")
-      else
-        LlmError.new("The model server at #{base_url} did not respond in time (#{e.class}).")
-      end
     end
 
     def estimate_tokens(text)
       (text.to_s.length / 4.0).ceil
     end
-
-    class LlmError < StandardError; end
   end
 end

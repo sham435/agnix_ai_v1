@@ -6,7 +6,7 @@
       </button>
       <h1 class="text-[16px] font-semibold text-fg truncate">Integrations</h1>
       <span class="hidden text-[12px] text-fg-subtle sm:inline">
-        · <%= @model_integrations.values.count(&:is_active?) + @plugins.count { |plugin| @integration_by_provider[plugin[:key]]&.is_active? } %> active
+        · <%= @integrations.count(&:is_active?) %> active
       </span>
     </div>
     <%= link_to new_tool_integration_path, class: "btn-primary text-[13px]" do %>
@@ -16,62 +16,442 @@
 
   <main class="flex-1 overflow-y-auto p-6">
     <div class="mx-auto max-w-[900px] space-y-8">
-      <%# ── Model provider keys ─────────────────────────────────────────────
-          The credential an agent actually uses. Agent#api_key checks the
-          active organization integration FIRST, then Rails credentials, then
-          ENV — so saving a key here overrides a dead server key without a
-          redeploy. Secrets are never echoed back: only a last-4 fingerprint. %>
+      <%# ── Model providers ───────────────────────────────────────────────
+          Owner-managed credentials stay encrypted and write-only. Catalogue
+          discovery and real inference verification are deliberately separate. %>
       <section class="card">
-        <h2 class="text-[15px] font-medium text-fg mb-1">Model provider keys</h2>
-        <p class="text-[12.5px] leading-5 text-fg-muted mb-4">
-          Stored encrypted for <span class="font-medium text-fg"><%= current_organization.name %></span>.
-          An active organization key takes precedence over the server environment for these providers.
-        </p>
-
-        <div class="divide-y divide-border-subtle">
-          <% @model_providers.each do |provider| %>
-            <% integration = @model_integrations[provider[:key]] %>
-            <div id="provider-key-row-<%= provider[:key] %>" class="flex flex-wrap items-center justify-between gap-x-4 gap-y-3 py-4 first:pt-0 last:pb-0">
-              <div class="min-w-0 flex-1">
-                <div class="flex flex-wrap items-center gap-2">
-                  <h3 class="text-[14px] font-medium text-fg capitalize"><%= provider[:key] %></h3>
-                  <% if integration&.is_active? %>
-                    <span class="rounded-full bg-accent/10 px-2.5 py-1 text-[11px] font-semibold text-accent-text">Active</span>
-                  <% elsif integration %>
-                    <span class="rounded-full bg-hover px-2.5 py-1 text-[11px] font-semibold text-fg-subtle">Inactive</span>
-                  <% else %>
-                    <span class="rounded-full bg-hover px-2.5 py-1 text-[11px] font-semibold text-fg-subtle">Not configured</span>
-                  <% end %>
-                </div>
-                <p class="mt-1 text-[12px] text-fg-subtle">
-                  <%= key_source_label(provider[:key], integration) %>
-                  <% if (fingerprint = key_fingerprint(integration)) %>
-                    · <%= fingerprint %>
-                  <% end %>
-                  · <%= provider[:models].size %> model<%= "s" unless provider[:models].size == 1 %>
-                </p>
-              </div>
-
-              <div class="flex flex-wrap items-center gap-2">
-                <% if integration %>
-                  <%= button_to integration.is_active? ? "Disable" : "Enable",
-                        toggle_tool_integration_path(integration), method: :post,
-                        class: "rounded-lg #{integration.is_active? ? 'bg-hover text-fg-muted hover:text-fg' : 'bg-accent/10 text-accent-text hover:bg-accent/20'} px-3 py-1.5 text-[12px] font-medium transition" %>
-                <% end %>
-                <%= form_with url: settings_integrations_keys_path, method: :post, class: "flex items-center gap-2" do %>
-                  <%= hidden_field_tag :provider, provider[:key] %>
-                  <%= password_field_tag :api_key, nil,
-                        placeholder: integration&.is_active? ? "Replace key" : "Paste API key",
-                        autocomplete: "new-password",
-                        class: "input-field w-40 sm:w-52 text-[12px] font-mono",
-                        "aria-label": "#{provider[:key].titleize} API key" %>
-                  <%= submit_tag "Save key", class: "btn-secondary border border-border text-[12px]" %>
-                <% end %>
-              </div>
-            </div>
+        <div class="mb-1 flex flex-wrap items-center justify-between gap-2">
+          <h2 class="text-[15px] font-medium text-fg">Model providers</h2>
+          <% if @provider_inventory %>
+            <%= button_to "Refresh catalogue", settings_integrations_refresh_path, method: :post,
+                  class: "btn-secondary text-[12px]" %>
           <% end %>
         </div>
+        <p class="text-[12.5px] leading-5 text-fg-muted mb-4">
+          Stored encrypted for <span class="font-medium text-fg"><%= current_organization.name %></span>.
+          An active organization key takes precedence over the server environment.
+          Discovering models never verifies inference; only an explicit Verify model action sends a short real request.
+          Setting an organization default never sends inference and requires a model with successful verification.
+          <% if @provider_inventory && (default = @provider_inventory[:default_model]) %>
+            Organization default: <span class="font-medium text-fg"><%= default["provider_id"] %> / <%= default["model_id"] %></span>.
+          <% end %>
+        </p>
+
+        <% if @provider_inventory %>
+          <div class="divide-y divide-border-subtle">
+            <% @provider_inventory[:providers].each do |provider| %>
+              <% pid = provider[:provider_id] %>
+              <%
+                readiness = provider[:readiness] ||
+                  (provider[:connection_status] == "connected" ? "connected" : "unavailable")
+                readiness_label = {
+                  "billing_blocked" => "Billing blocked", "inference_ready" => "Inference ready",
+                  "catalogue_available" => "Catalogue available", "connected" => "Connected",
+                  "access_restricted" => "Access restricted", "configuration_invalid" => "Configuration invalid",
+                  "disabled" => "Disabled", "unavailable" => "Unavailable"
+                }.fetch(readiness, readiness.to_s.titleize)
+                readiness_note = {
+                  "billing_blocked" => "Provider credits are insufficient - requests will fail until the account is funded.",
+                  "inference_ready" => "A real provider request has succeeded with these credentials.",
+                  "catalogue_available" => "Models were discovered, but inference is not yet verified by a real request.",
+                  "connected" => (Llm::ProviderRegistry.manual_only?(pid) ?
+                    "Credentials are configured; catalogue discovery is unavailable. Add model IDs manually." :
+                    "Credentials are configured; no model catalogue has been discovered yet."),
+                  "access_restricted" => "Provider policy restricts access to this connection or model.",
+                  "configuration_invalid" => "Correct the endpoint or connection configuration before use.",
+                  "disabled" => "This connection is paused.",
+                  "unavailable" => "No usable connection is configured."
+                }.fetch(readiness)
+                readiness_class = case readiness
+                  when "inference_ready" then "bg-accent/10 text-accent-text"
+                  when "billing_blocked", "access_restricted" then "bg-red-500/10 text-red-600 dark:text-red-400"
+                  when "configuration_invalid", "catalogue_available", "connected" then "bg-amber-500/10 text-amber-700 dark:text-amber-400"
+                  else "bg-hover text-fg-subtle"
+                  end
+              %>
+              <div id="provider-row-<%= pid %>" class="py-4 first:pt-0 last:pb-0 space-y-3">
+                <div class="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+                  <div class="min-w-0 flex-1">
+                    <div class="flex flex-wrap items-center gap-2">
+                      <h3 class="text-[14px] font-medium text-fg"><%= provider[:provider_name] %></h3>
+                      <span id="provider-readiness-<%= pid %>" class="rounded-full px-2.5 py-1 text-[11px] font-semibold <%= readiness_class %>">
+                        <%= readiness_label %>
+                      </span>
+                    </div>
+                    <p class="mt-1 text-[12px] text-fg-subtle"><%= readiness_note %></p>
+                    <p class="mt-1 text-[12px] text-fg-subtle">
+                      <%= provider[:configured] ? "Key configured (hidden)" : "No key configured" %>
+                      <% if provider[:last_catalogue_verified_at] %>
+                        · Catalogue checked <%= time_ago_in_words(Time.zone.parse(provider[:last_catalogue_verified_at])) %> ago
+                      <% end %>
+                    </p>
+                    <% if provider[:error] %>
+                      <p class="mt-1 text-[12px] text-red-600 dark:text-red-400"><%= provider[:error] %></p>
+                    <% end %>
+                  </div>
+
+                  <div class="flex flex-wrap items-center gap-2">
+                    <% if provider[:has_connection] %>
+                      <%= button_to provider[:is_active] ? "Disable connection" : "Enable connection",
+                            settings_integrations_connection_path, method: :post,
+                            params: { provider_id: pid, is_active: !provider[:is_active] },
+                            class: "rounded-lg bg-hover px-3 py-1.5 text-[12px] font-medium text-fg-muted hover:text-fg transition" %>
+                    <% end %>
+                    <% if provider[:discovery_supported] || Llm::ProviderRegistry.manual_only?(pid) %>
+                      <%= form_with url: settings_integrations_keys_path, method: :post, class: "flex items-center gap-2" do %>
+                        <%= hidden_field_tag :provider_id, pid %>
+                        <%= password_field_tag :api_key, nil,
+                              placeholder: provider[:configured] ? "Replace key" : "Paste API key",
+                              autocomplete: "new-password",
+                              class: "input-field w-40 sm:w-52 text-[12px] font-mono",
+                              "aria-label": "#{provider[:provider_name]} API key" %>
+                        <%= submit_tag "Save key", class: "btn-secondary border border-border text-[12px]" %>
+                      <% end %>
+                    <% end %>
+                    <% if Llm::ProviderRegistry.manual_only?(pid) %>
+                      <% examples = Llm::ProviderRegistry.example_model_ids(pid) %>
+                      <p class="w-full text-[11px] leading-4 text-fg-subtle">
+                        Official catalogue discovery is unavailable for this provider. Saving a key sends no discovery or inference request.
+                        <% if examples.any? %>
+                          Configurable model ID examples only — not claims of access, capabilities, or limits:
+                          <% examples.each_with_index do |example_id, index| %>
+                            <%= "," unless index.zero? %>
+                            <code><%= example_id %></code>
+                          <% end %>.
+                        <% end %>
+                      </p>
+                    <% end %>
+                  </div>
+                </div>
+
+                <% if provider[:has_connection] %>
+                  <% if provider[:custom] %>
+                    <% cc = provider[:custom_config] || {} %>
+                  <details class="rounded-lg border border-border-subtle bg-panel px-3 py-2">
+                    <summary class="cursor-pointer text-[12px] font-medium text-fg-muted">Custom endpoint settings</summary>
+                    <div class="mt-3 space-y-3">
+                      <p class="text-[11px] text-fg-subtle">
+                        Remote endpoints require HTTPS. Loopback is allowed only for explicitly local development connections.
+                        Redirects are not followed. Leave credential fields blank to preserve stored secrets.
+                      </p>
+                      <%= form_with url: settings_integrations_custom_path, method: :post, class: "space-y-3" do %>
+                        <%= hidden_field_tag :provider_id, pid %>
+                        <div class="grid gap-3 sm:grid-cols-2">
+                          <label class="text-[11px] text-fg-muted">Display name
+                            <%= text_field_tag "custom_connection[name]", cc[:name], class: "input-field mt-1 w-full text-[12px]", maxlength: 256 %>
+                          </label>
+                          <label class="text-[11px] text-fg-muted">Base URL
+                            <%= url_field_tag "custom_connection[base_url]", cc[:base_url], class: "input-field mt-1 w-full text-[12px] font-mono", placeholder: "https://provider.example/v1", required: true %>
+                          </label>
+                          <label class="text-[11px] text-fg-muted">Authentication
+                            <%= select_tag "custom_connection[auth_mode]", options_for_select([["Bearer token", "bearer"], ["X-Api-Key", "x-api-key"], ["No authentication", "none"]], cc[:auth_mode] || "bearer"), class: "input-field mt-1 w-full text-[12px]" %>
+                          </label>
+                          <label class="text-[11px] text-fg-muted">API key (write-only)
+                            <%= password_field_tag "custom_connection[api_key]", nil, class: "input-field mt-1 w-full text-[12px] font-mono", placeholder: provider[:configured] ? "Stored key hidden" : "Paste API key", autocomplete: "new-password" %>
+                          </label>
+                          <label class="text-[11px] text-fg-muted">Open timeout (seconds)
+                            <%= number_field_tag "custom_connection[open_timeout]", cc[:open_timeout], class: "input-field mt-1 w-full text-[12px]", min: 1, max: 60, placeholder: "10" %>
+                          </label>
+                          <label class="text-[11px] text-fg-muted">Read timeout (seconds)
+                            <%= number_field_tag "custom_connection[read_timeout]", cc[:read_timeout], class: "input-field mt-1 w-full text-[12px]", min: 1, max: 3600, placeholder: "120" %>
+                          </label>
+                          <label class="text-[11px] text-fg-muted">Max request bytes
+                            <%= number_field_tag "custom_connection[max_request_bytes]", cc[:max_request_bytes], class: "input-field mt-1 w-full text-[12px]", min: 1024, placeholder: "8388608" %>
+                          </label>
+                          <label class="text-[11px] text-fg-muted">Max response bytes
+                            <%= number_field_tag "custom_connection[max_response_bytes]", cc[:max_response_bytes], class: "input-field mt-1 w-full text-[12px]", min: 1024, placeholder: "2097152" %>
+                          </label>
+                          <label class="text-[11px] text-fg-muted">Max stream bytes
+                            <%= number_field_tag "custom_connection[max_stream_bytes]", cc[:max_stream_bytes], class: "input-field mt-1 w-full text-[12px]", min: 1024, placeholder: "16777216" %>
+                          </label>
+                          <label class="text-[11px] text-fg-muted">Maximum retries
+                            <%= number_field_tag "custom_connection[max_retries]", cc[:max_retries], class: "input-field mt-1 w-full text-[12px]", min: 0, max: 3, placeholder: "3" %>
+                          </label>
+                        </div>
+                        <label class="flex items-center gap-2 text-[12px] text-fg-muted">
+                          <%= hidden_field_tag "custom_connection[discovery_enabled]", "false" %>
+                          <%= check_box_tag "custom_connection[discovery_enabled]", "true", cc.fetch(:discovery_enabled, true) %>
+                          Discover models from /models (never verifies inference)
+                        </label>
+                        <div class="grid gap-3 sm:grid-cols-2">
+                          <label class="text-[11px] text-fg-muted">HTTP-Referer (non-secret)
+                            <%= text_field_tag "custom_connection[headers][HTTP-Referer]", cc[:headers]["HTTP-Referer"], class: "input-field mt-1 w-full text-[12px]", maxlength: 4096 %>
+                          </label>
+                          <label class="text-[11px] text-fg-muted">X-Title (non-secret)
+                            <%= text_field_tag "custom_connection[headers][X-Title]", cc[:headers]["X-Title"], class: "input-field mt-1 w-full text-[12px]", maxlength: 4096 %>
+                          </label>
+                          <label class="text-[11px] text-fg-muted">X-Goog-Api-Key (secret, write-only)
+                            <%= password_field_tag "custom_connection[secret_headers][X-Goog-Api-Key]", nil, class: "input-field mt-1 w-full text-[12px] font-mono", placeholder: cc[:secret_header_names].include?("X-Goog-Api-Key") ? "Stored secret hidden" : "Optional", autocomplete: "new-password" %>
+                          </label>
+                          <label class="text-[11px] text-fg-muted">Api-Key (secret, write-only)
+                            <%= password_field_tag "custom_connection[secret_headers][Api-Key]", nil, class: "input-field mt-1 w-full text-[12px] font-mono", placeholder: cc[:secret_header_names].include?("Api-Key") ? "Stored secret hidden" : "Optional", autocomplete: "new-password" %>
+                          </label>
+                        </div>
+                        <%= submit_tag "Save custom connection", class: "btn-secondary text-[12px]" %>
+                      <% end %>
+                    </div>
+                  </details>
+                  <% end %>
+
+                      <details class="rounded-lg border border-border-subtle px-3 py-2">
+                        <summary class="cursor-pointer text-[12px] font-medium text-fg-muted">Add a model manually</summary>
+                        <%= form_with url: settings_integrations_manual_model_path, method: :post, class: "mt-3 space-y-3" do %>
+                          <%= hidden_field_tag :provider_id, pid %>
+                          <div class="grid gap-3 sm:grid-cols-2">
+                            <label class="text-[11px] text-fg-muted">Model ID
+                              <%= text_field_tag :model_id, nil, class: "input-field mt-1 w-full text-[12px] font-mono", required: true %>
+                            </label>
+                            <label class="text-[11px] text-fg-muted">Display name
+                              <%= text_field_tag "model_config[display_name]", nil, class: "input-field mt-1 w-full text-[12px]" %>
+                            </label>
+                            <label class="text-[11px] text-fg-muted sm:col-span-2">Description
+                              <%= text_area_tag "model_config[description]", nil, class: "input-field mt-1 w-full text-[12px]", rows: 2 %>
+                            </label>
+                            <label class="text-[11px] text-fg-muted">API family
+                              <%= select_tag "model_config[api_family]", options_for_select(Llm::ProviderRegistry.api_family_options(pid), Llm::ProviderRegistry.default_api_family(pid)), class: "input-field mt-1 w-full text-[12px]" %>
+                            </label>
+                            <label class="text-[11px] text-fg-muted">Context window
+                              <%= number_field_tag "model_config[context_window]", nil, class: "input-field mt-1 w-full text-[12px]", min: 1 %>
+                            </label>
+                            <label class="text-[11px] text-fg-muted">Max output tokens
+                              <%= number_field_tag "model_config[max_output_tokens]", nil, class: "input-field mt-1 w-full text-[12px]", min: 1 %>
+                            </label>
+                            <label class="text-[11px] text-fg-muted">Supported parameters (comma-separated)
+                              <%= text_field_tag "model_config[supported_parameters]", nil, class: "input-field mt-1 w-full text-[12px] font-mono", placeholder: "temperature, top_p, tools" %>
+                            </label>
+                            <label class="text-[11px] text-fg-muted">Reasoning parameters (comma-separated)
+                              <%= text_field_tag "model_config[reasoning_parameters]", nil, class: "input-field mt-1 w-full text-[12px] font-mono", placeholder: "reasoning_effort" %>
+                            </label>
+                            <label class="text-[11px] text-fg-muted">Default options (JSON)
+                              <%= text_area_tag "model_config[options]", "{}", class: "input-field mt-1 w-full text-[12px] font-mono", rows: 3 %>
+                            </label>
+                            <label class="text-[11px] text-fg-muted">Rate-limit metadata (JSON)
+                              <%= text_area_tag "model_config[rate_limits]", "{}", class: "input-field mt-1 w-full text-[12px] font-mono", rows: 3 %>
+                            </label>
+                          </div>
+                          <div class="grid gap-2 sm:grid-cols-3">
+                            <% %w[supports_tools supports_streaming supports_vision supports_json_mode supports_reasoning supports_parallel_tool_calls].each do |capability| %>
+                              <label class="text-[11px] text-fg-muted"><%= capability.humanize %>
+                                <%= select_tag "model_config[#{capability}]", options_for_select([["Not declared", ""], ["Yes", "true"], ["No", "false"]], ""), class: "input-field mt-1 w-full text-[12px]" %>
+                              </label>
+                            <% end %>
+                            <label class="text-[11px] text-fg-muted">Free-plan eligible
+                              <%= select_tag "model_config[free_tier]", options_for_select([["Unknown", ""], ["Yes", "true"], ["No", "false"]], ""), class: "input-field mt-1 w-full text-[12px]" %>
+                            </label>
+                            <label class="text-[11px] text-fg-muted">Access restricted
+                              <%= select_tag "model_config[access_restricted]", options_for_select([["Not declared", ""], ["No", "false"], ["Yes", "true"]], ""), class: "input-field mt-1 w-full text-[12px]" %>
+                            </label>
+                          </div>
+                          <%= submit_tag "Save manual model", class: "btn-secondary text-[12px]" %>
+                        <% end %>
+                      </details>
+                <% end %>
+
+                <% models = @provider_inventory[:models].select { |m| m[:provider_id] == pid } %>
+                <% if models.any? %>
+                  <ul class="space-y-1.5">
+                    <% models.each do |model| %>
+                      <%
+                        inference_label = {
+                          "verified" => "Inference verified", "billing_blocked" => "Billing blocked",
+                          "failed" => "Inference failed", "unverified" => "Inference unverified"
+                        }.fetch(model[:inference_status], "Inference unverified")
+                        inference_class = case model[:inference_status]
+                          when "verified" then "bg-accent/10 text-accent-text"
+                          when "billing_blocked" then "bg-red-500/10 text-red-600 dark:text-red-400"
+                          when "failed" then "bg-red-500/10 text-red-600 dark:text-red-400"
+                          else "bg-hover text-fg-subtle"
+                          end
+                      %>
+                      <li class="rounded-lg bg-panel px-3 py-3 space-y-2">
+                        <div class="flex flex-wrap items-start justify-between gap-2">
+                          <div class="min-w-0">
+                            <div class="flex flex-wrap items-center gap-2">
+                              <span class="text-[13px] text-fg"><%= model[:display_name] %></span>
+                              <span class="text-[11px] text-fg-subtle"><%= model[:model_id] %></span>
+                              <span class="rounded-full bg-hover px-2 py-0.5 text-[10px] font-semibold text-fg-muted"><%= model[:api_family] %></span>
+                              <span class="rounded-full px-2 py-0.5 text-[10px] font-semibold <%= inference_class %>"><%= inference_label %></span>
+                              <% if model[:is_default] %>
+                                <span class="rounded-full bg-accent/10 px-2 py-0.5 text-[10px] font-semibold text-accent-text">Default</span>
+                              <% end %>
+                              <% if model[:free_tier] == true %>
+                                <span class="rounded-full bg-hover px-2 py-0.5 text-[10px] font-semibold text-fg-muted">Free-plan eligible</span>
+                              <% end %>
+                              <% if model[:zero_priced] == true %>
+                                <span class="rounded-full bg-hover px-2 py-0.5 text-[10px] font-semibold text-fg-muted">Provider reports zero token pricing</span>
+                              <% end %>
+                              <% unless model[:availability_status] == "available" %>
+                                <span class="rounded-full bg-hover px-2 py-0.5 text-[10px] font-semibold text-fg-subtle"><%= model[:availability_status].titleize %></span>
+                              <% end %>
+                            </div>
+                            <% if model[:model_description].present? %>
+                              <p class="mt-1 text-[11px] leading-4 text-fg-muted"><%= model[:model_description] %></p>
+                            <% end %>
+                            <div class="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-[10.5px] text-fg-subtle">
+                              <% if model[:context_window] %><span>Context: <%= number_with_delimiter(model[:context_window]) %></span><% end %>
+                              <% if model[:max_output_tokens] %><span>Max output: <%= number_with_delimiter(model[:max_output_tokens]) %></span><% end %>
+                              <% if model[:supports_tools] == true %><span>Tools</span><% end %>
+                              <% if model[:supports_streaming] == true %><span>Streaming</span><% end %>
+                              <% if model[:supports_vision] == true %><span>Vision</span><% end %>
+                              <% if model[:supports_reasoning] == true %><span>Reasoning</span><% end %>
+                              <% if model[:supports_parallel_tool_calls] == true %><span>Parallel tools</span><% end %>
+                              <% if model[:supports_json_mode] == true %><span>JSON mode</span><% end %>
+                              <% if model[:last_discovered_at] %><span>Discovered <%= time_ago_in_words(Time.zone.parse(model[:last_discovered_at])) %> ago</span><% end %>
+                              <% if model[:inference_verified_at] %><span>Inference verified <%= time_ago_in_words(Time.zone.parse(model[:inference_verified_at])) %> ago</span><% end %>
+                              <% if model[:last_inference_attempt_at] && !model[:inference_verified_at] %><span>Last inference attempt <%= time_ago_in_words(Time.zone.parse(model[:last_inference_attempt_at])) %> ago</span><% end %>
+                            </div>
+                            <% if model[:last_inference_error_code].present? %>
+                              <p class="mt-1 text-[10.5px] text-red-600 dark:text-red-400">Last inference error: <%= model[:last_inference_error_code] %></p>
+                            <% end %>
+                            <details class="mt-2">
+                              <summary class="cursor-pointer text-[10.5px] font-medium text-fg-muted">Capabilities, parameters and limits</summary>
+                              <div class="mt-2 grid gap-2 text-[10.5px] text-fg-subtle sm:grid-cols-2">
+                                <% %w[supports_tools supports_streaming supports_vision supports_images supports_json_mode supports_reasoning supports_parallel_tool_calls].each do |capability| %>
+                                  <span><%= capability.humanize %>: <%= model[capability.to_sym].nil? ? "Not declared" : (model[capability.to_sym] ? "Yes" : "No") %></span>
+                                <% end %>
+                                <span>Supported parameters: <%= model[:supported_parameters].present? ? model[:supported_parameters].join(", ") : "Not declared" %></span>
+                                <span>Options: <%= model[:option_names].any? ? model[:option_names].join(", ") : "None declared" %></span>
+                                <% if model[:reasoning_parameters].present? %><span>Reasoning parameters: <%= model[:reasoning_parameters].join(", ") %></span><% end %>
+                                <% if model[:rate_limits].present? %><span class="sm:col-span-2">Rate limits: <%= JSON.generate(model[:rate_limits]) %></span><% end %>
+                              </div>
+                            </details>
+                          </div>
+                          <div class="flex flex-wrap items-center gap-2">
+                            <% if model[:manageable] %>
+                              <%= button_to model[:disabled] ? "Enable" : "Disable",
+                                    settings_integrations_model_path, method: :post,
+                                    params: { provider_id: pid, model_id: model[:model_id], is_active: model[:disabled] },
+                                    class: "rounded-lg bg-hover px-2.5 py-1 text-[11px] font-medium text-fg-muted hover:text-fg transition" %>
+                            <% end %>
+                            <% if model[:availability_status] == "available" && !model[:is_default] %>
+                              <%= button_to model[:inference_status] == "verified" ? "Set default" : "Verify first to set default",
+                                    settings_integrations_default_model_path, method: :post,
+                                    params: { provider_id: pid, model_id: model[:model_id] },
+                                    disabled: model[:inference_status] != "verified",
+                                    title: "A successful real inference verification is required before setting the organization default.",
+                                    class: "rounded-lg bg-accent/10 px-2.5 py-1 text-[11px] font-medium text-accent-text hover:bg-accent/20 transition disabled:cursor-not-allowed disabled:opacity-50" %>
+                            <% end %>
+                            <% if model[:availability_status] == "available" %>
+                              <%= form_with url: settings_integrations_verify_model_path, method: :post,
+                                    data: { turbo_confirm: "Send one short real inference request to verify this model? This may use provider credits." } do %>
+                                <%= hidden_field_tag :provider_id, pid %>
+                                <%= hidden_field_tag :model_id, model[:model_id] %>
+                                <%= submit_tag model[:inference_status] == "verified" ? "Verify again" : "Verify model", class: "rounded-lg bg-hover px-2.5 py-1 text-[11px] font-medium text-fg-muted hover:text-fg transition" %>
+                              <% end %>
+                            <% end %>
+                          </div>
+                        </div>
+
+                        <% if model[:manageable] %>
+                          <details class="rounded-lg border border-border-subtle px-3 py-2">
+                            <summary class="cursor-pointer text-[11px] font-medium text-fg-muted">Edit manual model metadata</summary>
+                            <%= form_with url: settings_integrations_manual_model_path, method: :post, class: "mt-3 space-y-3" do %>
+                              <%= hidden_field_tag :provider_id, pid %>
+                              <%= hidden_field_tag :model_id, model[:model_id] %>
+                              <div class="grid gap-3 sm:grid-cols-2">
+                                <label class="text-[11px] text-fg-muted">Display name
+                                  <%= text_field_tag "model_config[display_name]", model[:display_name], class: "input-field mt-1 w-full text-[12px]" %>
+                                </label>
+                                <label class="text-[11px] text-fg-muted sm:col-span-2">Description
+                                  <%= text_area_tag "model_config[description]", model[:model_description], class: "input-field mt-1 w-full text-[12px]", rows: 2 %>
+                                </label>
+                                <label class="text-[11px] text-fg-muted">API family
+                                  <%= select_tag "model_config[api_family]", options_for_select(Llm::ProviderRegistry.api_family_options(pid), model[:api_family]), class: "input-field mt-1 w-full text-[12px]" %>
+                                </label>
+                                <label class="text-[11px] text-fg-muted">Context window
+                                  <%= number_field_tag "model_config[context_window]", model[:context_window], class: "input-field mt-1 w-full text-[12px]", min: 1 %>
+                                </label>
+                                <label class="text-[11px] text-fg-muted">Max output tokens
+                                  <%= number_field_tag "model_config[max_output_tokens]", model[:max_output_tokens], class: "input-field mt-1 w-full text-[12px]", min: 1 %>
+                                </label>
+                                <label class="text-[11px] text-fg-muted">Supported parameters (comma-separated)
+                                  <%= text_field_tag "model_config[supported_parameters]", model[:supported_parameters].to_a.join(", "), class: "input-field mt-1 w-full text-[12px] font-mono" %>
+                                </label>
+                                <label class="text-[11px] text-fg-muted">Reasoning parameters (comma-separated)
+                                  <%= text_field_tag "model_config[reasoning_parameters]", model[:reasoning_parameters].to_a.join(", "), class: "input-field mt-1 w-full text-[12px] font-mono" %>
+                                </label>
+                                <label class="text-[11px] text-fg-muted">Default options (JSON)
+                                  <%= text_area_tag "model_config[options]", JSON.generate(model[:editable_options] || {}), class: "input-field mt-1 w-full text-[12px] font-mono", rows: 3 %>
+                                </label>
+                                <label class="text-[11px] text-fg-muted">Rate-limit metadata (JSON)
+                                  <%= text_area_tag "model_config[rate_limits]", JSON.generate(model[:rate_limits] || {}), class: "input-field mt-1 w-full text-[12px] font-mono", rows: 3 %>
+                                </label>
+                              </div>
+                              <div class="grid gap-2 sm:grid-cols-3">
+                                <% %w[supports_tools supports_streaming supports_vision supports_images supports_json_mode supports_reasoning supports_parallel_tool_calls].each do |capability| %>
+                                  <label class="text-[11px] text-fg-muted"><%= capability.humanize %>
+                                    <%= select_tag "model_config[#{capability}]", options_for_select([["Not declared", ""], ["Yes", "true"], ["No", "false"]], model[capability.to_sym].to_s), class: "input-field mt-1 w-full text-[12px]" %>
+                                  </label>
+                                <% end %>
+                                <label class="text-[11px] text-fg-muted">Free-plan eligible
+                                  <%= select_tag "model_config[free_tier]", options_for_select([["Unknown", ""], ["Yes", "true"], ["No", "false"]], model[:free_tier].to_s), class: "input-field mt-1 w-full text-[12px]" %>
+                                </label>
+                                <label class="text-[11px] text-fg-muted">Access restricted
+                                  <%= select_tag "model_config[access_restricted]", options_for_select([["Not declared", ""], ["No", "false"], ["Yes", "true"]], model[:access_restricted].to_s), class: "input-field mt-1 w-full text-[12px]" %>
+                                </label>
+                              </div>
+                              <p class="text-[10.5px] text-fg-subtle">Changing model configuration clears that model's previous inference verification. Saving metadata never sends inference.</p>
+                              <%= submit_tag "Save model metadata", class: "btn-secondary text-[12px]" %>
+                            <% end %>
+                          </details>
+                        <% end %>
+                      </li>
+                    <% end %>
+                  </ul>
+                <% end %>
+              </div>
+            <% end %>
+          </div>
+        <% else %>
+          <p class="text-[12.5px] text-fg-subtle mb-3">Only the organization owner can change provider connections, keys and model availability.</p>
+          <div class="divide-y divide-border-subtle">
+            <% @integrations.select { |i| Llm::ProviderRegistry.builtin?(i.provider) || Llm::ProviderRegistry.custom?(i.provider) }.each do |integration| %>
+              <div class="flex items-center justify-between gap-3 py-3 first:pt-0 last:pb-0">
+                <span class="text-[13px] font-medium text-fg"><%= Llm::ProviderRegistry.name(integration.provider) %></span>
+                <span class="text-[12px] text-fg-subtle">
+                  <%= integration.is_active? ? "Active" : "Inactive" %> · <%= integration.api_key.present? ? "Credential configured (hidden)" : "No API key" %>
+                </span>
+              </div>
+            <% end %>
+          </div>
+        <% end %>
       </section>
+
+      <% if @provider_inventory %>
+        <section class="card">
+          <h2 class="text-[15px] font-medium text-fg">Custom OpenAI-compatible endpoint</h2>
+          <p class="mt-1 text-[12px] leading-5 text-fg-muted">
+            Connect an organization-owned endpoint with Chat Completions or Responses support.
+            Saving may discover its catalogue, but never sends inference. Remote URLs require HTTPS;
+            production blocks loopback, private, link-local and metadata destinations.
+          </p>
+          <%= form_with url: settings_integrations_custom_path, method: :post, class: "mt-4 grid gap-3 sm:grid-cols-2" do %>
+            <label class="text-[11px] text-fg-muted">Provider ID
+              <%= text_field_tag :provider_id, nil, class: "input-field mt-1 w-full text-[12px] font-mono", placeholder: "custom-my-provider", pattern: "custom-[a-z0-9][a-z0-9_-]{2,63}", required: true %>
+            </label>
+            <label class="text-[11px] text-fg-muted">Display name
+              <%= text_field_tag "custom_connection[name]", nil, class: "input-field mt-1 w-full text-[12px]", maxlength: 256 %>
+            </label>
+            <label class="text-[11px] text-fg-muted sm:col-span-2">Base URL
+              <%= url_field_tag "custom_connection[base_url]", nil, class: "input-field mt-1 w-full text-[12px] font-mono", placeholder: "https://provider.example/v1", required: true %>
+            </label>
+            <label class="text-[11px] text-fg-muted">Authentication
+              <%= select_tag "custom_connection[auth_mode]", options_for_select([["Bearer token", "bearer"], ["X-Api-Key", "x-api-key"], ["No authentication", "none"]], "bearer"), class: "input-field mt-1 w-full text-[12px]" %>
+            </label>
+            <label class="text-[11px] text-fg-muted">API key (write-only)
+              <%= password_field_tag "custom_connection[api_key]", nil, class: "input-field mt-1 w-full text-[12px] font-mono", placeholder: "Paste API key if required", autocomplete: "new-password" %>
+            </label>
+            <label class="flex items-center gap-2 text-[12px] text-fg-muted sm:col-span-2">
+              <%= hidden_field_tag "custom_connection[discovery_enabled]", "false" %>
+              <%= check_box_tag "custom_connection[discovery_enabled]", "true", true %>
+              Discover models from /models after saving (catalogue only)
+            </label>
+            <div class="sm:col-span-2">
+              <%= submit_tag "Save custom endpoint", class: "btn-secondary text-[12px]" %>
+            </div>
+          <% end %>
+        </section>
+      <% end %>
 
       <%# ── Service plugins ──────────────────────────────────────────────────
           Same card partial the /integrations marketplace renders, so the

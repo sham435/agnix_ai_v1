@@ -27,7 +27,7 @@ class AgentStreamJob < ApplicationJob
   # enough that a client polling once a second watches the answer arrive.
   PROGRESS_WRITE_INTERVAL = 1.0
 
-  def perform(conversation_id:, user_id:, message_content: nil, channel: :web, phone_number: nil, resume_agent_run_id: nil, message_id: nil, request_id: nil, replaces_message_id: nil)
+  def perform(conversation_id:, user_id:, message_content: nil, channel: :web, phone_number: nil, whatsapp_integration_id: nil, resume_agent_run_id: nil, message_id: nil, request_id: nil, replaces_message_id: nil)
     # The instant a worker started this job: the READY transition. Nothing else
     # records it — the run row is not created until the runner opens its loop,
     # so without this stamp the queue wait (how long the user's turn sat
@@ -50,25 +50,29 @@ class AgentStreamJob < ApplicationJob
     # Set when the runner reports the turn was stopped by the user, which
     # chooses the `stopped` terminal frame over completed/failed below.
     @run_cancelled = false
-    conversation = Conversation.find(conversation_id)
     user = User.find(user_id)
+    conversation = user.conversations.find(conversation_id)
     agent = conversation.agent
 
     Rails.logger.info "[AgentStreamJob] START conversation=#{conversation_id} user=#{user_id}#{" resume_run=#{resume_agent_run_id}" if resume_agent_run_id}#{" request_id=#{@request_id}" if @request_id}"
 
-    # Meter before anything is written or called. A turn whose organization is
-    # out of tokens for the day must not leave a placeholder, start a run, or
-    # reach the model server — it lands in the rescue below, which renders the
-    # reason in-chat and sends the `failed` frame with code quota_exceeded.
-    @quota_reservation = Quota.reserve(agent.organization, estimate: Quota.estimate(agent, message_content))
+    # Resolve the source inside the acting user's conversation before deciding
+    # anything about quota or execution. A supplied message_id can never select
+    # another user's turn, and a persisted source is authoritative over the
+    # enqueue payload (including when deciding whether this is a command).
+    source_message = conversation.messages.find_by(id: message_id) if message_id.present?
+    raise ActiveRecord::RecordNotFound, "Source message not found" if message_id.present? && source_message.nil?
+    resume_plan = conversation.agent_runs.find(resume_agent_run_id) if resume_agent_run_id.present?
 
-    # Broadcast the user's query first, on the same ordered pipeline as the
-    # reply, so the query always renders above its answer. The row is also
-    # handed to the runner: per-message tool selection rides in its metadata.
-    source_message = nil
-    if message_id.present?
-      source_message = Message.find_by(id: message_id)
-      broadcast_user(conversation, source_message) if source_message&.user_message?
+    broadcast_user(conversation, source_message) if source_message&.user_message?
+    turn_content = source_message ? source_message.content.to_s : message_content.to_s
+    webfetch_command = WebfetchCommand.parse(turn_content) if resume_agent_run_id.nil?
+
+    # Meter ordinary model turns before anything is written or called. Explicit
+    # webfetch is a bounded non-LLM command, so it must neither consume provider
+    # quota nor be blocked by an exhausted model-token allowance.
+    unless webfetch_command
+      @quota_reservation = Quota.reserve(agent.organization, estimate: Quota.estimate(agent, message_content))
     end
 
     # Create (or reuse) the streaming placeholder immediately. It is persisted
@@ -102,49 +106,54 @@ class AgentStreamJob < ApplicationJob
     # Monotonic clock, so an NTP slew can neither shorten nor extend the budget.
     @run_started_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
 
-    runner = AgentRunner.new(
-      agent: agent,
-      conversation: conversation,
-      user: user,
-      streaming_message: streaming_msg,
-      source_message: source_message,
-      # Process-control-block stamps from BEFORE this run existed: the run row
-      # cannot know when the turn arrived or when this worker took the job, so
-      # the job — which knows both — hands them down. See Run.seed_pcb_metadata.
-      arrival_at: pcb_arrival_at(conversation, source_message),
-      dispatched_at: @pcb_dispatched_at,
-      # The turn correlation id. A re-delivery re-runs with the same id, which
-      # lets the runner find an earlier attempt's completed writes and skip them
-      # instead of duplicating files (§6 build resume).
-      request_id: @request_id
-    )
+    if webfetch_command
+      outcome = execute_webfetch_command(webfetch_command, user: user, agent: agent, conversation: conversation,
+        source_message: source_message, streaming_message: streaming_msg)
+    else
+      runner = AgentRunner.new(
+        agent: agent,
+        conversation: conversation,
+        user: user,
+        streaming_message: streaming_msg,
+        source_message: source_message,
+        # Process-control-block stamps from BEFORE this run existed: the run row
+        # cannot know when the turn arrived or when this worker took the job, so
+        # the job — which knows both — hands them down. See Run.seed_pcb_metadata.
+        arrival_at: pcb_arrival_at(conversation, source_message),
+        dispatched_at: @pcb_dispatched_at,
+        # The turn correlation id. A re-delivery re-runs with the same id, which
+        # lets the runner find an earlier attempt's completed writes and skip them
+        # instead of duplicating files (§6 build resume).
+        request_id: @request_id
+      )
 
-    # Every chunk is a progress checkpoint: #track_progress enforces the budget
-    # where nothing is mid-flight and remembers the runner's bad news, so the
-    # terminal frame below can tell the truth instead of announcing completion
-    # for a run that failed.
-    #
-    # Content deltas are additionally accumulated and written back to the
-    # placeholder (see #persist_progress) because Action Cable is not the only
-    # reader of a conversation.
-    on_chunk = lambda do |chunk|
-      track_progress(chunk)
-      record_delta(streaming_msg, chunk)
-      broadcast_chunk(conversation, streaming_msg.id, chunk)
-    end
-
-    outcome = remember_outcome(
-      if resume_agent_run_id
-        runner.resume_plan(AgentRun.find(resume_agent_run_id), stream: true, &on_chunk)
-      else
-        runner.run(message_content, stream: true, &on_chunk)
+      # Every chunk is a progress checkpoint: #track_progress enforces the budget
+      # where nothing is mid-flight and remembers the runner's bad news, so the
+      # terminal frame below can tell the truth instead of announcing completion
+      # for a run that failed.
+      #
+      # Content deltas are additionally accumulated and written back to the
+      # placeholder (see #persist_progress) because Action Cable is not the only
+      # reader of a conversation.
+      on_chunk = lambda do |chunk|
+        track_progress(chunk)
+        record_delta(streaming_msg, chunk)
+        broadcast_chunk(conversation, streaming_msg.id, chunk)
       end
-    )
+
+      outcome = remember_outcome(
+        if resume_agent_run_id
+          runner.resume_plan(resume_plan, stream: true, &on_chunk)
+        else
+          runner.run(message_content, stream: true, &on_chunk)
+        end
+      )
+    end
 
     # The reservation was worst-case; the run's own count is the truth, and it
     # replaces it whether or not the answer came out clean. A run that raised
     # before reporting anything keeps the reservation (see Quota.settle).
-    Quota.settle(@quota_reservation, actual: outcome[:tokens]) if outcome.is_a?(Hash)
+    Quota.settle(@quota_reservation, actual: outcome[:tokens]) if @quota_reservation && outcome.is_a?(Hash)
 
     Rails.logger.info "[AgentStreamJob] DONE conversation=#{conversation_id}"
 
@@ -178,7 +187,14 @@ class AgentStreamJob < ApplicationJob
 
     if channel == :whatsapp && phone_number
       last_message = conversation.messages.where(role: "assistant").last
-      WhatsappService.send_message(phone_number, last_message.content) if last_message
+      integration = agent.organization.tool_integrations.active.find_by(id: whatsapp_integration_id)
+      if last_message && integration
+        delivery = Integrations::Whatsapp::SendMessage.call(integration: integration,
+          arguments: { "to" => phone_number, "text" => last_message.content })
+        Rails.logger.warn "[AgentStreamJob] WHATSAPP-DELIVERY-FAILED conversation=#{conversation_id} code=#{delivery[:error_code]}" unless delivery[:ok]
+      elsif last_message
+        Rails.logger.warn "[AgentStreamJob] WHATSAPP-INTEGRATION-UNAVAILABLE conversation=#{conversation_id}"
+      end
     end
   rescue => e
     Rails.logger.error "[AgentStreamJob] ERROR conversation=#{conversation_id} #{e.class}: #{e.message}"
@@ -224,10 +240,40 @@ class AgentStreamJob < ApplicationJob
     # terminal frame — an Exception outside the StandardError rescue, or a
     # failure while broadcasting — force one so the live browser never spins
     # forever and no phantom "streaming" row is left behind.
-    recover_unended_run(conversation, streaming_msg) unless @terminal_broadcasted
+    begin
+      recover_unended_run(conversation, streaming_msg) unless @terminal_broadcasted
+      Conversations::TurnAdmission.dispatch_next(conversation: conversation, user: user) if conversation
+    rescue StandardError => e
+      Rails.logger.error "[AgentStreamJob] QUEUE-DISPATCH-ERROR #{e.class}: #{e.message}"
+    end
   end
 
   private
+
+  # Persist and finalize the bounded command result without constructing an
+  # AgentRunner or making a provider call. The common replacement/terminal
+  # broadcast path below remains responsible for telling every client.
+  def execute_webfetch_command(command, user:, agent:, conversation:, source_message:, streaming_message:)
+    result = WebfetchCommand.call(url: command.url, user: user, agent: agent, conversation: conversation,
+      source_message: source_message, request_id: @request_id,
+      cancelled: -> { streaming_message.reload.metadata["stop_requested"] == true })
+    metadata = streaming_message.metadata.to_h.dup
+    metadata.delete("streaming")
+    metadata["webfetch"] = {
+      "untrusted" => true,
+      "ok" => result[:ok],
+      "error_code" => result[:error_code],
+      "replayed" => result[:replayed]
+    }.compact
+    unless result[:ok]
+      metadata["error"] = result[:error]
+      metadata["error_code"] = result[:error_code]
+    end
+    streaming_message.update!(content: WebfetchCommand.message_content(result), metadata: metadata)
+    @run_cancelled = true if result[:error_code] == "cancelled"
+    remember_outcome(result)
+    { tokens: 0 }
+  end
 
   # Flip the terminal latch so `ensure` knows a completed/failed frame went out.
   def mark_terminal

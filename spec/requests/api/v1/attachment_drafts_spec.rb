@@ -142,6 +142,9 @@ RSpec.describe "API v1 attachment drafts", type: :request do
       expect(AttachmentDraft.exists?(not_attached.id)).to be true
 
       # A rerun with the same token + asset attaches the message this time.
+      conversation.messages.where(role: "assistant").where("metadata->>'streaming' = 'true'").find_each do |message|
+        message.update!(metadata: message.metadata.except("streaming").merge("empty_response" => true))
+      end
       post "/api/v1/conversations/#{conversation.id}/messages",
            params: { content: "", attachment_asset_ids: [ failed_asset.id ], attachment_draft_token: token },
            headers: api_headers

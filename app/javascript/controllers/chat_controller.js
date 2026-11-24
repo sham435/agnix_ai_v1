@@ -41,24 +41,16 @@ export default class extends Controller {
   // 2-minute stale window and well above normal inter-token gaps.
   static STALL_MS = 100000
 
-  // Absolute upper bound on how long we're willing to show a "thinking"
-  // indicator for a single run, measured from the run's start stamp (not its
-  // last frame). A slow-but-talking run legitimately keeps its dots alive
-  // past STALL_MS, but if a run has been streaming reasoning for longer than
-  // the composer's GENERATION_TIMEOUT_MS without finalising, we surface an
-  // honest "didn't finish" state at the same instant the composer frees its
-  // Send guard. Keeps visual state and input state in lock-step. Aligned
-  // with ChatInputController.GENERATION_TIMEOUT_MS.
-  static GENERATION_CEILING_MS = 130000
-
   connect() {
     this.turns = new Map() // key -> { key, rid, mid, text, phase, done, failed, error, lastActivity }
     this.subscribeToChannel()
     this.observeMessagesList()
     this.bindScrollTracking()
-    // First paint on a loaded conversation should always show the newest
-    // message; subsequent auto-pins honour the wasNearBottom flag.
-    this.forceScrollToBottom()
+    if (window.ShamsNavigationState?.restoreScroll(this.element)) {
+      this.wasNearBottom = this.isNearBottom()
+    } else {
+      this.forceScrollToBottom()
+    }
     // Periodic stall sweep — the live-view counterpart of the server-side
     // stale-run recovery, which only helps after a manual refresh. Two passes:
     //   * sweepStalledTurns retires cable-bridged turns that fell silent
@@ -157,6 +149,24 @@ export default class extends Controller {
         break
       case "stopped":
         this.stopStreaming(data.message_id, data.request_id)
+        break
+      case "background_tasks":
+        this.element.dispatchEvent(new CustomEvent("background:tasks", {
+          bubbles: true,
+          detail: {
+            active: data.active || 0,
+            queued: data.queued || 0,
+            activeRequestId: data.active_request_id || null,
+            tasks: data.tasks
+          }
+        }))
+        break
+      case "message_admitted":
+      case "message_rejected":
+        this.element.dispatchEvent(new CustomEvent(
+          data.type === "message_rejected" ? "message:rejected" : "message:admitted",
+          { bubbles: true, detail: data }
+        ))
         break
     }
   }
@@ -259,6 +269,10 @@ export default class extends Controller {
     if (!turn) return
     turn.streamStartedAt = data.stream_started_at || turn.streamStartedAt
     this.paint(turn)
+    this.element.dispatchEvent(new CustomEvent("assistant:started", {
+      bubbles: true,
+      detail: { request_id: data.request_id, message_id: data.message_id }
+    }))
   }
 
   // ── Execution trace ──────────────────────────────────────────────────
@@ -287,7 +301,10 @@ export default class extends Controller {
       this.stopStreaming(messageId, rid)
       return
     }
-    if (turn) turn.phase = phase === "completed" ? "completed" : phase
+    if (turn) {
+      turn.phase = phase === "completed" ? "completed" : phase
+      turn.waiting = phase === "waiting"
+    }
     const trace = this.traceController(rid, messageId)
     if (trace) {
       trace.setPhase(phase)
@@ -308,7 +325,8 @@ export default class extends Controller {
 
     if (turn) {
       turn.text += text
-      if (!turn.phase || turn.phase === "connecting" || turn.phase === "thinking") turn.phase = "generating"
+      turn.waiting = false
+      if (!turn.phase || turn.phase === "connecting" || turn.phase === "thinking" || turn.phase === "waiting") turn.phase = "generating"
       this.paint(turn)
     } else {
       // Fallback (no turn possible): append directly to the streaming body.
@@ -367,6 +385,12 @@ export default class extends Controller {
   showToolCall(tool, result, messageId, rid) {
     // Surface tool activity in the collapsible trace — never as raw content
     // and never the model's private reasoning.
+    const turn = this.turnFor(rid, messageId)
+    if (turn?.waiting) {
+      turn.waiting = false
+      turn.phase = "generating"
+      this.paint(turn)
+    }
     const trace = this.traceController(rid, messageId)
     if (trace) {
       trace.noteTool(tool?.name || tool)
@@ -435,36 +459,22 @@ export default class extends Controller {
   // (provider socket wedged, job worker killed) would spin forever. Retire
   // those silent turns locally, honestly, without waiting on a refresh.
   //
-  // Two independent triggers, either one is enough:
-  //   * Silence: no frame for STALL_MS (100s) — the run has clearly stopped
-  //     talking to us (dead worker / wedged socket / dropped connection).
-  //   * Absolute ceiling: total elapsed since the run's start exceeds
-  //     GENERATION_CEILING_MS (130s) — the run may still be streaming
-  //     reasoning frames but we've held the user's "thinking" indicator
-  //     long enough; matches the composer's GENERATION_TIMEOUT_MS so input
-  //     state and visual state free together.
+  // Silence retires the animated indicator, but a server-confirmed active
+  // task remains live and steerable until a terminal or task-state frame.
   sweepStalledTurns() {
     const now = Date.now()
+    const active = Number(this.element.dataset.backgroundActive || 0)
     for (const turn of Array.from(this.turns.values())) {
-      if (turn.done || turn.failed) continue
-      if (!turn.lastActivity) continue
-      const silent = now - turn.lastActivity > this.constructor.STALL_MS
-      const exceeded = this.turnElapsed(turn, now) > this.constructor.GENERATION_CEILING_MS
-      if (!silent && !exceeded) continue
-      this.stallTurn(turn)
-      this.turns.delete(turn.key)
+      if (turn.done || turn.failed || turn.waiting) continue
+      if (!turn.lastActivity || now - turn.lastActivity <= this.constructor.STALL_MS) continue
+      if (active > 0) {
+        turn.waiting = true
+        this.setStatus("waiting", turn.mid, null, turn.rid)
+      } else {
+        this.stallTurn(turn)
+        this.turns.delete(turn.key)
+      }
     }
-  }
-
-  // Absolute ms since the run's start, using the server stamp when the browser
-  // received one and falling back to the local turn-creation clock otherwise.
-  turnElapsed(turn, now = Date.now()) {
-    if (turn.streamStartedAt) {
-      const started = Date.parse(turn.streamStartedAt)
-      if (!Number.isNaN(started)) return now - started
-    }
-    if (turn.startedAt) return now - turn.startedAt
-    return 0
   }
 
   stallTurn(turn) {
@@ -498,6 +508,7 @@ export default class extends Controller {
   // (which is activity-aware and therefore safer for in-flight streaming).
   sweepStalledPlaceholders() {
     const now = Date.now()
+    const active = Number(this.element.dataset.backgroundActive || 0)
     this.element
       .querySelectorAll('[data-message-role="assistant"][data-streaming="true"][data-stream-started-at]')
       .forEach((container) => {
@@ -505,6 +516,7 @@ export default class extends Controller {
         const turn = rid ? this.turns.get(rid) : null
         // A live turn owns this container — defer to the activity-aware sweep.
         if (turn && !turn.done && !turn.failed) return
+        if (active > 0) return
 
         const started = Date.parse(container.getAttribute("data-stream-started-at"))
         if (Number.isNaN(started)) return

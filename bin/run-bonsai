@@ -68,6 +68,7 @@ case "${1:-bonsai2}" in
   bonsai2|2|*)
     # Bonsai 2 27B ternary (repo default) - port 8080 matches BONSAI2_BASE_URL
     exec env BONSAI_FAMILY=bonsai2 BONSAI_MODEL=27B \
+      BONSAI_CTX="${BONSAI_CTX:-65536}" BONSAI_KV4="${BONSAI_KV4:-1}" \
       BONSAI_HOST="${BONSAI_HOST:-127.0.0.1}" PORT="${BONSAI_PORT:-8080}" \
       ./scripts/start_llama_server.sh
     ;;

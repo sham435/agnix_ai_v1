@@ -19,10 +19,15 @@ class UsersController < ApplicationController
   private
 
   def set_user
-    @user = User.find(params[:id])
+    # Self-service only: any id that is not the signed-in user must 404
+    # exactly like a nonexistent id, so accounts cannot be enumerated.
+    @user = current_user if params[:id].to_s == current_user.id.to_s
+    raise ActiveRecord::RecordNotFound unless @user
   end
 
   def user_params
-    params.require(:user).permit(:name, :email, settings: {})
+    # Email is the login identity; it is editable only in Settings::Profiles
+    # (current_user-scoped), never through this arbitrary-id surface.
+    params.require(:user).permit(:name, settings: {})
   end
 end

@@ -99,6 +99,68 @@ RSpec.describe ImageGeneration, type: :model do
     end
   end
 
+  describe "gallery stream identity" do
+    it "uses a stable, distinct stream for each owner" do
+      other = create(:user)
+
+      expect(described_class.gallery_stream_name(user)).to eq(described_class.gallery_stream_name(user.reload))
+      expect(described_class.gallery_stream_name(user)).not_to eq(described_class.gallery_stream_name(other))
+    end
+  end
+
+  describe "stale running recovery" do
+    it "leaves a fresh running lease untouched" do
+      generation = create(:image_generation, :running, user: user)
+
+      expect(generation.recover_stale_running!).to be(false)
+      expect(generation.reload).to be_running
+      expect(generation.error).to be_nil
+    end
+
+    it "fails an expired lease with a billing warning and allows deliberate retry" do
+      conversation = create(:conversation, user: user)
+      generation = create(:image_generation, :running, user: user,
+                                                       metadata: { "conversation_id" => conversation.id })
+      generation.update_columns(updated_at: described_class::RUNNING_LEASE.ago - 1.second)
+
+      expect(generation.recover_stale_running!).to be(true)
+      generation.reload
+      expect(generation).to be_failed
+      expect(generation.error).to include("provider may have charged", "retry only deliberately")
+      expect(generation.metadata).to include("conversation_id" => conversation.id, "recovered_stale_at" => anything)
+      expect(generation.retry_available?).to be(true)
+      expect(generation.asset_id).to be_nil
+    end
+
+    it "recovers an expired lease only once under the row lock" do
+      generation = create(:image_generation, :running, user: user)
+      generation.update_columns(updated_at: described_class::RUNNING_LEASE.ago - 1.second)
+      duplicate = described_class.find(generation.id)
+
+      expect(generation.recover_stale_running!).to be(true)
+      expect(duplicate.recover_stale_running!).to be(false)
+      expect(duplicate.reload).to be_failed
+    end
+  end
+
+  describe "queued claim" do
+    it "reloads stale deliveries under lock and claims only once" do
+      generation = create(:image_generation, user: user)
+      stale = described_class.find(generation.id)
+      expect(generation.claim!).to be(true)
+      expect(stale.claim!).to be(false)
+      expect(stale).to be_running
+    end
+
+    it "does not claim running or terminal rows" do
+      %w[running succeeded failed].each do |status|
+        generation = create(:image_generation, user: user, status: status)
+        expect(generation.claim!).to be(false)
+        expect(generation.reload.status).to eq(status)
+      end
+    end
+  end
+
   describe "metadata + failure helpers" do
     it "merges provider detail without clobbering earlier keys and drops nils" do
       generation = create(:image_generation, user: user,
@@ -115,6 +177,46 @@ RSpec.describe ImageGeneration, type: :model do
       generation.reload
       expect(generation.status).to eq("failed")
       expect(generation.error.length).to eq(1000)
+    end
+
+    it "parses raw JSON metadata and treats malformed or non-object JSON as empty" do
+      generation = build(:image_generation, user: user)
+      generation.metadata = { "conversation_id" => "conv-1" }.to_json
+      expect(generation.normalized_metadata).to eq("conversation_id" => "conv-1")
+
+      [ "{malformed", "[]", "null" ].each do |raw|
+        generation.metadata = raw
+        expect(generation.normalized_metadata).to eq({})
+      end
+    end
+
+    it "merges provider detail into raw JSON metadata" do
+      generation = create(:image_generation, user: user, metadata: { "conversation_id" => "conv-1" }.to_json)
+      generation.metadata = { "conversation_id" => "conv-1" }.to_json
+      generation.merge_metadata!("revised_prompt" => "Refined", provider_id: nil)
+
+      expect(generation.reload.metadata).to eq("conversation_id" => "conv-1", "revised_prompt" => "Refined")
+    end
+
+    it "applies the retry cooldown from raw JSON metadata" do
+      generation = create(:image_generation, :failed, user: user)
+      generation.metadata = { "retry_at" => 2.minutes.from_now.iso8601 }.to_json
+      expect(generation.retry_available?).to be(false)
+
+      travel 3.minutes do
+        expect(generation.retry_available?).to be(true)
+      end
+    end
+
+    it "preserves raw JSON conversation linkage when marking failure" do
+      generation = create(:image_generation, user: user)
+      generation.metadata = { "conversation_id" => "conv-1" }.to_json
+      retry_at = 2.minutes.from_now.iso8601
+      generation.mark_failed!("Provider failed", metadata: { "retry_at" => retry_at, "provider_id" => nil })
+
+      generation.reload
+      expect(generation).to be_failed
+      expect(generation.metadata).to eq("conversation_id" => "conv-1", "retry_at" => retry_at)
     end
   end
 

@@ -1,9 +1,4 @@
-# Two-factor enrollment and its neighbours, drawn inside the account panel.
-#
-# The order is the point: a secret exists only in the visitor's session until a
-# code generated from it has been proved, backup codes are minted in the same
-# transaction as activation, and turning the factor off costs a password — so a
-# hijacked session cannot quietly remove the protection it just failed to pass.
+# Two-factor enrollment and fresh-proof security changes inside the account panel.
 class Account::TwoFactorsController < ApplicationController
   include AccountPanelResponses
 
@@ -17,50 +12,40 @@ class Account::TwoFactorsController < ApplicationController
     end
 
     session[:otp_enrollment] = TwoFactor.new_enrollment
-    render_panel(section: "two_factor", enrolling: true)
+    render_sensitive_panel(section: "two_factor", enrolling: true)
   end
 
   def confirm
-    enrollment = session[:otp_enrollment]
-    return restart("That setup request expired. Start again.") if enrollment.blank?
-    return restart("That setup request expired. Start again.") if TwoFactor.enrollment_expired?(enrollment)
-
-    unless pending_two_factor.valid?(params[:code])
-      return render_panel(section: "two_factor", enrolling: true, status: :unprocessable_entity,
-        alert: "That code didn't work. Check your app and try again.")
+    result = TwoFactor.confirm_enrollment(user: current_user, enrollment: session[:otp_enrollment],
+      code: security_params[:code])
+    case result.status
+    when :expired, :already_enabled
+      restart(result.error)
+    when :invalid, :locked
+      render_sensitive_panel(section: "two_factor", enrolling: true, status: failure_status(result),
+        alert: result.error)
+    when :verified
+      session.delete(:otp_enrollment)
+      @recovery_codes = result.recovery_codes
+      render_sensitive_panel(section: "recovery",
+        notice: "Two-factor is on. These backup codes are shown once — save them now.")
     end
-
-    codes = TwoFactor.activate!(current_user, enrollment.fetch("secret"))
-    session.delete(:otp_enrollment)
-    @recovery_codes = codes
-
-    render_panel(section: "recovery",
-      notice: "Two-factor is on. These backup codes are shown once — save them now.")
   end
 
-  # Turning it off drops the secret and every backup code with it: without the
-  # factor, those strings would be a second way in rather than a way back.
   def disable
-    return wrong_password("two_factor") unless current_user.authenticate(params[:password])
+    result = TwoFactor.disable(user: current_user, password: security_params[:password], code: security_params[:code])
+    return render_failure(result) unless result.status == :verified
 
-    TwoFactor.disable!(current_user)
     session.delete(:otp_enrollment)
-
     render_panel(section: "two_factor", notice: "Two-factor authentication is off.")
   end
 
-  # New codes, old ones gone. Proof of the password first, because this is the
-  # screen that hands out sign-in shortcuts.
   def regenerate
-    unless current_user.second_factor_enabled?
-      return render_panel(section: "two_factor",
-        alert: "Set up two-factor first — backup codes only exist to replace an authenticator.")
-    end
-    return wrong_password("two_factor") unless current_user.authenticate(params[:password])
+    result = TwoFactor.regenerate_recovery_codes(user: current_user, password: security_params[:password], code: security_params[:code])
+    return render_failure(result) unless result.status == :verified
 
-    @recovery_codes = RecoveryCode.generate!(current_user)
-
-    render_panel(section: "recovery",
+    @recovery_codes = result.recovery_codes
+    render_sensitive_panel(section: "recovery",
       notice: "Here are your new backup codes. The old ones no longer work.")
   end
 
@@ -71,8 +56,25 @@ class Account::TwoFactorsController < ApplicationController
     render_panel(section: "two_factor", alert: message)
   end
 
-  def wrong_password(section)
-    render_panel(section: section, status: :unprocessable_entity,
-      alert: "Wrong password. Nothing was changed.")
+  def security_params
+    params.permit(:password, :code)
+  end
+
+  def failure_status(result)
+    result.status == :locked ? :too_many_requests : :unprocessable_entity
+  end
+
+  def render_failure(result)
+    render_panel(section: "two_factor", status: failure_status(result), alert: result.error)
+  end
+
+  def render_sensitive_panel(section:, status: :ok, **options)
+    response.headers["Cache-Control"] = "no-store"
+    prepare_panel(section: section, **options)
+    if turbo_frame_request?
+      render "account/panels/show", layout: false, status: status
+    else
+      render "account/panels/page", status: status
+    end
   end
 end

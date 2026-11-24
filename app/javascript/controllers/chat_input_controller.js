@@ -10,23 +10,26 @@ import { Controller } from "@hotwired/stimulus"
 // land in Active Storage behind an Asset row; "Add from Library" references an
 // existing asset id directly — selecting a Library file never re-uploads it.
 export default class extends Controller {
-  static targets = ["input", "hint", "fileInput", "chips", "libraryPanel", "libraryItems", "libraryEmpty", "librarySearch", "libraryPreview", "libraryPreviewTitle", "libraryPreviewBody", "send"]
+  static targets = ["input", "hint", "fileInput", "chips", "libraryPanel", "libraryItems", "libraryEmpty", "librarySearch", "libraryPreview", "libraryPreviewTitle", "libraryPreviewBody", "send", "taskStatus", "taskPanel", "taskCount", "taskList"]
 
   // In-flight submission guard. Distinct from the short HTTP round trip:
   //   submitting  — the POST is in flight
   //   running     — the message saved + job enqueued; the assistant response
   //                 (possibly a long agent run) is being generated
-  // The guard frees the Send control only on a matching terminal event
-  // (completed/failed) or a watchdog timeout, never leaving the composer
-  // permanently locked after a navigation, provider failure, or lost job.
+  // A silent generation is reconciled with the server, never declared idle
+  // from a client-side timeout while the persisted run is still active.
   static SUBMIT_TIMEOUT_MS = 15000
-  static GENERATION_TIMEOUT_MS = 130000
+  static STATUS_RECHECK_MS = 130000
+  static STATUS_RETRY_MS = 30000
 
   connect() {
     this._submitState = "idle"
     this._activeRunId = null
     this._submitTimer = null
     this._genTimer = null
+    this._statusRequest = null
+    this._lastSubmittedContent = null
+    this._pendingAttachmentKeys = []
     this._lastLineCount = 1
     this._lastHintAt = 0
     this._uploadSeq = 0
@@ -41,6 +44,7 @@ export default class extends Controller {
     if (this.hintSeen) this.hideHint(false)
 
     if (this.hasInputTarget) {
+      window.ShamsNavigationState?.restoreDraft(this.inputTarget)
       this._onKeydown = this.keydown.bind(this)
       this._onInput = this.autosize.bind(this)
       this._onPaste = this.paste.bind(this)
@@ -83,7 +87,15 @@ export default class extends Controller {
     // Action Cable frame (completed/failed) — the only legitimate signal to
     // release the generation guard.
     this._onAssistantTerminal = (e) => this.handleAssistantTerminal(e.detail)
+    this._onAssistantStarted = (e) => this.handleAssistantStarted(e.detail)
+    this._onBackgroundTasks = (e) => this.handleBackgroundTasks(e.detail)
+    this._onMessageRejected = (e) => this.handleMessageRejected(e.detail)
+    this._onMessageAdmitted = (e) => this.handleMessageAdmitted(e.detail)
     document.addEventListener("assistant:terminal", this._onAssistantTerminal)
+    document.addEventListener("assistant:started", this._onAssistantStarted)
+    document.addEventListener("background:tasks", this._onBackgroundTasks)
+    document.addEventListener("message:rejected", this._onMessageRejected)
+    document.addEventListener("message:admitted", this._onMessageAdmitted)
     // Refresh-safe composer: layers the server-side draft rows back onto the
     // chips panel after a Turbo reload — no re-upload, no lost selections.
     this.restoreDrafts()
@@ -92,6 +104,11 @@ export default class extends Controller {
     // host, not on `this` — re-adopt it so a still-running send keeps Send
     // disabled across that re-render.
     this.syncGuardFromHost()
+    this.handleBackgroundTasks({
+      active: Number(this.composerHost()?.dataset.backgroundActive || 0),
+      queued: Number(this.composerHost()?.dataset.backgroundQueued || 0),
+      activeRequestId: this.composerHost()?.dataset.backgroundRequestId || null
+    })
   }
 
   // The stable host element that outlives composer re-renders.
@@ -127,14 +144,41 @@ export default class extends Controller {
     }
   }
 
-  armGenerationWatchdog() {
+  armGenerationWatchdog(delay = this.constructor.STATUS_RECHECK_MS) {
     clearTimeout(this._genTimer)
-    this._genTimer = setTimeout(() => {
-      // The run never produced a terminal frame (lost job / hung provider).
-      // Fail open: free the guard. The stale-run timeout on the server keeps
-      // the persisted placeholder honest on the next refresh.
-      if (this.hostBusyRun()) this.releaseGuard("generation_timeout", this._activeRunId)
-    }, this.constructor.GENERATION_TIMEOUT_MS)
+    this._genTimer = setTimeout(() => this.reconcileTaskStatus(), delay)
+  }
+
+  async reconcileTaskStatus() {
+    const conversationId = this.composerHost()?.dataset.conversationId
+    const requestId = this.hostBusyRun()
+    if (!conversationId || !requestId) return
+
+    this._statusRequest?.abort()
+    const controller = new AbortController()
+    this._statusRequest = controller
+    try {
+      const response = await fetch(`/conversations/${encodeURIComponent(conversationId)}/tasks`, {
+        headers: { Accept: "application/json" }, signal: controller.signal
+      })
+      if (!response.ok) throw new Error("Task status unavailable")
+      const detail = await response.json()
+      if (!this.element.isConnected || this.hostBusyRun() !== requestId) return
+      this.handleBackgroundTasks({
+        active: detail.active, queued: detail.queued,
+        activeRequestId: detail.active_request_id, tasks: detail.tasks
+      })
+      if (Number(detail.active || 0) > 0) {
+        this.armGenerationWatchdog(this.constructor.STATUS_RETRY_MS)
+      }
+    } catch (error) {
+      if (error.name === "AbortError" || !this.element.isConnected) return
+      if (this.hostBusyRun() === requestId) {
+        this.armGenerationWatchdog(this.constructor.STATUS_RETRY_MS)
+      }
+    } finally {
+      if (this._statusRequest === controller) this._statusRequest = null
+    }
   }
 
   disconnect() {
@@ -157,11 +201,17 @@ export default class extends Controller {
     if (this._onDocClick) document.removeEventListener("click", this._onDocClick)
     if (this._onFormSubmit) this.element.removeEventListener("submit", this._onFormSubmit)
     if (this._onAssistantTerminal) document.removeEventListener("assistant:terminal", this._onAssistantTerminal)
+    if (this._onAssistantStarted) document.removeEventListener("assistant:started", this._onAssistantStarted)
+    if (this._onBackgroundTasks) document.removeEventListener("background:tasks", this._onBackgroundTasks)
+    if (this._onMessageRejected) document.removeEventListener("message:rejected", this._onMessageRejected)
+    if (this._onMessageAdmitted) document.removeEventListener("message:admitted", this._onMessageAdmitted)
     if (this._submitTimer) { clearTimeout(this._submitTimer); this._submitTimer = null }
     if (this._genTimer) { clearTimeout(this._genTimer); this._genTimer = null }
+    this._statusRequest?.abort()
     Object.values(this._pollTimers).forEach((t) => clearInterval(t))
     Object.values(this._libraryPollTimers || {}).forEach((t) => clearInterval(t))
     if (this._librarySearchTimer) clearTimeout(this._librarySearchTimer)
+    if (this._errorTimer) clearTimeout(this._errorTimer)
   }
 
   keydown(e) {
@@ -172,40 +222,20 @@ export default class extends Controller {
     const isEnter = e.key === "Enter"
     if (!isEnter) return
 
-    const platform = this.constructor.platformOf()
     const hasModifier = e.metaKey || e.ctrlKey
-    const shouldSubmit = (() => {
-      // §6 policy:
-      //   macOS  — Cmd+Enter submits; bare Enter + Shift+Enter insert newlines
-      //            so multi-line prompts stay editable.
-      //   mobile — bare Enter (keyboard Send) submits; Shift+Enter newline.
-      //            Cmd/Ctrl+Enter also submits as a desktop-parity fallback.
-      //   other  — bare Enter submits; Shift+Enter newline;
-      //            Cmd/Ctrl+Enter also submits (matches the visible ⌘↵/Ctrl↵
-      //            hint on the composer).
-      if (platform === "mac") return e.metaKey && !e.shiftKey
-      if (platform === "mobile") return !e.shiftKey
-      // Desktop Windows/Linux: bare Enter or Cmd/Ctrl+Enter both send;
-      // Shift+Enter always inserts a newline.
-      return !e.shiftKey
-    })()
-
-    if (!shouldSubmit) return
+    if (e.shiftKey || e.altKey || (!hasModifier && e.key !== "Enter")) return
 
     e.preventDefault()
     if (!this.hasInputTarget || this.inputTarget.value.trim() === "") return
-    // Ignore duplicate submissions while the same run is in flight.
-    if (this.isBusy()) return
-    // Never submit while an upload is still in flight: the message would
-    // go out without the attachment. The hint explains why nothing sent.
+    if (this._submitState === "submitting") return
     if (this.uploadInProgress()) { this.showTempHint(); return }
+
+    this.ensureAdmissionField().value = this.isBusy() ? (hasModifier ? "steer" : "queue") : "start"
     if (typeof this.element.requestSubmit === "function") {
       this.element.requestSubmit()
     } else {
       this.element.submit()
     }
-    // Suppress the unused-var lint hint while making the modifier logic readable.
-    void hasModifier
   }
 
   // §6: platform classification used by both keydown() and the visible hint.
@@ -279,10 +309,7 @@ export default class extends Controller {
   //      On failure we also drop the optimistic bubble so the composer and
   //      the thread visually agree.
   handleSubmit(e) {
-    // Duplicate-protection: a second click / Enter while submitting or running
-    // is ignored at the controller level (the backend also dedupes by
-    // client_request_id, so retries never create a second message or job).
-    if (this.isBusy()) {
+    if (this._submitState === "submitting") {
       e.preventDefault()
       return
     }
@@ -291,36 +318,205 @@ export default class extends Controller {
       this.showTempHint()
       return
     }
-    // Empty composer is a no-op — mirrors keydown guard for button clicks.
     if (!this.hasInputTarget || this.inputTarget.value.trim() === "") {
       e.preventDefault()
       return
     }
 
+    const busy = this.isBusy()
+    const requested = this.ensureAdmissionField().value
+    const admission = busy ? (requested === "steer" ? "steer" : "queue") : "start"
     const cid = this.ensureClientRequestId()
-    // Carry the per-conversation draft token so the server can consume the
-    // exact attachment-draft rows this send delivers. Without it the drafts
-    // linger for 24h and restoreDrafts() resurrects chips for files that were
-    // already sent. Injected into the form synchronously (this is the submit
-    // listener) so Turbo serializes it with the rest of the fields.
     this.ensureDraftTokenField()
     this._pendingRequestId = cid
-    this._activeRunId = cid
-    this.markHostBusy(cid)
+    this._pendingAdmission = admission
+    this._pendingContent = this.inputTarget.value
+    this._lastSubmittedContent = this._pendingContent
+    this._pendingAttachmentKeys = Array.from(this.attachments.entries())
+      .filter(([_key, attachment]) => attachment.status === "ready" && attachment.assetId)
+      .map(([key, _attachment]) => key)
+    if (!busy) {
+      this._activeRunId = cid
+      this.markHostBusy(cid)
+    }
     this.setSubmitState("submitting")
-    this.renderOptimisticBubble(cid)
-    // Own the assistant "thinking" container client-side the instant we
-    // submit, so the live page never waits on the (racy) server append or a
-    // page refresh to show that the assistant is working. Keyed by the same
-    // request_id the server echoes back, so it merges with the real bubble.
-    this.renderOptimisticAssistant(cid)
+    if (admission !== "steer") this.renderOptimisticBubble(cid)
+    if (!busy) this.renderOptimisticAssistant(cid)
 
-    // Safety net: if the HTTP round trip never resolves cleanly, release the
-    // submitting guard (fail-open) so the composer is never permanently locked.
     clearTimeout(this._submitTimer)
     this._submitTimer = setTimeout(() => {
-      if (this._submitState === "submitting") this.releaseGuard("timeout")
+      if (this._submitState !== "submitting") return
+      if (admission === "start") this.releaseGuard("timeout")
+      else this.setSubmitState("running")
     }, this.constructor.SUBMIT_TIMEOUT_MS)
+  }
+
+  ensureAdmissionField() {
+    let hidden = this.element.querySelector('input[type="hidden"][name="message[admission]"]')
+    if (!hidden) {
+      hidden = document.createElement("input")
+      hidden.type = "hidden"
+      hidden.name = "message[admission]"
+      this.element.appendChild(hidden)
+    }
+    if (!hidden.value) hidden.value = "start"
+    return hidden
+  }
+
+  handleAssistantStarted(detail) {
+    const rid = detail?.request_id
+    if (!rid) return
+    this._activeRunId = rid
+    this.markHostBusy(rid)
+    this.setSubmitState("running")
+    this.armGenerationWatchdog()
+    this.updateTaskStatus(1, Number(this.composerHost()?.dataset.backgroundQueued || 0))
+  }
+
+  handleBackgroundTasks(detail) {
+    const active = Number(detail?.active || 0)
+    const queued = Number(detail?.queued || 0)
+    const requestId = detail?.activeRequestId || null
+
+    if (active > 0) {
+      const adopted = requestId || `conversation:${this.composerHost()?.dataset.conversationId}`
+      if (this.hostBusyRun() !== adopted) {
+        this._activeRunId = adopted
+        this.markHostBusy(adopted)
+        this.setSubmitState("running")
+        this.armGenerationWatchdog()
+      }
+    } else if (this._submitState !== "submitting") {
+      this.releaseGuard("tasks_inactive", this.hostBusyRun() || this._activeRunId)
+    }
+
+    this.updateTaskStatus(active, queued, requestId, detail?.tasks)
+  }
+
+  updateTaskStatus(active, queued, activeRequestId = null, tasks = null) {
+    const host = this.composerHost()
+    if (host) {
+      host.dataset.backgroundActive = String(active)
+      host.dataset.backgroundQueued = String(queued)
+      if (activeRequestId) host.dataset.backgroundRequestId = activeRequestId
+      else delete host.dataset.backgroundRequestId
+    }
+    if (this.hasTaskCountTarget) this.taskCountTarget.textContent = String(active + queued)
+    if (this.hasTaskStatusTarget) {
+      this.taskStatusTarget.textContent = active > 0
+        ? `Background tasks running: ${active} · You can keep messaging.${queued > 0 ? ` · ${queued} queued` : ""}`
+        : (queued > 0 ? `Background tasks queued: ${queued}` : "")
+    }
+    this.renderTaskList(tasks)
+  }
+
+  renderTaskList(tasks) {
+    if (!this.hasTaskListTarget || !Array.isArray(tasks)) return
+    this.taskListTarget.replaceChildren()
+    if (this.hasTaskPanelTarget) this.taskPanelTarget.hidden = tasks.length === 0
+    if (tasks.length === 0) return
+    const labels = {
+      queued: "Queued", running: "Running", waiting_for_tool: "Waiting for tool",
+      waiting_for_user: "Waiting for user input", completed: "Completed",
+      failed: "Failed", cancelled: "Cancelled"
+    }
+    tasks.forEach((task) => {
+      const item = document.createElement("li")
+      item.className = "rounded-lg border border-border bg-panel/60 px-2.5 py-2"
+      item.dataset.taskState = task.state || ""
+
+      const heading = document.createElement("div")
+      heading.className = "flex items-start justify-between gap-2"
+      const name = document.createElement("span")
+      name.className = "text-[12.5px] font-medium text-fg"
+      name.textContent = task.name || "Background task"
+      const state = document.createElement("span")
+      state.className = "shrink-0 text-[11px] text-accent-text"
+      state.textContent = labels[task.state] || task.state || "Unknown"
+      heading.append(name, state)
+
+      const context = document.createElement("p")
+      context.className = "mt-0.5 text-[11px] text-fg-muted"
+      context.textContent = [ task.conversation_title || "Untitled conversation", task.agent_name ].filter(Boolean).join(" · ")
+      const time = document.createElement("p")
+      time.className = "text-[11px] text-fg-subtle"
+      const started = task.started_at ? new Date(task.started_at) : null
+      time.textContent = `${task.state === "queued" ? "Queued" : "Started"} ${started && !Number.isNaN(started.getTime()) ? started.toLocaleString() : "time unavailable"}`
+      if (task.terminal_status) time.textContent += ` · Terminal: ${labels[task.terminal_status] || task.terminal_status}`
+      item.append(heading, context, time)
+
+      if (task.progress) {
+        const progress = document.createElement("p")
+        progress.className = "text-[11px] text-fg-muted"
+        progress.textContent = `Progress: ${task.progress}`
+        item.appendChild(progress)
+      }
+      if (task.preview) {
+        const preview = document.createElement("p")
+        preview.className = "mt-1 text-[11.5px] text-fg-muted truncate"
+        preview.textContent = task.preview
+        item.appendChild(preview)
+      }
+      if (Array.isArray(task.actions) && task.actions.length > 0) {
+        const actions = document.createElement("p")
+        actions.className = "mt-1 text-[11px] text-fg-subtle"
+        actions.textContent = `Actions: ${task.actions.map((action) => action.replaceAll("_", " ")).join(", ")}`
+        item.appendChild(actions)
+      }
+      if (task.path && Array.isArray(task.actions) && task.actions.includes("view")) {
+        const url = new URL(task.path, window.location.origin)
+        if (url.origin === window.location.origin) {
+          const link = document.createElement("a")
+          link.href = url.pathname + url.search
+          link.className = "mt-1 inline-block text-[11.5px] text-accent-text hover:underline"
+          link.textContent = "View task"
+          item.appendChild(link)
+        }
+      }
+      this.taskListTarget.appendChild(item)
+    })
+  }
+
+  handleMessageAdmitted(detail) {
+    if (!detail?.request_id || detail.request_id !== this._pendingRequestId) return
+    if (this.hasInputTarget && this.inputTarget.value === this._pendingContent) {
+      this.clear({ detail: { formSubmission: { succeeded: true } } })
+    }
+  }
+
+  handleMessageRejected(detail) {
+    if (this._pendingRequestId && detail?.request_id && detail.request_id !== this._pendingRequestId) return
+    this.removeOptimisticBubble(this._pendingRequestId)
+    if (this._pendingAdmission === "start") {
+      this.removeOptimisticAssistant(this._pendingRequestId)
+      this.releaseGuard("submit_rejected", this._pendingRequestId)
+    } else {
+      clearTimeout(this._submitTimer); this._submitTimer = null
+      this.setSubmitState("running")
+    }
+    this._pendingRequestId = null
+    this._pendingAdmission = null
+    this._pendingContent = null
+    this._pendingAttachmentKeys = []
+    const hidden = this.element.querySelector('input[type="hidden"][name="message[client_request_id]"]')
+    if (hidden) hidden.value = ""
+    this.showSubmissionError(Array.isArray(detail?.errors) ? detail.errors : [])
+    this.inputTarget?.focus()
+  }
+
+  showSubmissionError(errors) {
+    const list = document.getElementById("messages-list")
+    if (!list) return
+    list.querySelectorAll("[data-submission-error]").forEach((node) => node.remove())
+    const note = document.createElement("div")
+    note.dataset.submissionError = "true"
+    note.setAttribute("role", "alert")
+    note.className = "rounded-lg border border-red-500/20 bg-red-500/5 px-3.5 py-2 text-[13px] text-red-600 dark:text-red-400"
+    const reason = errors.filter(Boolean).join(" ")
+    note.textContent = `${reason || "Message not accepted."} Your draft is preserved.`
+    list.appendChild(note)
+    clearTimeout(this._errorTimer)
+    this._errorTimer = setTimeout(() => note.remove(), 8000)
   }
 
   // ── In-flight guard state machine ──────────────────────────────────────
@@ -330,10 +526,16 @@ export default class extends Controller {
     if (btn) {
       // Disable Send only while a submission/generation is in flight. The
       // textarea is left fully editable so the draft can still be modified.
-      if (next === "submitting" || next === "running") {
+      if (next === "submitting") {
         btn.disabled = true
         btn.setAttribute("aria-disabled", "true")
         btn.dataset.submitState = next
+      } else if (next === "running") {
+        btn.disabled = this.inputIsEmpty()
+        if (this.inputIsEmpty()) btn.setAttribute("aria-disabled", "true")
+        else btn.removeAttribute("aria-disabled")
+        btn.dataset.submitState = next
+        btn.title = "Enter to queue · Cmd/Ctrl+Enter to steer"
       } else {
         // Idle: disabled only while the composer is empty. The send-target /
         // submit button lights up the moment there is real text.
@@ -350,7 +552,7 @@ export default class extends Controller {
   // `reason` is informational; the generation watchdog and terminal frames
   // both route through here so the state can never desync.
   releaseGuard(reason, rid) {
-    if (rid && this._activeRunId && rid !== this._activeRunId && reason !== "generation_timeout") return
+    if (rid && this._activeRunId && rid !== this._activeRunId) return
     clearTimeout(this._submitTimer); this._submitTimer = null
     clearTimeout(this._genTimer); this._genTimer = null
     this.clearHostBusy(rid || this._activeRunId)
@@ -1000,8 +1202,10 @@ export default class extends Controller {
     el.style.height = "auto"
     el.style.height = `${el.scrollHeight}px`
     this.checkMultiline()
-    // Keep the Send control in sync with the draft while idle (empty -> off).
-    if (this._submitState === "idle") this.setSubmitState("idle")
+    // Keep Send available for follow-ups and steering while a run is active.
+    if (this._submitState === "idle" || this._submitState === "running") {
+      this.setSubmitState(this._submitState)
+    }
   }
 
   checkMultiline() {
@@ -1024,6 +1228,9 @@ export default class extends Controller {
     // Untargeted events (e.g. agent:generated) carry no submission and clear.
     const submission = event?.detail?.formSubmission
     const failed = submission && (submission.succeeded === false || submission.result?.success === false)
+    const submittedContent = this._pendingContent ?? this._lastSubmittedContent
+    const preserveNewerDraft = (submission || this._pendingRequestId) && submittedContent != null &&
+      this.inputTarget.value !== submittedContent
     if (failed) {
       // Optimistic bubble no longer reflects reality — drop it so the
       // composer and the thread visually agree, and free the correlation
@@ -1033,10 +1240,18 @@ export default class extends Controller {
       // release the submitting guard so the user can immediately retry. The
       // typed draft + chips are preserved (we never clear them on failure).
       this.removeOptimisticAssistant(this._pendingRequestId)
-      this.releaseGuard("submit_failed", this._pendingRequestId)
+      if (this._pendingAdmission === "start") {
+        this.releaseGuard("submit_failed", this._pendingRequestId)
+      } else {
+        clearTimeout(this._submitTimer); this._submitTimer = null
+        this.setSubmitState("running")
+      }
       const hidden = this.element.querySelector('input[type="hidden"][name="message[client_request_id]"]')
       if (hidden) hidden.value = ""
       this._pendingRequestId = null
+      this._pendingAdmission = null
+      this._pendingContent = null
+      this._pendingAttachmentKeys = []
       return
     }
 
@@ -1061,18 +1276,24 @@ export default class extends Controller {
     // no gap. We only drop our local correlation so the NEXT send gets a
     // fresh id; we never touch the DOM bubble.
     this._pendingRequestId = null
+    this._pendingAdmission = null
+    this._pendingContent = null
     const hidden = this.element.querySelector('input[type="hidden"][name="message[client_request_id]"]')
     if (hidden) hidden.value = ""
+    const admission = this.element.querySelector('input[type="hidden"][name="message[admission]"]')
+    if (admission) admission.value = "start"
 
     // Turbo fires this after the submit response: detach chips that have been
     // delivered to the message (completed uploads with an asset id).
     Array.from(this.attachments.entries())
-      .filter(([, a]) => a.status === "ready" && a.assetId)
+      .filter(([key, a]) => this._pendingAttachmentKeys.includes(key) && a.status === "ready" && a.assetId)
       .forEach(([key]) => this.attachments.delete(key))
+    this._pendingAttachmentKeys = []
     if (this.hasChipsTarget) this.renderChips()
 
     if (this.hasInputTarget) {
-      this.inputTarget.value = ""
+      if (!preserveNewerDraft) this.inputTarget.value = ""
+      window.ShamsNavigationState?.save()
       this.autosize()
       this.inputTarget.focus()
     }

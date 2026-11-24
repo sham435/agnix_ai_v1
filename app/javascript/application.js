@@ -35,8 +35,65 @@ import ProviderModelsController from "controllers/provider_models_controller"
 import AutoSubmitController from "controllers/auto_submit_controller"
 import RefreshIntervalController from "controllers/refresh_interval_controller"
 import AccountPanelController from "controllers/account_panel_controller"
+import WorkspacePanelController from "controllers/workspace_panel_controller"
+import ModelSelectorController from "controllers/model_selector_controller"
+
+window.ShamsNavigationState = {
+  key() {
+    const user = document.querySelector('[data-navigation-user-id]')?.dataset.navigationUserId
+    const path = location.pathname === '/images' ? `/images:${new URLSearchParams(location.search).get('conversation_id') || 'direct'}` : location.pathname
+    return user ? `shams-navigation:${user}:${path}` : null
+  },
+  read() {
+    try { return JSON.parse(sessionStorage.getItem(this.key()) || '{}') } catch { return {} }
+  },
+  save() {
+    const key = this.key()
+    if (!key) return
+    const input = document.querySelector('#message-input, #composer-input, #image_generation_prompt')
+    if (!input) return
+    const state = { draft: input.value, scroll: document.querySelector('#messages-container')?.scrollTop }
+    if (location.pathname === '/images') {
+      state.configuration = Object.fromEntries(Array.from(document.querySelectorAll('select[name^="image_generation["]')).map(field => [field.name, field.value]))
+    }
+    try { sessionStorage.setItem(key, JSON.stringify(state)) } catch {}
+  },
+  restoreDraft(input) {
+    const state = this.read()
+    if (typeof state.draft === 'string') input.value = state.draft
+  },
+  restoreScroll(container) {
+    const state = this.read()
+    if (typeof state.scroll !== 'number') return false
+    container.scrollTop = state.scroll
+    return true
+  }
+}
+
+document.addEventListener('input', () => window.ShamsNavigationState.save())
+document.addEventListener('change', () => window.ShamsNavigationState.save())
+document.addEventListener('scroll', event => {
+  if (event.target.id === 'messages-container') window.ShamsNavigationState.save()
+}, true)
+document.addEventListener('turbo:before-visit', () => window.ShamsNavigationState.save())
+window.addEventListener('pagehide', () => window.ShamsNavigationState.save())
+document.addEventListener('turbo:load', () => {
+  if (location.pathname !== '/images') return
+  const input = document.querySelector('#image_generation_prompt')
+  if (input) window.ShamsNavigationState.restoreDraft(input)
+  const state = window.ShamsNavigationState.read()
+  for (const field of document.querySelectorAll('select[name^="image_generation["]')) {
+    if (state.configuration?.[field.name]) field.value = state.configuration[field.name]
+  }
+})
+document.addEventListener('turbo:submit-end', event => {
+  if (!event.detail.success || !event.target.querySelector('#image_generation_prompt')) return
+  document.querySelector('#image_generation_prompt').value = ''
+  window.ShamsNavigationState.save()
+})
 
 window.Stimulus = Application.start()
+window.Stimulus.register("model-selector", ModelSelectorController)
 window.Stimulus.register("chat", ChatController)
 window.Stimulus.register("chat-input", ChatInputController)
 window.Stimulus.register("flash", FlashController)
@@ -60,3 +117,4 @@ window.Stimulus.register("provider-models", ProviderModelsController)
 window.Stimulus.register("auto-submit", AutoSubmitController)
 window.Stimulus.register("refresh-interval", RefreshIntervalController)
 window.Stimulus.register("account-panel", AccountPanelController)
+window.Stimulus.register("workspace-panel", WorkspacePanelController)

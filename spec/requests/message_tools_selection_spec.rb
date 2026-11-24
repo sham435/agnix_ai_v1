@@ -32,7 +32,7 @@ RSpec.describe "Per-message tool selection", type: :request do
   end
 
   def last_message
-    conversation.messages.order(:created_at).last
+    conversation.messages.where(role: "user").order(:created_at).last
   end
 
   describe "POST /conversations/:id/messages" do

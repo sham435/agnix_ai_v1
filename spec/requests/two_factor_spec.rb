@@ -127,21 +127,91 @@ RSpec.describe "Two-factor authentication", type: :request do
       post "/api/v1/sessions", params: { email: user.email, password: "password123", code: code_for }
       expect(response).to have_http_status(:ok)
       expect(JSON.parse(response.body).dig("user", "email")).to eq(user.email)
+      expect(JSON.parse(response.body).dig("two_factor", "enabled")).to be(true)
+      expect(signed_in?).to be(true)
+    end
+
+    it "does not count the initial challenge as a failed code" do
+      enable_two_factor
+
+      post "/api/v1/sessions", params: { email: user.email, password: "password123" }
+
+      expect(response).to have_http_status(:unauthorized)
+      expect(user.reload.otp_failed_attempts).to eq(0)
+    end
+
+    it "rejects a code without a browser-bound challenge" do
+      enable_two_factor
+
+      post "/api/v1/sessions", params: { email: user.email, password: "password123", code: code_for }
+
+      expect(response).to have_http_status(:unauthorized)
+      expect(signed_in?).to be(false)
+    end
+
+    it "rejects a challenge after five minutes" do
+      enable_two_factor
+      post "/api/v1/sessions", params: { email: user.email, password: "password123" }
+
+      travel 6.minutes do
+        post "/api/v1/sessions", params: { email: user.email, password: "password123", code: code_for }
+        expect(response).to have_http_status(:unauthorized)
+        expect(signed_in?).to be(false)
+      end
+    end
+
+    it "does not transfer a challenge to another browser" do
+      enable_two_factor
+      post "/api/v1/sessions", params: { email: user.email, password: "password123" }
+      other_browser = open_session
+
+      other_browser.post "/api/v1/sessions",
+        params: { email: user.email, password: "password123", code: code_for }
+
+      expect(other_browser.response).to have_http_status(:unauthorized)
+      expect(user.reload.otp_last_step).to be_nil
+    end
+
+    it "does not apply one account's challenge to another account" do
+      enable_two_factor
+      other_user = create(:user, otp_enabled: true, otp_secret: secret)
+      post "/api/v1/sessions", params: { email: user.email, password: "password123" }
+
+      post "/api/v1/sessions", params: { email: other_user.email, password: "password123", code: code_for }
+
+      expect(response).to have_http_status(:unauthorized)
+      expect(signed_in?).to be(false)
+    end
+
+    it "clears the previous browser identity while a challenge is pending" do
+      previous_user = create(:user)
+      api_login(previous_user)
+      enable_two_factor
+
+      post "/api/v1/sessions", params: { email: user.email, password: "password123" }
+
+      expect(response).to have_http_status(:unauthorized)
+      expect(signed_in?).to be(false)
+      expect(previous_user.auth_sessions.active.count).to eq(1)
     end
 
     it "calls a wrong code out as wrong, not as missing" do
       enable_two_factor
+      post "/api/v1/sessions", params: { email: user.email, password: "password123" }
 
       post "/api/v1/sessions", params: { email: user.email, password: "password123", code: "000000" }
 
       expect(response).to have_http_status(:forbidden)
       expect(JSON.parse(response.body)["error"]).to eq("Invalid two-factor code.")
+      expect(signed_in?).to be(false)
     end
 
-    it "is unchanged for users without two-factor" do
+    it "reports two-factor as disabled for password-only accounts" do
       post "/api/v1/sessions", params: { email: user.email, password: "password123" }
 
       expect(response).to have_http_status(:ok)
+      expect(JSON.parse(response.body).dig("two_factor", "enabled")).to be(false)
+      expect(signed_in?).to be(true)
     end
   end
 
@@ -166,7 +236,8 @@ RSpec.describe "Two-factor authentication", type: :request do
       expect(user.reload.otp_enabled?).to be(false)
 
       post confirm_settings_two_factor_path, params: { code: code_for }, headers: form_headers
-      expect(response).to redirect_to(settings_two_factor_path)
+      expect(response).to have_http_status(:ok)
+      expect(response.body).to include("backup codes")
       expect(user.reload.otp_secret).to eq(secret)
     end
 
@@ -178,6 +249,9 @@ RSpec.describe "Two-factor authentication", type: :request do
       expect(user.reload.otp_enabled?).to be(true)
 
       delete settings_two_factor_path, params: { password: "password123" }, headers: form_headers
+      expect(user.reload.otp_enabled?).to be(true)
+
+      delete settings_two_factor_path, params: { password: "password123", code: code_for }, headers: form_headers
       expect(response).to redirect_to(settings_two_factor_path)
       expect(user.reload).not_to be_otp_enabled
       expect(user.otp_secret).to be_nil

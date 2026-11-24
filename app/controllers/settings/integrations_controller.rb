@@ -1,52 +1,92 @@
 class Settings::IntegrationsController < ApplicationController
   before_action :authenticate_user!
   before_action :require_organization!
-
-  # Model providers an agent can actually run on. Derived from Agent::MODELS
-  # (not the enum) so this page never offers a key slot for a provider that has
-  # no models to select - an enum value with no models would be dead config.
-  MODEL_PROVIDERS = Agent::MODELS.keys.map(&:to_s).freeze
+  before_action :require_provider_owner!, except: :index
+  rescue_from Llm::ProviderSettings::Error, with: :render_provider_error
 
   def index
     @integrations = current_organization.tool_integrations
     @available_providers = ToolIntegration::PROVIDERS
-    # Plugin marketplace cards are shared with /integrations so the enable/
-    # disable Turbo Stream target ids (plugin-card-<key>) exist on both pages.
     @plugins = Tools::Catalog.all
     @integration_by_provider = @integrations.index_by(&:provider)
-    @model_integrations = @integrations.where(provider: MODEL_PROVIDERS).index_by(&:provider)
-    # View-facing shape: ERB cannot resolve this controller's constants, so the
-    # provider list (with the models each one unlocks) is handed over as ivars.
-    @model_providers = MODEL_PROVIDERS.map { |provider| { key: provider, models: Agent::MODELS[provider.to_sym] } }
+    @provider_inventory = provider_settings.call if current_organization.owner_id == current_user.id
     @uncataloged_providers = @available_providers - @plugins.map { |plugin| plugin[:key] }
   end
 
-  # Store (or replace) this organization's API key for a model provider.
-  # `Agent#api_key` prefers an active org ToolIntegration credential over
-  # Rails credentials and ENV, so this is the in-app way to swap a dead or
-  # out-of-credit server key without redeploying.
   def save_key
-    provider = params[:provider].to_s
-    unless MODEL_PROVIDERS.include?(provider)
-      return redirect_to(settings_integrations_path, alert: "Unknown provider.")
+    permitted = provider_params
+    result = provider_settings.call(action: :save_key, **permitted.slice(:provider_id, :api_key))
+    finish_provider_change(result, inventory: !Llm::ProviderRegistry.manual_only?(permitted[:provider_id]))
+  end
+
+  def connection
+    finish_provider_change(provider_settings.call(action: :connection, **provider_params.slice(:provider_id, :is_active)))
+  end
+
+  def model
+    finish_provider_change(provider_settings.call(action: :model, **provider_params.slice(:provider_id, :model_id, :is_active)))
+  end
+
+  def default_model
+    finish_provider_change(provider_settings.call(action: :default, **provider_params.slice(:provider_id, :model_id)))
+  end
+
+  def refresh
+    finish_provider_change(provider_settings.call(action: :refresh))
+  end
+
+  def save_custom
+    finish_provider_change(provider_settings.call(action: :save_custom, **provider_params.slice(:provider_id, :custom_connection)))
+  end
+
+  def save_model
+    finish_provider_change(provider_settings.call(action: :save_model, **provider_params.slice(:provider_id, :model_id, :model_config)))
+  end
+
+  def verify_model
+    finish_provider_change(provider_settings.call(action: :verify_model, **provider_params.slice(:provider_id, :model_id)))
+  end
+
+  private
+
+  def require_provider_owner!
+    return if current_organization.owner_id == current_user.id
+
+    render_provider_error(Llm::ProviderSettings::Error.new("owner_required", "Organization owner authorization required."))
+  end
+
+  def provider_settings
+    Llm::ProviderSettings.new(organization: current_organization, actor: current_user)
+  end
+
+  def provider_params
+    permitted = params.permit(
+      :provider, :provider_id, :api_key, :is_active, :model_id, :disabled_models,
+      custom_connection: [ :name, :base_url, :auth_mode, :api_key, :discovery_enabled,
+                           :open_timeout, :read_timeout, :max_request_bytes, :max_response_bytes,
+                           :max_stream_bytes, :max_retries, { headers: {}, secret_headers: {} } ],
+      model_config: [ :display_name, :description, :api_family, :supports_tools, :supports_streaming,
+                      :supports_vision, :supports_images, :supports_json_mode, :supports_reasoning,
+                      :reasoning_parameters, :supports_parallel_tool_calls, :context_window,
+                      :max_output_tokens, :free_tier, :access_restricted, :options, :rate_limits,
+                      :supported_parameters, { supported_parameters: [] } ]
+    ).to_h.symbolize_keys
+    permitted[:provider_id] ||= permitted.delete(:provider)
+    permitted
+  end
+
+  def finish_provider_change(result, inventory: true)
+    respond_to do |format|
+      format.html { redirect_to settings_integrations_path, notice: result[:notice], status: :see_other }
+      format.json { render json: inventory ? provider_settings.call : result }
     end
+  end
 
-    api_key = params[:api_key].to_s.strip
-    if api_key.empty?
-      return redirect_to(settings_integrations_path, alert: "Enter an API key before saving.")
+  def render_provider_error(error)
+    status = error.code == "owner_required" ? :forbidden : :unprocessable_entity
+    respond_to do |format|
+      format.html { render plain: error.message, status: status }
+      format.json { render json: { error_code: error.code, error: error.message }, status: status }
     end
-
-    integration = current_organization.tool_integrations
-      .find_or_initialize_by(provider: provider)
-    integration.name = "#{provider.titleize} API" if integration.name.blank?
-    integration.credentials = integration.credentials.to_h.merge("api_key" => api_key)
-    # Saving a fresh key is an explicit intent to use it, so the row is enabled
-    # here; turning it off later is the existing /integrations/:id/toggle route.
-    integration.is_active = true
-    integration.save!
-
-    redirect_to(settings_integrations_path, notice: "#{provider.titleize} key saved for #{current_organization.name}.")
-  rescue ActiveRecord::RecordInvalid => e
-    redirect_to(settings_integrations_path, alert: "Couldn't save the key: #{e.message}")
   end
 end

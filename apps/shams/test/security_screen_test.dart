@@ -363,10 +363,19 @@ void main() {
       await tester.tap(find.text('Account & security'));
       await tester.pumpAndSettle();
 
-      // On, and the only way off is through the current password.
+      // Disabling requires both the current password and fresh proof.
       expect(find.text('On'), findsOneWidget);
       expect(find.text('Set up two-factor authentication'), findsNothing);
 
+      await tester.enterText(
+        find.widgetWithText(TextFormField, 'Current password'),
+        'wrong-password',
+      );
+      await tester.enterText(
+        find.widgetWithText(TextFormField, 'Authenticator or backup code'),
+        '123456',
+      );
+      await tester.ensureVisible(find.text('Turn two-factor off'));
       await tester.tap(find.text('Turn two-factor off'));
       await tester.pumpAndSettle();
 
@@ -374,12 +383,19 @@ void main() {
       expect(find.text('On'), findsOneWidget);
 
       await tester.enterText(
-        find.widgetWithText(TextField, 'Current password'),
+        find.widgetWithText(TextFormField, 'Current password'),
         'password',
       );
+      await tester.enterText(
+        find.widgetWithText(TextFormField, 'Authenticator or backup code'),
+        '654321',
+      );
+      await tester.ensureVisible(find.text('Turn two-factor off'));
       await tester.tap(find.text('Turn two-factor off'));
       await tester.pumpAndSettle();
 
+      await tester.drag(find.byType(ListView).first, const Offset(0, 2000));
+      await tester.pumpAndSettle();
       expect(find.text('Off'), findsOneWidget);
       final call = transport.sent.lastWhere(
         (r) => r.uri.path == '/api/v1/security/two_factor',

@@ -259,14 +259,14 @@ RSpec.describe "Chat UI requirements bundle", :js, type: :system do
       expect(page).to have_field("message-input", with: "", wait: 5)
     end
 
-    it "on macOS bare Enter inserts a newline and Cmd+Enter submits" do
+    it "on macOS bare Enter submits and Cmd+Enter also submits" do
       visit conversation_path(conversation)
       stub_platform("mac")
       fill_in "message-input", with: "hi mac"
       find("#message-input").send_keys(:enter)
-      # Bare Enter must NOT submit on macOS — the draft stays visible with a
-      # newline appended.
-      expect(page).to have_field("message-input", with: "hi mac\n", wait: 3)
+      expect(page).to have_field("message-input", with: "", wait: 5)
+
+      fill_in "message-input", with: "hi mac command"
       find("#message-input").send_keys([ :meta, :enter ])
       expect(page).to have_field("message-input", with: "", wait: 5)
     end

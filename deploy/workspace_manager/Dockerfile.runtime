@@ -1,0 +1,27 @@
+# Fixed execution image for Shams AI workspaces.
+#
+# Derived from python:3.12-slim and never re-tagged implicitly: the manager only
+# starts containers from an image name listed in SHAMS_WS_IMAGES, so an agent
+# cannot ask for `ubuntu:latest` or any other image.
+#
+# /workspace is created and chowned here rather than by a one-shot helper
+# container, because Docker re-initialises an empty named volume from the image
+# directory at mount time — ownership set after the first mount gets reset.
+FROM python:3.12-slim
+
+RUN groupadd --gid 1000 shams \
+ && useradd --uid 1000 --gid 1000 --create-home --shell /bin/bash shams \
+ && mkdir -p /workspace \
+ && chown 1000:1000 /workspace \
+ && chmod 755 /workspace \
+ && pip install --no-cache-dir --upgrade pip
+
+ENV HOME=/home/shams \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PATH="/workspace/.venv/bin:/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin"
+
+WORKDIR /workspace
+USER 1000:1000
+
+CMD ["sleep", "infinity"]

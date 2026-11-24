@@ -11,7 +11,7 @@
   contrast — the Phase 1 acceptance criterion. Phase 2/3/5 nav slots render only
   once their routes are mounted (AppShell::Features), so no dead links ship.
 -%>
-<div class="flex h-screen w-full overflow-hidden" data-controller="sidebar theme account-panel">
+<div class="flex h-screen w-full overflow-hidden" data-controller="sidebar theme account-panel workspace-panel" data-navigation-user-id="<%= current_user.id %>">
   <%# ── Sidebar ────────────────────────────────────────────────────────── %>
   <aside id="sidebar"
          class="shell-sidebar"
@@ -77,7 +77,7 @@
     %>
     <nav class="shrink-0 px-2 py-1 space-y-0.5">
       <% nav.each do |item| %>
-        <%= link_to item[:href],
+        <%= link_to (item[:label] == "Images" && @conversation ? images_path(conversation_id: @conversation.id, return_to: (request.fullpath if request.query_string.present?)) : item[:href]),
               class: "sidebar-rail-center shell-nav-item relative #{'shell-nav-active' if sidebar_nav_active?(item[:href])}",
               "aria-current": (sidebar_nav_active?(item[:href]) ? "page" : nil) do %>
           <span class="grid size-8 shrink-0 place-items-center rounded-lg bg-hover">
@@ -164,4 +164,8 @@
   <%# Account & security slide-over. Mounted once, openable from any header, and
       inert until opened — see account/panels/_shell.html.erb. %>
   <%= render "account/panels/shell" %>
+
+  <%# Coding Workspace slide-over: the Docker sandbox behind this chat. Mounted
+      the same way — inert until opened, so no page view touches the manager. %>
+  <%= render "workspaces/panels/shell" %>
 </div>

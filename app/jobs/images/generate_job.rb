@@ -2,6 +2,7 @@
 
 require "base64"
 require "tempfile"
+require "mini_magick"
 
 module Images
   # Solid Queue worker behind every ImageGeneration row (gallery create,
@@ -13,24 +14,29 @@ module Images
   # Failure policy: provider/user-facing errors are recorded on the row (never
   # re-raised), because a retry would silently spend money again — the gallery
   # and chat cards expose an explicit Regenerate action instead. Only rows that
-  # are still queued/running are processed, so double enqueues are inert.
+  # successfully claimed from queued reach the provider; fresh duplicates are
+  # inert and stale redeliveries only close the abandoned row.
   class GenerateJob < ApplicationJob
     queue_as :images
-
-    # Shared gallery stream (same convention as the "scheduled_tasks" stream).
-    GALLERY_STREAM = "image_generations"
 
     Upload = Struct.new(:tempfile, :original_filename)
 
     def perform(image_generation_id)
       generation = ImageGeneration.find_by(id: image_generation_id)
       return if generation.nil?
-      return unless generation.queued? || generation.running?
 
-      generation.update!(status: "running")
-      broadcast_gallery(generation)
+      # A crashed worker cannot finish its row. Close a stale lease honestly,
+      # but never call the non-idempotent provider endpoint again from here.
+      if generation.recover_stale_running!
+        broadcast_gallery(generation)
+        broadcast_to_conversation(generation)
+        return
+      end
+
+      return unless generation.claim!
 
       begin
+        broadcast_gallery(generation)
         result = Generator.new(model: generation.model).generate(
           prompt: generation.prompt,
           size: generation.size,
@@ -38,6 +44,12 @@ module Images
           n: generation.n
         )
         finish!(generation, result)
+      rescue Generator::RateLimited => e
+        fail!(generation, e.message, metadata: {
+          "retry_after" => e.retry_after, "retry_at" => e.retry_at&.utc&.iso8601
+        })
+      rescue Assets::Ingest::InvalidUpload
+        fail!(generation, "The generated image could not be stored.")
       rescue Generator::Error => e
         fail!(generation, e.message)
       rescue StandardError => e
@@ -56,7 +68,7 @@ module Images
       generation.update!(
         status: "succeeded",
         asset: asset,
-        metadata: (generation.metadata || {}).merge(
+        metadata: generation.normalized_metadata.merge(
           "revised_prompt" => image.revised_prompt,
           "provider_id" => image.provider_id,
           "provider_created" => result.created,
@@ -66,7 +78,7 @@ module Images
       )
 
       broadcast_gallery(generation)
-      broadcast_to_conversation(generation) if generation.metadata["conversation_id"].present?
+      broadcast_to_conversation(generation)
     end
 
     # Decode -> Tempfile(.png) -> Assets::Ingest: validation, SHA256 dedupe,
@@ -80,13 +92,19 @@ module Images
       tempfile.flush
       tempfile.rewind
 
+      validate_image!(tempfile.path)
       filename = "generated-#{generation.id.to_s[0, 8]}.png"
       result = Assets::Ingest.call(
         user: generation.user,
         upload: Upload.new(tempfile, filename),
         project: nil
       )
-      result.asset
+      asset = result.asset
+      unless asset&.persisted? && asset.status == "ready" && asset.image? && asset.file.attached?
+        raise Generator::Error, "The generated image could not be stored."
+      end
+      asset.file.open { |file| validate_image!(file.path) }
+      asset
     ensure
       tempfile&.close
       tempfile&.unlink
@@ -95,26 +113,46 @@ module Images
     def decode(b64_json)
       raise Generator::Error, "The image provider returned unreadable image data." if b64_json.blank?
 
-      Base64.decode64(b64_json).tap do |bytes|
+      Base64.strict_decode64(b64_json).tap do |bytes|
         raise Generator::Error, "The image provider returned an empty image." if bytes.empty?
       end
+    rescue ArgumentError
+      raise Generator::Error, "The image provider returned unreadable image data."
     end
 
-    def fail!(generation, message)
-      generation.mark_failed!(message)
+    def validate_image!(path)
+      image = MiniMagick::Image.new(path)
+      image.validate!
+      unless image.type == "PNG" && image.width.positive? && image.height.positive?
+        raise Generator::Error, "The image provider returned invalid image data."
+      end
+    rescue MiniMagick::Error
+      raise Generator::Error, "The image provider returned invalid image data."
+    end
+
+    def fail!(generation, message, metadata: {})
+      return if generation.succeeded?
+
+      generation.mark_failed!(message, metadata: metadata)
       broadcast_gallery(generation)
-      broadcast_to_conversation(generation) if generation.metadata["conversation_id"].present?
+      broadcast_to_conversation(generation)
     end
 
     def broadcast_gallery(generation)
       html = ApplicationController.render(partial: "images/card", locals: { generation: generation })
       Turbo::StreamsChannel.broadcast_replace_to(
-        GALLERY_STREAM, target: "image-generation-#{generation.id}", html: html
+        ImageGeneration.gallery_stream_name(generation.user),
+        target: "image-generation-#{generation.id}", html: html
       )
     end
 
     def broadcast_to_conversation(generation)
-      conversation = Conversation.find_by(id: generation.metadata["conversation_id"])
+      conversation_id = generation.normalized_metadata["conversation_id"]
+      return if conversation_id.blank?
+
+      # Metadata can be forged or inherited from legacy rows. Ownership is
+      # determined only through the generation owner's conversation scope.
+      conversation = generation.user.conversations.find_by(id: conversation_id)
       return if conversation.nil?
 
       html = ApplicationController.render(partial: "images/chat_card", locals: { generation: generation })

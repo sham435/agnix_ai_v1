@@ -7,6 +7,14 @@ require "rails_helper"
 RSpec.describe Llm::AnthropicAdapter do
   let(:adapter) { described_class.new(api_key: "test-key", model: "claude-sonnet-4-6") }
 
+  around do |example|
+    original_env = ENV.to_hash
+    ENV.delete("ANTHROPIC_BASE_URL")
+    example.run
+  ensure
+    ENV.replace(original_env)
+  end
+
   # The adapter now replays transient failures with a backoff; keep that out of
   # the spec's real clock so retry cases stay fast and deterministic.
   before { allow(adapter).to receive(:sleep) }
@@ -32,6 +40,13 @@ RSpec.describe Llm::AnthropicAdapter do
       fragments.each { |fragment| blk&.call(fragment) }
       returns
     end
+  end
+
+  def capture_anthropic_logs
+    messages = []
+    allow(Rails.logger).to receive(:error) { |message| messages << message.to_s }
+    allow(Rails.logger).to receive(:warn) { |message| messages << message.to_s }
+    messages
   end
 
   describe "#stream_chat" do
@@ -82,21 +97,21 @@ RSpec.describe Llm::AnthropicAdapter do
       expect(result[:tool_calls].first[:function][:name]).to eq("calculator")
     end
 
-    it "raises with the provider message when the response is a JSON error" do
-      # A rejected request (out of credit, bad key, unknown model) comes back as
-      # one error object instead of an SSE stream. Returning an empty body here
-      # would record the turn as empty_response and the UI would tell the user to
-      # rephrase, hiding the real cause.
-      stub_body({
-        type: "error",
-        error: { type: "invalid_request_error",
-                 message: "Your credit balance is too low to access the Anthropic API." }
-      }.to_json)
+    it "classifies a JSON error without exposing the raw provider message" do
+      raw_message = "Your credit balance is too low to access the Anthropic API."
+      stub_body({ type: "error",
+                  error: { type: "invalid_request_error", message: raw_message } }.to_json)
 
       expect {
         adapter.stream_chat(messages: [ { role: "user", content: "hi" } ], tools: [],
                             temperature: 0.7, max_tokens: 20) { |_t, _f, _tc| }
-      }.to raise_error(Llm::AnthropicAdapter::LlmError, /credit balance is too low/)
+      }.to raise_error(Llm::AnthropicAdapter::LlmError) { |error|
+        expect(error).to be_a(Llm::ProviderError)
+        expect(error.code).to eq(:provider_credit_insufficient)
+        expect(error.retryable?).to be(false)
+        expect(error.message).to include("insufficient credits or quota")
+        expect(error.message).not_to include(raw_message, "test-key")
+      }
     end
   end
 
@@ -110,17 +125,23 @@ RSpec.describe Llm::AnthropicAdapter do
                           temperature: 0.7, max_tokens: 20, &block)
     end
 
-    it "raises with the status and the server's reason instead of returning empty" do
-      stub_stream_fragments([
-        stream_fragment(%({"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}), 529)
-      ], returns: double(code: "529"))
+    it "reports a safe typed status without exposing or logging the provider body" do
+      raw_body = %({"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}})
+      logs = capture_anthropic_logs
+      stub_stream_fragments([ stream_fragment(raw_body, 529) ], returns: double(code: "529"))
 
       pieces = []
       expect { stream { |text, *_| pieces << text } }
         .to raise_error(Llm::AnthropicAdapter::LlmError) { |error|
-          expect(error.message).to include("HTTP 529", "overloaded_error", "Overloaded")
+          expect(error.code).to eq(:provider_overloaded)
+          expect(error.status).to eq(529)
+          expect(error.provider_error_type).to eq("overloaded_error")
+          expect(error.retryable?).to be(true)
+          expect(error.message).to include("HTTP 529", "temporarily unavailable")
+          expect(error.message).not_to include("overloaded_error", "Overloaded")
         }
       expect(pieces).to be_empty
+      expect(logs.join).not_to include(raw_body, "Overloaded", "test-key")
     end
 
     it "treats a non-2xx HTML body as a failure, not as a buffered message" do
@@ -128,27 +149,40 @@ RSpec.describe Llm::AnthropicAdapter do
       # text and finalized the turn with content "", blaming the model for a
       # gateway that never reached it.
       page = "<html>\n<head><title>502 Bad Gateway</title></head>\n<body>upstream gone</body>\n</html>"
+      logs = capture_anthropic_logs
       stub_stream_fragments([ stream_fragment(page, 502) ])
 
       pieces = []
       expect { stream { |text, *_| pieces << text } }
         .to raise_error(Llm::AnthropicAdapter::LlmError) { |error|
-          expect(error.message).to include("HTTP 502", "502 Bad Gateway", "upstream gone")
-          expect(error.message).not_to include("\n")
+          expect(error.code).to eq(:provider_unavailable)
+          expect(error.status).to eq(502)
+          expect(error.retryable?).to be(true)
+          expect(error.message).to include("HTTP 502")
+          expect(error.message).not_to include("502 Bad Gateway", "upstream gone", "\n")
         }
       expect(pieces).to be_empty
+      expect(logs.join).not_to include(page, "upstream gone")
     end
 
-    it "names the status when the error response has no body to show" do
+    it "names the status and safe classification when the error response has no body" do
       stub_stream_fragments([ stream_fragment("", 429) ])
 
-      expect { stream }.to raise_error(Llm::AnthropicAdapter::LlmError, /HTTP 429 with no response body/)
+      expect { stream }.to raise_error(Llm::AnthropicAdapter::LlmError) { |error|
+        expect(error.code).to eq(:provider_rate_limited)
+        expect(error.status).to eq(429)
+        expect(error.message).to include("HTTP 429", "rate limit was reached")
+      }
     end
 
     it "reads the status from the completed response when no fragment is streamed" do
       allow(HTTParty).to receive(:post).and_return(double(code: "401"))
 
-      expect { stream }.to raise_error(Llm::AnthropicAdapter::LlmError, /HTTP 401 with no response body/)
+      expect { stream }.to raise_error(Llm::AnthropicAdapter::LlmError) { |error|
+        expect(error.code).to eq(:provider_authentication_failed)
+        expect(error.status).to eq(401)
+        expect(error.message).to include("HTTP 401", "rejected the configured credentials")
+      }
     end
 
     it "streams text deltas while the transport reports 200" do
@@ -178,6 +212,90 @@ RSpec.describe Llm::AnthropicAdapter do
     end
   end
 
+  describe "secure transport" do
+    let(:key) { "test-key" }
+    let(:model) { "claude-sonnet-4-6" }
+    let(:config) { {} }
+    let(:integration) do
+      instance_double(ToolIntegration, config: config, api_key: key, decrypted_credentials: { "api_key" => key })
+    end
+
+    it "uses the shared endpoint, native authentication, bounded timeouts, and proxy bypass" do
+      captured = nil
+      response = double(code: 200, success?: true, headers: {}, body: { content: [] }.to_json)
+      allow(HTTParty).to receive(:post) do |url, options|
+        captured = [ url, options ]
+        response
+      end
+
+      adapter.sync_chat(messages: [ { role: "user", content: "hi" } ], tools: [], temperature: 0.7, max_tokens: 20)
+
+      expect(captured.first).to eq("https://api.anthropic.com/v1/messages")
+      expect(captured.last).to include(timeout: 120, open_timeout: 10, follow_redirects: false,
+        http_proxyaddr: nil, stream_body: false)
+      expect(captured.last[:headers]).to include("X-Api-Key" => key,
+        "anthropic-version" => ENV.fetch("ANTHROPIC_API_VERSION", "2023-06-01"), "Content-Type" => "application/json")
+      expect(captured.last[:headers]).not_to have_key("Authorization")
+    end
+
+    it "pins a custom endpoint and applies its configured transport limits" do
+      config.merge!("open_timeout" => 3, "read_timeout" => 19)
+      connection = Llm::ProviderConnection.new(provider: "anthropic", integration: integration, model: model,
+        base_url: "https://anthropic-proxy.example.test/v1")
+      custom_adapter = described_class.new(api_key: key, model: model, connection: connection)
+      allow(Llm::ProviderEndpoint).to receive(:enforce_destination!).and_return("93.184.216.34")
+      captured = nil
+      allow(HTTParty).to receive(:post) do |url, options|
+        adapter_options = options.fetch(:connection_adapter)
+        captured_ip = adapter_options.call(URI.parse(url), options).ipaddr
+        captured = [ url, options, captured_ip ]
+        double(code: 200, success?: true, headers: {}, body: { content: [] }.to_json)
+      end
+
+      custom_adapter.sync_chat(messages: [], tools: [], temperature: 0.7, max_tokens: 20)
+
+      expect(captured.first).to eq("https://anthropic-proxy.example.test/v1/messages")
+      expect(captured[1]).to include(timeout: 19, open_timeout: 3)
+      expect(captured.last).to eq("93.184.216.34")
+    end
+
+    it "converts an oversized response to a non-retryable typed error" do
+      config["max_response_bytes"] = 1024
+      connection = Llm::ProviderConnection.new(provider: "anthropic", integration: integration, model: model)
+      custom_adapter = described_class.new(api_key: key, model: model, connection: connection)
+      allow(HTTParty).to receive(:post).and_return(
+        double(code: 200, success?: true, headers: {}, body: "x" * 2048)
+      )
+
+      expect { custom_adapter.sync_chat(messages: [], tools: [], temperature: 0.7, max_tokens: 20) }
+        .to raise_error(Llm::AnthropicAdapter::LlmError) { |error|
+          expect(error).to be_a(Llm::ProviderError)
+          expect(error.code).to eq(:response_too_large)
+          expect(error.retryable?).to be(false)
+          expect(error.message).to include("size limit")
+        }
+      expect(HTTParty).to have_received(:post).once
+    end
+
+    it "aborts an oversized stream with a typed error" do
+      config["max_stream_bytes"] = 1024
+      connection = Llm::ProviderConnection.new(provider: "anthropic", integration: integration, model: model)
+      custom_adapter = described_class.new(api_key: key, model: model, connection: connection)
+      allow(HTTParty).to receive(:post) do |_url, _options, &block|
+        block.call("x" * 600)
+        block.call("x" * 600)
+        double(code: 200, headers: {}, body: "")
+      end
+
+      expect { custom_adapter.stream_chat(messages: [], tools: [], temperature: 0.7, max_tokens: 20) }
+        .to raise_error(Llm::AnthropicAdapter::LlmError) { |error|
+          expect(error.code).to eq(:response_too_large)
+          expect(error.retryable?).to be(false)
+        }
+      expect(HTTParty).to have_received(:post).once
+    end
+  end
+
   # The provider's failure is now a typed error, not just prose: `code` names the
   # cause and `retryable` says whether redelivery can help. Classification must
   # catch the credit case even when Anthropic files it as a generic 400, because
@@ -188,16 +306,17 @@ RSpec.describe Llm::AnthropicAdapter do
                           temperature: 0.7, max_tokens: 20, &blk)
     end
 
-    it "files a spending ceiling that arrives as a 400 invalid_request_error as credit, not a generic rejection" do
+    it "files a spending ceiling that arrives as a 400 invalid_request_error as credit without leaking its message" do
+      raw_message = "Your credit balance is too low to access the Anthropic API."
       stub_body({ type: "error",
-                  error: { type: "invalid_request_error",
-                           message: "Your credit balance is too low to access the Anthropic API." } }.to_json)
+                  error: { type: "invalid_request_error", message: raw_message } }.to_json)
 
       expect { stream { |_t, *_| } }
         .to raise_error(Llm::AnthropicAdapter::LlmError) do |e|
         expect(e.code).to eq(:provider_credit_insufficient)
         expect(e.retryable?).to be(false)
-        expect(e.message).to include("credit balance is too low")
+        expect(e.message).to include("insufficient credits or quota")
+        expect(e.message).not_to include(raw_message)
       end
     end
 
@@ -267,7 +386,8 @@ RSpec.describe Llm::AnthropicAdapter do
         .to raise_error(Llm::AnthropicAdapter::LlmError) { |e|
           expect(e.code).to eq(:provider_unavailable)
           expect(e.retryable?).to be(true)
-          expect(e.message).to include("500")
+          expect(e.message).to include("HTTP 500", "temporarily unavailable")
+          expect(e.message).not_to include("Internal")
         }
     end
 
@@ -280,6 +400,23 @@ RSpec.describe Llm::AnthropicAdapter do
         .to raise_error(Llm::AnthropicAdapter::LlmError) { |e|
           expect(e.code).to eq(:provider_request_rejected)
           expect(e.retryable?).to be(false)
+          expect(e.message).to include("HTTP 400")
+          expect(e.message).not_to include("Bad params")
+        }
+      expect(HTTParty).to have_received(:post).once
+    end
+
+    it "redacts a malformed successful response instead of exposing parser details" do
+      raw_marker = "RAW-MALFORMED-ANTHROPIC-BODY"
+      response = double(code: 200, success?: true, headers: {}, body: %({"content":"#{raw_marker}"))
+      allow(HTTParty).to receive(:post).and_return(response)
+
+      expect { sync! }
+        .to raise_error(Llm::AnthropicAdapter::LlmError) { |e|
+          expect(e.code).to eq(:invalid_provider_response)
+          expect(e.retryable?).to be(false)
+          expect(e.message).to include("invalid response")
+          expect(e.message).not_to include(raw_marker)
         }
       expect(HTTParty).to have_received(:post).once
     end
@@ -413,21 +550,20 @@ RSpec.describe Llm::AnthropicAdapter do
     end
   end
 
-  # An out-of-credit key surfaces as a 400; if its message runs longer than the
-  # display cap the classifier must still see the full body, or it misfiles a
-  # permanent billing fault as a generic request rejection.
+  # Classification sees only a bounded error prefix. A credit marker inside that
+  # prefix must still win over the generic 400 classification.
   describe "classification robustness" do
     def stream(&blk)
       adapter.stream_chat(messages: [ { role: "user", content: "hi" } ], tools: [],
                           temperature: 0.7, max_tokens: 20, &blk)
     end
 
-    it "sniffs the credit cause from an error body larger than the display cap" do
-      filler = "detail " * 120 # > MAX_ERROR_BODY so the display buffer would truncate
+    it "sniffs the credit cause from the bounded prefix of a large error body" do
+      filler = "detail " * 300
       body = { type: "error",
                error: { type: "invalid_request_error",
-                        message: "#{filler}Your credit balance is too low to access the Anthropic API." } }.to_json
-      expect(body.bytesize).to be > described_class::MAX_ERROR_BODY
+                        message: "Your credit balance is too low to access the Anthropic API. #{filler}" } }.to_json
+      expect(body.bytesize).to be > described_class::ERROR_CLASSIFY_LIMIT
 
       stub_stream_fragments([ stream_fragment(body, 400) ], returns: double(code: "400"))
 
@@ -580,14 +716,16 @@ RSpec.describe Llm::AnthropicAdapter do
       expect(result[:finish_reason]).to eq("length")
     end
 
-    it "stops buffering an error body once it passes the classification cap" do
-      huge = "x" * (described_class::ERROR_CLASSIFY_LIMIT + 1_000)
+    it "does not classify provider content beyond the bounded error prefix" do
+      prefix = %({"type":"error","error":{"type":"invalid_request_error","message":")
+      huge = prefix + ("x" * described_class::ERROR_CLASSIFY_LIMIT) + "Your credit balance is too low\"}}"
       stub_stream_fragments([ stream_fragment(huge, 400), stream_fragment("tail", 400) ],
                             returns: double(code: "400"))
 
       expect { stream { |_t, *_| } }
         .to raise_error(Llm::AnthropicAdapter::LlmError) { |e|
           expect(e.code).to eq(:provider_request_rejected)
+          expect(e.message).not_to include("credit balance")
         }
       expect(HTTParty).to have_received(:post).once
     end

@@ -18,22 +18,24 @@ class TwoFactorLogin
   end
 
   def verify(code)
-    return locked if @user.two_factor_locked?
+    @user.with_lock do
+      next Result.new(status: :disabled, recovery_codes_left: 0, minutes_left: 0) unless @user.second_factor_enabled?
+      next locked if @user.two_factor_locked?
 
-    value = code.to_s.delete(" -").upcase
-    return invalid if value.blank?
+      value = code.to_s.delete(" -").upcase
+      next invalid if value.blank?
 
-    if totp_shape?(value)
-      @user.two_factor.verify_for_login(value) == TwoFactor::VERIFIED ? success(:verified) : invalid
-    else
-      RecoveryCode.consume!(@user, value) ? success(:recovery_used) : invalid
+      if totp_shape?(value)
+        @user.two_factor.verify_for_login(value) == TwoFactor::VERIFIED ? success(:verified) : invalid
+      else
+        RecoveryCode.consume!(@user, value) ? success(:recovery_used) : invalid
+      end
     end
   end
 
   private
 
-  # Six bare digits can only be an authenticator code; the backup alphabet is
-  # ten characters and deliberately has no digits that could form one.
+  # Six bare digits are an authenticator code; recovery codes are longer.
   def totp_shape?(value)
     value.match?(/\A\d{#{TOTP_LENGTH}}\z/)
   end

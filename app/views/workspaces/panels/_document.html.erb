@@ -1,0 +1,22 @@
+<%#
+  The panel document, sent for a tab navigation and for every action inside
+  the panel. Same frame id the shell opened, so a run or a preview restart
+  redraws the panel instead of navigating the conversation away.
+
+  With no workspace there is nothing to list: the empty partial says so, and
+  says what would have created one.
+-%>
+<%= turbo_frame_tag "workspace_panel_body" do %>
+  <% if @workspace %>
+    <%= render "workspaces/panels/nav", workspace: @workspace, section: @section %>
+    <div class="space-y-5 px-4 pb-10 pt-4">
+      <%= render "workspaces/panels/note" %>
+      <%= render "workspaces/panels/status", workspace: @workspace, status: @status %>
+      <%= render "workspaces/panels/sections/#{@section}", workspace: @workspace %>
+    </div>
+  <% else %>
+    <div class="px-4 pb-10 pt-4">
+      <%= render "workspaces/panels/empty", conversation: @conversation, stopped: @stopped_workspace %>
+    </div>
+  <% end %>
+<% end %>

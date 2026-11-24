@@ -1,6 +1,12 @@
 class ToolIntegrationsController < ApplicationController
+  # Every credential key the catalog and the legacy manual form can write.
+  CREDENTIAL_KEYS = %w[api_key webhook_secret].freeze
+  # Non-secret configuration only; anything else is dropped before storage.
+  CONFIG_KEYS = %w[webhook_url timeout phone_number_id from_address].freeze
+
   before_action :authenticate_user!
   before_action :require_organization!
+  before_action :require_integration_admin!
   before_action :set_integration, only: [ :show, :edit, :update, :destroy, :toggle ]
 
   def index
@@ -22,6 +28,7 @@ class ToolIntegrationsController < ApplicationController
 
   def create
     @integration = current_organization.tool_integrations.new(integration_params)
+    assign_credentials(@integration)
 
     if @integration.save
       redirect_to @integration, notice: "Integration created."
@@ -36,6 +43,8 @@ class ToolIntegrationsController < ApplicationController
   end
 
   def update
+    assign_credentials(@integration)
+
     if @integration.update(integration_params)
       redirect_to @integration, notice: "Integration updated."
     else
@@ -96,11 +105,35 @@ class ToolIntegrationsController < ApplicationController
 
   private
 
+  # Org credentials are admin/owner territory: a plain member must not be
+  # able to read, replace, pause or delete the keys the whole org runs on.
+  def require_integration_admin!
+    return if current_user.admin?(current_organization) || current_user.owner?(current_organization)
+
+    redirect_to conversations_path, alert: "Admin access required."
+  end
+
   def set_integration
     @integration = current_organization.tool_integrations.find(params[:id])
   end
 
   def integration_params
-    params.require(:tool_integration).permit(:name, :provider, :is_active, credentials: {}, config: {})
+    attrs = params.require(:tool_integration).permit(:name, :provider, :is_active, config: {})
+    attrs[:config] = attrs[:config].slice(*CONFIG_KEYS) if attrs[:config]
+    attrs
+  end
+
+  # Secrets are write-only: a blank field keeps the stored value (so saving
+  # the manage form never wipes keys it did not resubmit), unknown keys are
+  # dropped, and no view renders a credential back into HTML.
+  def assign_credentials(integration)
+    submitted = params.dig(:tool_integration, :credentials)
+    return unless submitted.respond_to?(:each_pair)
+
+    merged = integration.credentials.is_a?(Hash) ? integration.credentials.dup : {}
+    submitted.each_pair do |key, value|
+      merged[key.to_s] = value if CREDENTIAL_KEYS.include?(key.to_s) && value.present?
+    end
+    integration.credentials = merged
   end
 end

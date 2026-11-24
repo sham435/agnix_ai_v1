@@ -10,13 +10,21 @@ class Api::V1::SessionsController < ApplicationController
 
     return sign_in(user) unless user.second_factor_enabled?
 
-    # Same service, same rules as the browser: a code is checked server-side,
-    # guesses are counted on the row, and no client decides anything.
+    if params[:code].blank?
+      request_two_factor(user)
+      return render_two_factor_required(false)
+    end
+
+    unless pending_two_factor_user&.id == user.id
+      sign_out_current_request
+      return render_two_factor_required(false)
+    end
+
     result = TwoFactorLogin.verify(user: user, code: params[:code])
 
     case result.status
-    when :verified then sign_in(user)
-    when :recovery_used then sign_in(user, recovery_codes_left: result.recovery_codes_left)
+    when :verified then sign_in(user, mfa_verified: true)
+    when :recovery_used then sign_in(user, mfa_verified: true, recovery_codes_left: result.recovery_codes_left)
     when :locked then render_locked(result)
     else render_two_factor_required(params[:code].present?)
     end
@@ -29,8 +37,8 @@ class Api::V1::SessionsController < ApplicationController
 
   private
 
-  def sign_in(user, **extra)
-    complete_sign_in(user)
+  def sign_in(user, mfa_verified: false, **extra)
+    complete_sign_in(user, mfa_verified: mfa_verified)
 
     render json: {
       user: {
@@ -40,7 +48,7 @@ class Api::V1::SessionsController < ApplicationController
         active_organization_id: user.active_organization&.id
       },
       two_factor: {
-        enabled: true,
+        enabled: user.second_factor_enabled?,
         recovery_codes_left: user.recovery_codes_remaining
       }.merge(extra)
     }, status: :ok

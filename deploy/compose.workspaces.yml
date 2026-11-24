@@ -1,0 +1,76 @@
+name: shams-workspaces
+
+services:
+  manager:
+    build:
+      context: .
+      dockerfile: workspace_manager/Dockerfile
+    image: shams-workspace-manager:1
+    container_name: shams-ws-manager
+    working_dir: /manager
+    command: ["python3", "-u", "/manager/manager.py"]
+    env_file:
+      - /Users/sham4/.config/shams/workspaces.env
+    environment:
+      SHAMS_WS_PORT: "8080"
+      SHAMS_WS_IMAGE_PYTHON: shams-workspace-runtime:1
+      SHAMS_WS_EGRESS_NETWORK: shams-workspaces_egress
+      SHAMS_WS_PROXY_HOST: shams-ws-egress-proxy
+    volumes:
+      # The ONLY place the Docker socket is mounted. The Rails containers never
+      # receive it, so no prompt, tool or uploaded file can ask the daemon for
+      # anything directly.
+      - /Users/sham4/.docker/run/docker.sock:/var/run/docker.sock
+      - ./workspace_manager:/manager:ro
+    ports:
+      - "127.0.0.1:3005:8080"
+    # Deliberately NOT on the internal egress network: an internal network
+    # cannot publish a port, and the manager only ever talks to the daemon and
+    # to Rails — it never needs the index. Install helpers reach the proxy
+    # themselves.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    read_only: true
+    tmpfs:
+      - /tmp:size=128m
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 512
+    mem_limit: 512m
+    cpus: 1.0
+    restart: unless-stopped
+
+  egress-proxy:
+    image: python:3.12-slim
+    container_name: shams-ws-egress-proxy
+    command: ["python3", "-u", "/manager/egress_proxy.py"]
+    environment:
+      SHAMS_WS_ALLOWED_HOSTS: "pypi.org,files.pythonhosted.org,pypi.python.org,bootstrap.pypa.io"
+    volumes:
+      - ./workspace_manager:/manager:ro
+    networks:
+      # The only dual-homed container in the project: reachable from the
+      # internal install network, and the only thing with a route out.
+      - egress
+      - outbound
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    mem_limit: 128m
+    cpus: 0.5
+    restart: unless-stopped
+
+networks:
+  egress:
+    # internal: an install helper has no route anywhere except this proxy.
+    name: shams-workspaces_egress
+    internal: true
+    driver: bridge
+  outbound:
+    name: shams-workspaces_outbound
+    driver: bridge

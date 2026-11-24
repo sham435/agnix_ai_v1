@@ -1,0 +1,24 @@
+<%# One execution the manager already answered for. Output is what was stored:
+    bounded in size, clipped at the byte cap, never a live stream. -%>
+<div class="space-y-1 rounded-xl border border-border-subtle bg-canvas p-3">
+  <div class="flex items-center justify-between gap-2 text-[11px]">
+    <% if local_assigns.fetch(:show_argv, true) %>
+      <span class="truncate font-mono text-fg-muted"><%= Array(run.argv).join(" ") %></span>
+    <% else %>
+      <span class="font-mono text-fg-muted"><%= run.kind %></span>
+    <% end %>
+    <span class="shrink-0 font-mono <%= run.ok ? "text-emerald-600" : "text-red-600" %>">
+      <%= run.timed_out ? "timed out" : "exit #{run.exit_code}" %>
+      · <%= run.duration_ms %>ms
+    </span>
+  </div>
+
+  <% if run.stdout.present? %>
+    <pre class="max-h-48 overflow-auto text-[11px] leading-relaxed text-fg"><%= run.stdout %></pre>
+  <% end %>
+  <% if run.stderr.present? %>
+    <pre class="max-h-40 overflow-auto text-[11px] leading-relaxed text-red-600"><%= run.stderr %></pre>
+  <% end %>
+
+  <p class="text-[10px] text-fg-subtle"><%= run.created_at.strftime("%H:%M:%S") %></p>
+</div>

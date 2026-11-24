@@ -107,6 +107,37 @@ module Capabilities
         renderer: "source_citations"
       },
       {
+        key: "webfetch",
+        label: "Webfetch",
+        description: "Fetch a public HTTP(S) page as bounded, untrusted markdown, text, HTML, JSON, or XML content.",
+        state_fn: ->(_r) { [ :enabled, nil ] },
+        async: false,
+        input_schema: {
+          "type" => "object",
+          "additionalProperties" => false,
+          "properties" => {
+            "url" => { "type" => "string", "minLength" => 1, "maxLength" => 2_048 },
+            "format" => { "type" => "string", "enum" => %w[markdown text html], "default" => "markdown" },
+            "timeout" => { "type" => "integer", "minimum" => 1, "maximum" => 120, "default" => 20 }
+          },
+          "required" => [ "url" ]
+        },
+        output_schema: {
+          "type" => "object",
+          "properties" => {
+            "content" => { "type" => "string" },
+            "format" => { "type" => "string" },
+            "final_url" => { "type" => "string" },
+            "content_type" => { "type" => "string" },
+            "truncated" => { "type" => "boolean" },
+            "untrusted" => { "type" => "boolean" }
+          }
+        },
+        execution_limits: { timeout_seconds: 20, max_response_bytes: WebfetchService::MAX_RESPONSE_BYTES,
+                            max_output_bytes: WebfetchService::MAX_OUTPUT_BYTES, max_redirects: WebfetchService::MAX_REDIRECTS },
+        renderer: "web_content"
+      },
+      {
         key: "deep_research",
         label: "Deep research",
         description: "Multi-step research run with source/call/time budgets and deduplicated citations.",
@@ -132,9 +163,12 @@ module Capabilities
         key: "sketch",
         label: "Sketch",
         description: "Draw a reproducible SVG/JSON sketch with PNG preview.",
-        state_fn: ->(_r) { [ :disabled, "planned" ] },
+        state_fn: ->(_r) { Sketches::Create.available? ? [ :enabled, nil ] : [ :disabled, "renderer_unavailable" ] },
         async: false,
-        input_schema: { "type" => "object", "properties" => { "svg" => { "type" => "string" } } },
+        input_schema: {
+          "type" => "object", "required" => [ "document" ],
+          "properties" => { "document" => { "type" => "object" } }
+        },
         output_schema: { "type" => "object", "properties" => { "asset_id" => { "type" => "string" } } },
         execution_limits: {},
         renderer: "sketch_canvas"
@@ -164,7 +198,7 @@ module Capabilities
       {
         key: "figma",
         label: "Figma",
-        description: "Read-only Figma operations first; writes require explicit confirmation + audit.",
+        description: "Read Figma files with bounded depth. Read-only; no writes supported.",
         state_fn: ->(_r) { [ :needs_authorization, "requires_connection" ] },
         async: false,
         input_schema: { "type" => "object", "properties" => { "operation" => { "type" => "string" } } },
@@ -188,19 +222,19 @@ module Capabilities
     class UnknownCapability < StandardError; end
 
     class << self
-      def index
-        DEFINITIONS.map { |definition| entry(definition) }
+      def index(organization: nil)
+        DEFINITIONS.map { |definition| entry(definition, organization: organization) }
       end
 
-      def find(key)
+      def find(key, organization: nil)
         definition = DEFINITIONS.find { |d| d[:key] == key.to_s }
         raise UnknownCapability, key.to_s if definition.nil?
 
-        entry(definition)
+        entry(definition, organization: organization)
       end
 
-      def available?(key)
-        find(key)[:state] == "enabled"
+      def available?(key, organization: nil)
+        find(key, organization: organization)[:state] == "enabled"
       end
 
       # Validates capability input against its typed schema (json_schemer).
@@ -211,9 +245,16 @@ module Capabilities
         errors.map(&:to_hash).map { |h| { pointer: h.fetch("data_pointer"), error: h.fetch("error") } }
       end
 
-      def web_search_configured?
-        Rails.application.credentials.dig(*WEB_SEARCH_KEY_CREDENTIALS).present? ||
+      def web_search_configured?(organization: nil)
+        return false if ToolIntegration.connection_disabled?(organization, "web_search")
+
+        connection_configured?(organization, "web_search") ||
+          Rails.application.credentials.dig(*WEB_SEARCH_KEY_CREDENTIALS).present? ||
           ENV[WEB_SEARCH_KEY_ENV].present?
+      end
+
+      def connection_configured?(organization, provider)
+        ToolIntegration.connection_for(organization, provider)&.api_key.present?
       end
 
       # Phase 3: the image_generation capability is a real availability check —
@@ -225,8 +266,21 @@ module Capabilities
 
       private
 
-      def entry(definition)
+      def entry(definition, organization: nil)
         state, reason = definition[:state_fn].call(self)
+        if organization && %w[web_search deep_research].include?(definition[:key])
+          if web_search_configured?(organization: organization)
+            state, reason = :enabled, nil
+          else
+            state, reason = definition[:key] == "web_search" ? [ :needs_authorization, "not_configured" ] : [ :disabled, "depends:web_search" ]
+          end
+        elsif %w[figma github notion].include?(definition[:key]) && connection_configured?(organization, definition[:key])
+          state, reason = :enabled, nil
+        elsif definition[:key] == "openai_model" && connection_configured?(organization, "openai")
+          state, reason = :enabled, nil
+        elsif definition[:key] == "webfetch" && webfetch_organization_disabled?(organization)
+          state, reason = :disabled, "organization_disabled"
+        end
 
         {
           key: definition[:key],
@@ -241,6 +295,18 @@ module Capabilities
           execution_limits: definition[:execution_limits],
           renderer: definition[:renderer]
         }
+      end
+
+      def webfetch_organization_disabled?(organization)
+        settings = organization&.settings
+        return false unless settings.is_a?(Hash)
+
+        capabilities = settings["capabilities"]
+        return true if capabilities.is_a?(Hash) && (capabilities["webfetch"] == false || capabilities[:webfetch] == false)
+        return true if Array(settings["disabled_capabilities"]).map(&:to_s).include?("webfetch")
+
+        enabled = settings["enabled_capabilities"]
+        enabled.is_a?(Array) && enabled.map(&:to_s).exclude?("webfetch")
       end
     end
   end

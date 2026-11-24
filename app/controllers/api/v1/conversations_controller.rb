@@ -1,5 +1,8 @@
 class Api::V1::ConversationsController < ApplicationController
   before_action :authenticate_user!
+  rescue_from Llm::ModelCatalogue::Error do |error|
+    render json: { error_code: error.code, error: error.message }, status: :unprocessable_entity
+  end
 
   def index
     @conversations = current_user.conversations

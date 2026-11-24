@@ -37,10 +37,10 @@ RSpec.describe Images::GenerateJob, type: :job do
     end
   end
 
-  def gallery_card_updates(generation_id)
+  def gallery_card_updates(generation)
     gallery_broadcasts.select do |stream, kwargs|
-      stream == "image_generations" &&
-        kwargs[:target] == "image-generation-#{generation_id}" &&
+      stream == ImageGeneration.gallery_stream_name(generation.user) &&
+        kwargs[:target] == "image-generation-#{generation.id}" &&
         kwargs[:html].is_a?(String)
     end
   end
@@ -91,7 +91,7 @@ RSpec.describe Images::GenerateJob, type: :job do
       expect(generation.metadata["provider_model"]).to eq("gpt-image-1")
 
       # The gallery card for this exact row was refreshed over Turbo Streams.
-      expect(gallery_card_updates(generation.id).size).to eq(2) # running skeleton + final card
+      expect(gallery_card_updates(generation).size).to eq(2) # running skeleton + final card
     end
 
     it "broadcasts an image card into the chat for conversation-originated generations" do
@@ -104,6 +104,32 @@ RSpec.describe Images::GenerateJob, type: :job do
 
       expect(chat_appends_for(conversation).size).to eq(1)
       expect(chat_appends_for(conversation).first.last[:html]).to include("mountain lake")
+    end
+
+    it "keeps private gallery cards on distinct owner-only streams" do
+      other = create(:user)
+      theirs = create(:image_generation, user: other, prompt: "Another user's private prompt")
+      stub_generator(result: result)
+
+      described_class.perform_now(generation.id)
+      described_class.perform_now(theirs.id)
+
+      expect(gallery_card_updates(generation).map(&:first).uniq).to eq([ ImageGeneration.gallery_stream_name(user) ])
+      expect(gallery_card_updates(theirs).map(&:first).uniq).to eq([ ImageGeneration.gallery_stream_name(other) ])
+      expect(gallery_card_updates(generation).map { |_stream, kwargs| kwargs[:html] }.join).not_to include(theirs.prompt)
+      expect(gallery_card_updates(theirs).map { |_stream, kwargs| kwargs[:html] }.join).not_to include(generation.prompt)
+    end
+
+    it "does not broadcast into a foreign conversation referenced by legacy metadata" do
+      foreign = create(:conversation, user: create(:user))
+      generation.update_column(:metadata, { "conversation_id" => foreign.id }.to_json)
+      stub_generator(result: result)
+
+      described_class.perform_now(generation.id)
+
+      expect(chat_broadcasts).to be_empty
+      expect(generation.reload).to be_succeeded
+      expect(gallery_card_updates(generation).size).to eq(2)
     end
 
     it "is inert for rows already terminal or missing" do
@@ -138,7 +164,7 @@ RSpec.describe Images::GenerateJob, type: :job do
       expect(generation.status).to eq("failed")
       expect(generation.error).to include('unavailable (HTTP 503)')
       expect(generation.asset_id).to be_nil
-      expect(gallery_card_updates(generation.id).last.last[:html]).to include("HTTP 503")
+      expect(gallery_card_updates(generation).last.last[:html]).to include("HTTP 503")
     end
 
     it "never re-raises provider errors into the queue (no silent retry spend)" do
@@ -176,6 +202,88 @@ RSpec.describe Images::GenerateJob, type: :job do
 
       expect(chat_appends_for(conversation).size).to eq(1)
       expect(chat_appends_for(conversation).first.last[:html]).to include("rate limited")
+    end
+
+    it "does not broadcast a failure into another user's chat" do
+      foreign = create(:conversation, user: create(:user))
+      generation = create(:image_generation, user: user,
+                                             metadata: { "conversation_id" => foreign.id })
+      stub_generator(error: Images::Generator::Error.new("provider unavailable"))
+
+      described_class.perform_now(generation.id)
+
+      expect(chat_broadcasts).to be_empty
+      expect(generation.reload).to be_failed
+    end
+  end
+
+  describe "delivery and storage safety" do
+    it "does not run or broadcast a fresh running row" do
+      generator = stub_generator(result: result)
+      generation.update!(status: "running")
+      described_class.perform_now(generation.id)
+      expect(generator).not_to have_received(:generate)
+      expect(gallery_broadcasts).to be_empty
+      expect(generation.reload).to be_running
+    end
+
+    it "ignores a duplicate delivery during the provider call" do
+      generator = stub_generator(result: result)
+      allow(generator).to receive(:generate) do
+        described_class.perform_now(generation.id)
+        result
+      end
+      described_class.perform_now(generation.id)
+      expect(generator).to have_received(:generate).once
+      expect(generation.reload).to be_succeeded
+      expect(gallery_card_updates(generation).size).to eq(2)
+    end
+
+    it "fails a stale running row without repeating the provider request" do
+      generator = stub_generator(result: result)
+      generation.update!(status: "running")
+      generation.update_columns(updated_at: ImageGeneration::RUNNING_LEASE.ago - 1.second)
+
+      described_class.perform_now(generation.id)
+
+      expect(generator).not_to have_received(:generate)
+      expect(generation.reload).to be_failed
+      expect(generation.error).to include("provider may have charged", "retry only deliberately")
+      expect(generation.metadata["recovered_stale_at"]).to be_present
+      expect(generation.retry_available?).to be(true)
+      expect(gallery_card_updates(generation).size).to eq(1)
+      expect(gallery_card_updates(generation).first.last[:html]).to include("provider may have charged")
+    end
+
+    it "persists cooldown metadata and preserves conversation linkage" do
+      generation.update!(metadata: { "origin" => "chat" })
+      stub_generator(error: Images::Generator::RateLimited.new(retry_after: "120"))
+      described_class.perform_now(generation.id)
+      expect(generation.reload).to be_failed
+      expect(generation.metadata).to include("origin" => "chat", "retry_after" => "120")
+      expect(generation.metadata["retry_at"]).to be_present
+      expect(generation.error).to include("Retry manually after")
+    end
+
+    it "rejects base64-encoded non-images and truncated PNG signatures" do
+      [ "arbitrary text", "\x89PNG\r\n\x1a\n".b ].each do |bytes|
+        other = create(:image_generation, user: user)
+        image = Images::Generator::Image.new(b64_json: Base64.strict_encode64(bytes), revised_prompt: nil, provider_id: nil)
+        stub_generator(result: Images::Generator::Result.new(images: [ image ], created: nil, model: "gpt-image-1"))
+        described_class.perform_now(other.id)
+        expect(other.reload).to be_failed
+        expect(other.asset_id).to be_nil
+      end
+    end
+
+    it "rejects a deduped asset with no attached file" do
+      asset = create(:asset, user: user, checksum: Digest::SHA256.hexdigest(Base64.strict_decode64(png_b64)))
+      stub_generator(result: result)
+      described_class.perform_now(generation.id)
+      expect(generation.reload).to be_failed
+      expect(generation.error).to eq("The generated image could not be stored.")
+      expect(generation.asset_id).to be_nil
+      expect(asset.file).not_to be_attached
     end
   end
 

@@ -11,7 +11,7 @@ RSpec.describe AgentStreamJob, type: :job do
   let(:user) { create(:user) }
   let(:conversation) { create(:conversation, user: user) }
   let(:user_message) { create(:message, conversation: conversation, role: "user", content: "Hi") }
-  let(:runner) { instance_double(AgentRunner) }
+  let(:runner) { instance_spy(AgentRunner) }
 
   before do
     allow(AgentRunner).to receive(:new).and_return(runner)
@@ -46,6 +46,85 @@ RSpec.describe AgentStreamJob, type: :job do
       "html"
     end
     roles
+  end
+
+  describe "plan resume authorization" do
+    it "does not execute a plan belonging to another user's conversation" do
+      foreign_conversation = create(:conversation, user: create(:user), agent: conversation.agent)
+      foreign_plan = create(:agent_run, conversation: foreign_conversation, mode: "manual_plan", status: "planning")
+      expect(runner).not_to have_received(:resume_plan)
+
+      expect do
+        described_class.perform_now(
+          conversation_id: conversation.id,
+          user_id: user.id,
+          resume_agent_run_id: foreign_plan.id
+        )
+      end.not_to change { conversation.messages.count }
+
+      expect(foreign_plan.reload.status).to eq("planning")
+    end
+
+    it "resumes a plan from the acting user's conversation" do
+      plan = create(:agent_run, conversation: conversation, mode: "manual_plan", status: "planning")
+      allow(runner).to receive(:resume_plan).and_return({ tokens: 0 })
+
+      described_class.perform_now(
+        conversation_id: conversation.id,
+        user_id: user.id,
+        resume_agent_run_id: plan.id
+      )
+
+      expect(runner).to have_received(:resume_plan).with(plan, stream: true)
+    end
+  end
+
+  describe "WhatsApp reply tenant isolation" do
+    let(:integration) do
+      create(:tool_integration, organization: conversation.agent.organization, provider: "whatsapp",
+        credentials: { "api_key" => "tenant-token" }, config: { "phone_number_id" => "tenant-phone" })
+    end
+
+    before do
+      allow(runner).to receive(:run) do
+        conversation.messages.where(role: "assistant").order(:created_at).last.update!(content: "Tenant reply")
+        { tokens: 0 }
+      end
+      allow(Integrations::Whatsapp::SendMessage).to receive(:call).and_return({ ok: true })
+      allow(WhatsappService).to receive(:send_message)
+    end
+
+    def perform_whatsapp(integration_id:)
+      described_class.perform_now(conversation_id: conversation.id, user_id: user.id,
+        message_id: user_message.id, message_content: user_message.content, channel: :whatsapp,
+        phone_number: "14155552671", whatsapp_integration_id: integration_id)
+    end
+
+    it "replies through the exact organization integration that received the message" do
+      perform_whatsapp(integration_id: integration.id)
+
+      expect(Integrations::Whatsapp::SendMessage).to have_received(:call).with(
+        integration: integration, arguments: { "to" => "14155552671", "text" => "Tenant reply" }
+      )
+      expect(WhatsappService).not_to have_received(:send_message)
+    end
+
+    it "never borrows another organization's integration or the global sender" do
+      other_integration = create(:tool_integration, organization: create(:organization), provider: "whatsapp",
+        credentials: { "api_key" => "other-token" }, config: { "phone_number_id" => "other-phone" })
+
+      perform_whatsapp(integration_id: other_integration.id)
+
+      expect(Integrations::Whatsapp::SendMessage).not_to have_received(:call)
+      expect(WhatsappService).not_to have_received(:send_message)
+    end
+
+    it "fails closed when the original organization integration is unavailable" do
+      perform_whatsapp(integration_id: nil)
+
+      expect(Integrations::Whatsapp::SendMessage).not_to have_received(:call)
+      expect(WhatsappService).not_to have_received(:send_message)
+    end
   end
 
   # ── ordering: query above answer ────────────────────────────────────
@@ -337,7 +416,7 @@ RSpec.describe AgentStreamJob, type: :job do
     # Every downstream frame carries the request_id so the browser can bridge
     # its optimistic container even when a frame arrives out of order.
     payloads.each do |p|
-      next if p[:type] == "assistant_started" # also carries it, checked above
+      next if %w[assistant_started background_tasks].include?(p[:type])
 
       expect(p[:request_id]).to eq("req-bridge-2")
     end
@@ -570,6 +649,28 @@ RSpec.describe AgentStreamJob, type: :job do
       expect(conversation.messages.reload.find_by(id: superseded.id)&.content)
         .to eq("the answer to keep")
       expect(Turbo::StreamsChannel).not_to have_received(:broadcast_remove_to)
+    end
+
+    it "starts the next queued follow-up exactly once after the worker stops" do
+      allow(described_class).to receive(:perform_later)
+      initial = Conversations::TurnAdmission.call(conversation: conversation, user: user,
+        params: { content: "First turn", client_request_id: "stopped-request" })
+      queued = Conversations::TurnAdmission.call(conversation: conversation, user: user,
+        params: { content: "Still wanted", client_request_id: "next-request" })
+      expect(queued.status).to eq(:queued)
+      stub_reported_stop
+
+      described_class.perform_now(conversation_id: conversation.id, user_id: user.id,
+        message_content: "First turn", message_id: initial.message.id, request_id: initial.request_id)
+
+      expect(conversation.reload.metadata["m18_followups"]).to be_empty
+      expect(conversation.messages.where(role: "user").pluck(:content)).to contain_exactly("First turn", "Still wanted")
+      expect(conversation.messages.where(role: "assistant").where("metadata->>'streaming' = 'true'").count).to eq(1)
+      expect(conversation.runs.active).to be_empty
+      expect(described_class).to have_received(:perform_later).exactly(2).times
+      expect(described_class).to have_received(:perform_later).with(hash_including(
+        message_id: conversation.messages.find_by(content: "Still wanted").id, request_id: "next-request"
+      ))
     end
   end
 

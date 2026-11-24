@@ -15,6 +15,7 @@ RSpec.describe AgentRunner, type: :service do
 
   before do
     allow(agent).to receive(:llm_client).and_return(client)
+    allow(Workspaces::Provider).to receive(:available?).and_return({ manager: false, docker: false })
 
     Agents::ToolRegistry.register "test_tool",
       description: "Test",
@@ -69,112 +70,107 @@ RSpec.describe AgentRunner, type: :service do
       expect(runner.tool_definitions).to eq([ "calculator" ])
     end
 
-    it "resolves OS-mode read_file against the registry (rename no longer drops it)" do
+    it "resolves OS-mode workspace_read_file against the registry" do
       allow(agent).to receive(:enabled_tools).and_return([])
       os_conversation = create(:conversation, user: user, agent: agent, mode: "auto_build")
       os_runner = described_class.new(agent: agent, conversation: os_conversation, user: user)
 
       names = os_runner.tool_definitions
-      expect(names).to include("read_file")
-      expect(Agents::ToolRegistry.get("read_file")).to be_present
+      expect(names).to include("workspace_read_file")
+      expect(Agents::ToolRegistry.get("workspace_read_file")).to be_present
     end
   end
 
-  # ── scaffold availability in NORMAL CHAT (opt-in via enabled_tools) ──
-  #
-  # The scaffold capability ships behind the same config-driven surfacing as
-  # every other native tool: it reaches the model only because the agent's
-  # enabled_tools list names it. These examples pin that contract without
-  # re-testing the scaffolder itself (covered by scaffolder_spec).
-  describe "scaffold in normal chat" do
-    # A chat agent configured exactly like the seeded Shams AI assistant.
-    let(:chat_agent) { create(:agent, organization: organization, tools: [ "calculator", "memory_search", "time", "scaffold" ]) }
-    let(:chat_conversation) { create(:conversation, user: user, agent: chat_agent) } # no OS mode => plain chat
-    let(:chat_runner) { described_class.new(agent: chat_agent, conversation: chat_conversation, user: user) }
+  describe "sandbox tool policy" do
+    subject(:runner) { described_class.new(agent: agent, conversation: conversation, user: user) }
 
-    it "surfaces the registered scaffold tool for a chat agent that enables it" do
-      names = chat_runner.tool_definitions
-      expect(names).to include("scaffold")
-      # Existing chat tools are preserved, not replaced.
-      expect(names).to include("calculator", "memory_search", "time")
+    let(:host_tools) { %w[run_command code_executor write_file read_file scaffold file_reader file_writer] }
+    let(:workspace_tools) do
+      %w[workspace_create workspace_write_file workspace_read_file workspace_list_files
+         workspace_execute workspace_install workspace_run_tests workspace_start_preview
+         workspace_get_logs workspace_export workspace_stop]
     end
 
-    it "hands the real scaffold schema to the provider when the model is called" do
-      expect(Agents::ToolRegistry.get("scaffold")).to be_present
-      captured_tools = nil
-      allow(chat_agent).to receive(:llm_client).and_return(client)
-      allow(client).to receive(:chat) do |**kwargs|
-        captured_tools = kwargs[:tools]
-        { content: "ok", tool_calls: [], tokens: 5 }
+    it "removes configured host tools and aliases in chat and every OS mode" do
+      allow(agent).to receive(:enabled_tools).and_return(host_tools + [ { "name" => "file_reader" } ] + %w[calculator memory_search time])
+      [ nil, *AgentRunner::OS_MODES ].each do |mode|
+        conversation.mode = mode
+        expect(runner.tool_definitions & host_tools).to be_empty
+        expect(runner.tool_definitions).to include("calculator", "memory_search", "time")
+        expect(runner.send(:build_tool_schemas).map { |schema| schema[:name] } & host_tools).to be_empty
       end
-
-      chat_runner.run("make me a landing page", stream: false)
-
-      expect(captured_tools.map { |s| s[:name] }).to include("scaffold")
-      expect(captured_tools.find { |s| s[:name] == "scaffold" }[:parameters][:required]).to include("target_dir")
     end
 
-    it "does not hand scaffold to a chat agent that has not enabled it" do
-      plain = create(:agent, organization: organization, tools: [ "calculator", "time" ])
-      plain_conversation = create(:conversation, user: user, agent: plain)
-      runner = described_class.new(agent: plain, conversation: plain_conversation, user: user)
-
-      expect(runner.tool_definitions).not_to include("scaffold")
-    end
-
-    it "invokes scaffolding end-to-end through the existing chat tool loop" do
-      allow(chat_agent).to receive(:llm_client).and_return(client)
-      allow(client).to receive(:chat).and_return(
-        { content: nil, tool_calls: [ { id: "s1", type: "function",
-          function: { name: "scaffold", arguments: '{"target_dir":"/tmp/shams-chat-scaffold"}' } } ], tokens: 8 },
-        { content: "Scaffolded and verified.", tool_calls: [], tokens: 12 }
-      )
-      allow(Agents::Scaffolder).to receive(:scaffold).and_return({ ok: true, project_dir: "/tmp/shams-chat-scaffold" })
-
-      result = chat_runner.run("scaffold a django landing", stream: false)
-
-      expect(Agents::Scaffolder).to have_received(:scaffold).with(
-        template: "django_landing", target_dir: "/tmp/shams-chat-scaffold", brand: nil, force: false
-      )
-      expect(result[:content]).to eq("Scaffolded and verified.")
-    end
-
-    it "creates nothing unless the model actually calls the tool" do
-      allow(chat_agent).to receive(:llm_client).and_return(client)
-      allow(client).to receive(:chat).and_return({ content: "Sure, what should it be?", tool_calls: [], tokens: 6 })
-      expect(Agents::Scaffolder).not_to receive(:scaffold)
-
-      chat_runner.run("let's build something someday", stream: false)
-    end
-
-    it "keeps the bounded refusal contract on the enabled chat path" do
-      # Unknown template short-circuits before any disk write; a blocked path
-      # is refused by the executor guardrails — no project created either way.
-      missing = "/tmp/shams-never-#{SecureRandom.hex(6)}"
-      refused = Agents::ToolRegistry.execute("scaffold", { "template" => "rails-api", "target_dir" => missing })
-      expect(refused[:ok]).to be false
-      expect(refused[:error_code]).to eq("unknown_template")
-      expect(File).not_to exist(missing)
-
-      blocked = Agents::ToolRegistry.execute("scaffold", { "target_dir" => "/etc/shams-blocked-app" })
-      expect(blocked[:ok]).to be false
-      expect(blocked[:error_code]).to eq("blocked_path")
-    end
-  end
-
-  # ── OS/build modes keep their guaranteed scaffold availability ────────
-
-  describe "scaffold on build modes" do
-    let(:build_agent) { create(:agent, organization: organization, tools: []) }
-
-    it "auto_build and manual_build expose the execution set including scaffold" do
-      %w[auto_build manual_build].each do |mode|
-        conv = create(:conversation, user: user, agent: build_agent, mode: mode)
-        runner = described_class.new(agent: build_agent, conversation: conv, user: user)
-        names = runner.tool_definitions
-
-        expect(names).to include("scaffold", "run_command", "write_file", "read_file", "code_executor")
+    it "adds only sandbox execution tools in every OS mode" do
+      allow(agent).to receive(:enabled_tools).and_return([])
+      AgentRunner::OS_MODES.each do |mode|
+        conversation.mode = mode
+        expect(runner.tool_definitions).to include(*workspace_tools)
       end
+    end
+
+    it "refuses crafted host calls before either executor in every mode" do
+      allow(agent).to receive(:enabled_tools).and_return(host_tools)
+      expect(Agents::ToolRegistry).not_to receive(:execute)
+      expect(Tools::Dispatcher).not_to receive(:call)
+      [ nil, *AgentRunner::OS_MODES ].each do |mode|
+        conversation.mode = mode
+        host_tools.each do |name|
+          refusal = runner.send(:dispatch_tool_call, name, {})
+          expect(refusal).to include(error_code: "tool_not_allowed", error: a_string_including(name))
+          expect(runner.send(:action_succeeded?, refusal)).to be(false)
+        end
+      end
+    end
+
+    it "allows workspace calls in OS mode through the native registry" do
+      conversation.mode = "auto_build"
+      args = { "argv" => [ "python3", "--version" ] }
+      expect(Agents::ToolRegistry).to receive(:execute)
+        .with("workspace_execute", args, hash_including(user: user, conversation_id: conversation.id))
+        .and_return({ ok: true, stdout: "Python 3" })
+      expect(runner.send(:dispatch_tool_call, "workspace_execute", args)).to include(ok: true)
+    end
+
+    it "enforces the per-message filter after OS, attachment, and image additions" do
+      conversation.mode = "auto_build"
+      allow(agent).to receive(:enabled_tools).and_return(%w[calculator time])
+      asset = create(:asset, user: user)
+      selection = conversation.messages.create!(role: "user", content: "math only",
+        metadata: { "tools" => [ { "name" => "calculator" } ] })
+      selection.message_attachments.create!(asset: asset)
+      allow(Capabilities::Registry).to receive(:available?).and_call_original
+      allow(Capabilities::Registry).to receive(:available?).with("image_generation").and_return(true)
+      scoped = described_class.new(agent: agent, conversation: conversation, user: user, source_message: selection)
+      expect(scoped.tool_definitions).to eq([ "calculator" ])
+      expect(Agents::ToolRegistry).not_to receive(:execute)
+      expect(Tools::Dispatcher).not_to receive(:call)
+      %w[time workspace_execute workspace_write_file read_asset list_assets generate_image unknown].each do |name|
+        expect(scoped.send(:dispatch_tool_call, name, {})).to include(error_code: "tool_not_allowed")
+      end
+    end
+
+    it "hands configured workspace schemas to a chat model, never host schemas" do
+      allow(agent).to receive(:enabled_tools).and_return(host_tools + [ "workspace_write_file" ])
+      expect(client).to receive(:chat) do |**kwargs|
+        expect(kwargs[:tools].map { |schema| schema[:name] }).to eq([ "workspace_write_file" ])
+        { content: "What should I build?", tool_calls: [], tokens: 5 }
+      end
+      expect(Agents::ToolRegistry).not_to receive(:execute)
+      runner.run("let's build something someday", stream: false)
+    end
+
+    it "does not fabricate resumed success for a now-excluded workspace write" do
+      allow(agent).to receive(:enabled_tools).and_return([ "workspace_write_file" ])
+      selection = build(:message, metadata: { "tools" => [ "calculator" ] })
+      scoped = described_class.new(agent: agent, conversation: conversation, user: user, source_message: selection)
+      args = { "path" => "app.py", "content" => "pass" }
+      scoped.instance_variable_set(:@resume_action_keys, [ scoped.send(:action_key, "workspace_write_file", args) ])
+      expect(Agents::ToolRegistry).not_to receive(:execute)
+      calls = [ { id: "crafted", function: { name: "workspace_write_file", arguments: args } } ]
+      result = scoped.send(:process_tool_calls, calls, []).first[:result]
+      expect(result).to include(error_code: "tool_not_allowed")
+      expect(result).not_to have_key(:resumed)
     end
   end
 
@@ -182,6 +178,10 @@ RSpec.describe AgentRunner, type: :service do
 
   describe "capability-aware tool surfacing" do
     subject(:runner) { described_class.new(agent: agent, conversation: conversation, user: user) }
+
+    before do
+      create(:membership, user: user, organization: organization, role: "member")
+    end
 
     def attach_file_to_conversation(target = conversation)
       asset = create(:asset, user: user, filename: "README.md")
@@ -232,6 +232,7 @@ RSpec.describe AgentRunner, type: :service do
       allow(agent).to receive(:enabled_tools).and_return([ "web_search" ])
       allow(Capabilities::Registry).to receive(:available?).and_call_original
       allow(Capabilities::Registry).to receive(:available?).with("web_search").and_return(true)
+      allow(Capabilities::Registry).to receive(:available?).with("web_search", organization: organization).and_return(true)
 
       expect(runner.tool_definitions).to eq(%w[web_search])
     end
@@ -243,17 +244,17 @@ RSpec.describe AgentRunner, type: :service do
       os_runner = described_class.new(agent: agent, conversation: os_conversation, user: user)
 
       names = os_runner.tool_definitions
-      expect(names).to include("run_command", "write_file", "read_asset", "list_assets")
+      expect(names).to include("workspace_execute", "workspace_write_file", "read_asset", "list_assets")
     end
 
-    it "guarantees the scaffold tool on OS/build runs even with a chat-only config" do
+    it "adds workspace creation on OS/build runs even with a chat-only config" do
       allow(agent).to receive(:enabled_tools).and_return([])
       os_conversation = create(:conversation, user: user, agent: agent, mode: "auto_build")
       os_runner = described_class.new(agent: agent, conversation: os_conversation, user: user)
 
-      expect(os_runner.tool_definitions).to include("scaffold")
-      # ...but plain chat does not hand it out for free.
-      expect(runner.tool_definitions).not_to include("scaffold")
+      expect(os_runner.tool_definitions).to include("workspace_create")
+      # Plain chat does not hand it out for free.
+      expect(runner.tool_definitions).not_to include("workspace_create")
     end
 
     it "passes the acting user into executor context for ownership checks" do
@@ -434,6 +435,96 @@ RSpec.describe AgentRunner, type: :service do
 
   # ── §3 context bounding: the tool transcript ─────────────────────────
 
+  describe "research citations" do
+    it "persists the full ledger, validates citations, and replaces model-authored sources" do
+      create(:membership, user: user, organization: organization, role: "member")
+      allow(agent).to receive(:enabled_tools).and_return([ "deep_research" ])
+      allow(Capabilities::Registry).to receive(:available?).and_call_original
+      allow(Capabilities::Registry).to receive(:available?).with("deep_research").and_return(true)
+      allow(Capabilities::Registry).to receive(:available?)
+        .with("deep_research", organization: organization).and_return(true)
+      url = "https://example.com/evidence"
+      source_id = Research::DeepResearch.source_id(url)
+      full_result = {
+        status: "completed", reason: nil, calls: [ { query: "Rails", status: "completed" } ],
+        sources: [ { source_id: source_id, title: "Evidence", url: url, snippet: "x" * 2000, query: "Rails" } ],
+        findings: [ { text: "x" * 2000, source_url: url, basis: "search_snippet" } ],
+        limits: { sources: 10, calls: 20, seconds: 120, questions: 5, snippet_characters: 2000 },
+        elapsed_seconds: 0.5, caveat: "Findings are provider search snippets; full pages have not been reviewed."
+      }
+      allow(Research::DeepResearch).to receive(:call).and_return(full_result)
+      seen = []
+      allow(client).to receive(:chat) do |**kwargs|
+        seen << kwargs
+        if seen.length == 1
+          { content: nil, tokens: 5, tool_calls: [ { id: "research-1", function: {
+            name: "deep_research", arguments: '{"topic":"Rails"}'
+          } } ] }
+        else
+          { content: "Evidence supports [the finding](https://example.com/evidence#details).\n\n" \
+                     "[Fabricated](https://evil.example/claim) and https://evil.example/bare are not evidence.\n\n" \
+                     "Sources:\n- https://evil.example/old", tool_calls: [], tokens: 7 }
+        end
+      end
+
+      result = described_class.new(agent: agent, conversation: conversation, user: user).run("Research Rails", stream: false)
+
+      tool_message = seen.last[:messages].find { |message| message[:role] == "tool" }
+      tool_payload = JSON.parse(tool_message[:content])
+      assistant = conversation.messages.where(role: "assistant").last
+      metadata = assistant.metadata["deep_research"]
+      expect(tool_payload["sources"].first["snippet"].length).to eq(300)
+      expect(tool_payload["findings"]).to eq([ { "source_id" => source_id, "basis" => "search_snippet" } ])
+      expect(result[:content]).to include("[the finding](https://example.com/evidence)")
+      expect(result[:content]).to include("Fabricated (unsupported citation)")
+      expect(result[:content]).to include("[unsupported citation]")
+      expect(result[:content]).not_to include("evil.example")
+      expect(result[:content]).to include("Sources:\n1. Evidence — https://example.com/evidence")
+      expect(metadata["runs"].first["sources"].first["snippet"].length).to eq(2000)
+      expect(metadata["sources"].first["url"]).to eq(url)
+      expect(metadata["citation_validation"]["unsupported_urls"])
+        .to contain_exactly("https://evil.example/claim", "https://evil.example/bare")
+      expect(assistant.content).to eq(result[:content])
+      expect(Run.last.output).to eq(result[:content])
+    end
+  end
+
+  describe "live steering" do
+    it "delivers steering after a tool finishes without cancelling or repeating it" do
+      source = conversation.messages.create!(role: "user", content: "Calculate")
+      placeholder = conversation.messages.create!(role: "assistant", content: "", metadata: {
+        "streaming" => true, "stream_started_at" => Time.current.utc.iso8601, "request_id" => SecureRandom.uuid
+      })
+      allow(agent).to receive(:enabled_tools).and_return([ "calculator" ])
+      seen = []
+      allow(client).to receive(:chat) do |**kwargs|
+        seen << kwargs
+        if seen.length == 1
+          { content: nil, tool_calls: [ { id: "c1", function: { name: "calculator", arguments: '{"expression":"1+1"}' } } ],
+            tokens: 5, finish_reason: "tool_calls" }
+        else
+          { content: "Done", tool_calls: [], tokens: 3, finish_reason: "stop" }
+        end
+      end
+      allow(Agents::ToolRegistry).to receive(:execute) do
+        Conversations::TurnAdmission.call(conversation: conversation, user: user,
+          params: { content: "Use the result in one sentence" }, requested_mode: "steer")
+        { ok: true }
+      end
+      runner = described_class.new(agent: agent, conversation: conversation, user: user,
+        source_message: source, streaming_message: placeholder)
+
+      result = runner.run("Calculate", stream: false)
+
+      expect(result[:error]).to be_nil
+      expect(Agents::ToolRegistry).to have_received(:execute).once
+      expect(seen.last[:messages]).to include(role: "user", content: "Use the result in one sentence")
+      expect(conversation.reload.metadata).not_to have_key("m18_steering")
+      expect(Run.last.status).to eq("succeeded")
+      expect(placeholder.reload).not_to be_streaming
+    end
+  end
+
   describe "#build_tool_messages" do
     subject(:runner) { described_class.new(agent: agent, conversation: conversation, user: user) }
 
@@ -469,15 +560,26 @@ RSpec.describe AgentRunner, type: :service do
       end
     end
 
-    it "caps an oversized recent payload with a truncation marker" do
+    it "caps an oversized recent payload with valid JSON and a truncation marker" do
       big = { "data" => "x" * (AgentRunner::TOOL_RESULT_MAX_BYTES + 500) }
       messages = runner.send(:build_tool_messages, [ entry("only", "reader", big) ])
 
       content = messages.first[:content]
-      expect(content).to match(/\[truncated \d+ bytes\]\z/)
-      # The retained head never exceeds the configured byte budget.
-      expect(content.byteslice(0, AgentRunner::TOOL_RESULT_MAX_BYTES).bytesize)
-        .to eq(AgentRunner::TOOL_RESULT_MAX_BYTES)
+      payload = JSON.parse(content)
+      expect(payload).to include("truncated" => true, "original_bytes" => big.to_json.bytesize)
+      expect(payload["notice"]).to match(/\[truncated \d+ bytes\]\z/)
+      expect(payload["preview"]).to start_with("{\"data\"")
+      expect(content.bytesize).to be <= AgentRunner::TOOL_RESULT_MAX_BYTES
+      expect(content.valid_encoding?).to be(true)
+    end
+
+    it "does not split multibyte text when truncating a tool payload" do
+      big = { "data" => "界" * AgentRunner::TOOL_RESULT_MAX_BYTES }
+      content = runner.send(:bound_payload, big)
+
+      expect(JSON.parse(content)["truncated"]).to be(true)
+      expect(content.valid_encoding?).to be(true)
+      expect(content.bytesize).to be <= AgentRunner::TOOL_RESULT_MAX_BYTES
     end
 
     it "leaves a small recent payload whole" do
@@ -552,9 +654,9 @@ RSpec.describe AgentRunner, type: :service do
         allow(Agents::ToolRegistry).to receive(:execute).and_return({ ok: true })
         allow(client).to receive(:chat).and_return(
           { content: '["Step one", "Step two"]', tool_calls: [], tokens: 5 },
-          { content: nil, tool_calls: [ { id: "call_1", function: { name: "run_command", arguments: "{}" } } ], tokens: 6 },
+          { content: nil, tool_calls: [ { id: "call_1", function: { name: "workspace_execute", arguments: "{}" } } ], tokens: 6 },
           { content: "Executed.", tool_calls: [], tokens: 10 },
-          { content: nil, tool_calls: [ { id: "call_2", function: { name: "run_command", arguments: "{}" } } ], tokens: 6 },
+          { content: nil, tool_calls: [ { id: "call_2", function: { name: "workspace_execute", arguments: "{}" } } ], tokens: 6 },
           { content: "Done.", tool_calls: [], tokens: 10 }
         )
 
@@ -573,7 +675,7 @@ RSpec.describe AgentRunner, type: :service do
         allow_any_instance_of(AgentRun).to receive(:broadcast_status)
         allow(client).to receive(:chat).and_return(
           { content: '["Install dependencies"]', tool_calls: [], tokens: 5 },
-          { content: nil, tool_calls: [ { id: "call_1", function: { name: "run_command", arguments: "{}" } } ], tokens: 6 },
+          { content: nil, tool_calls: [ { id: "call_1", function: { name: "workspace_execute", arguments: "{}" } } ], tokens: 6 },
           { content: "Installed.", tool_calls: [], tokens: 10 }
         )
 
@@ -592,7 +694,7 @@ RSpec.describe AgentRunner, type: :service do
         missing_root = "/tmp/shams-runner-verify-#{SecureRandom.hex(4)}-missing"
         allow(client).to receive(:chat).and_return(
           { content: "[\"Write '#{missing_root}/src/app.py'\"]", tool_calls: [], tokens: 5 },
-          { content: nil, tool_calls: [ { id: "call_1", function: { name: "write_file", arguments: "{}" } } ], tokens: 6 },
+          { content: nil, tool_calls: [ { id: "call_1", function: { name: "workspace_write_file", arguments: "{}" } } ], tokens: 6 },
           { content: "Wrote it (allegedly).", tool_calls: [], tokens: 10 }
         )
 
@@ -912,9 +1014,10 @@ RSpec.describe AgentRunner, type: :service do
     end
 
     it "completes a pending step when the loop executes real tool actions" do
+      conversation.update!(mode: "auto_build")
       allow(Agents::ToolRegistry).to receive(:execute).and_return({ ok: true })
       allow(client).to receive(:chat).and_return(
-        { content: nil, tool_calls: [ { id: "call_1", function: { name: "run_command", arguments: "{}" } } ], tokens: 10 },
+        { content: nil, tool_calls: [ { id: "call_1", function: { name: "workspace_execute", arguments: "{}" } } ], tokens: 10 },
         { content: "Wrote the file and verified it.", tool_calls: [], tokens: 10 }
       )
 
@@ -955,6 +1058,15 @@ RSpec.describe AgentRunner, type: :service do
       expect(prompt).to include("generate_plan")
       expect(prompt).to include("Rails 8.1.3")
       expect(prompt).to include("data-streaming-content")
+    end
+
+    it "advertises only effective tools and prohibits fallback to the host" do
+      conversation.mode = "auto_build"
+      allow(agent).to receive(:enabled_tools).and_return(%w[run_command file_reader scaffold])
+      prompt = runner.send(:build_system_prompt)
+      expect(prompt).to include("workspace_execute", "workspace_read_file")
+      expect(prompt).to include("Host filesystem access and host execution are prohibited")
+      expect(prompt).not_to include("run_command", "file_reader", "scaffold", "touch this Mac")
     end
 
     it "includes available tools when agent has tools" do
@@ -1117,35 +1229,35 @@ RSpec.describe AgentRunner, type: :service do
 
   # ── build resume: the default loop skips completed writes on a re-delivery ──
   describe "build resume (tool-action checkpoint)" do
-    let(:write_args) { '{"path":"/app/a.rb","content":"hi"}' }
+    let(:write_args) { '{"path":"app/a.rb","content":"hi"}' }
     let(:write_call) do
       { content: nil, tokens: 3,
         tool_calls: [ { id: "c1", type: "function",
-                        function: { name: "write_file", arguments: write_args } } ] }
+                        function: { name: "workspace_write_file", arguments: write_args } } ] }
     end
     let(:done_call) { { content: "wrote it", tool_calls: [], tokens: 2 } }
 
     it "records a successful write on the run's checkpoint (§6)" do
-      allow(agent).to receive(:enabled_tools).and_return([ "write_file" ])
+      allow(agent).to receive(:enabled_tools).and_return([ "workspace_write_file" ])
       allow(Agents::ToolRegistry).to receive(:execute)
-        .and_return({ ok: true, path: "/app/a.rb", bytes_written: 10 })
+        .and_return({ ok: true, path: "app/a.rb", bytes_written: 10 })
       allow(client).to receive(:chat).and_return(write_call, done_call)
 
       described_class.new(agent: agent, conversation: conversation, user: user,
                           request_id: "req-1").run("go", stream: false)
 
       entry = Run.last.tool_checkpoint.first
-      expect(entry["tool"]).to eq("write_file")
+      expect(entry["tool"]).to eq("workspace_write_file")
       expect(entry["ok"]).to be(true)
-      expect(entry["note"]).to include("/app/a.rb")
+      expect(entry["note"]).to include("app/a.rb")
     end
 
     it "skips a write an earlier attempt of the same turn already completed (§6)" do
-      allow(agent).to receive(:enabled_tools).and_return([ "write_file" ])
+      allow(agent).to receive(:enabled_tools).and_return([ "workspace_write_file" ])
       calls = 0
       allow(Agents::ToolRegistry).to receive(:execute) do
         calls += 1
-        { ok: true, path: "/app/a.rb", bytes_written: 10 }
+        { ok: true, path: "app/a.rb", bytes_written: 10 }
       end
 
       first = described_class.new(agent: agent, conversation: conversation, user: user, request_id: "req-2")
@@ -1164,11 +1276,11 @@ RSpec.describe AgentRunner, type: :service do
     end
 
     it "re-runs a write whose earlier attempt failed rather than skipping it (§6)" do
-      allow(agent).to receive(:enabled_tools).and_return([ "write_file" ])
+      allow(agent).to receive(:enabled_tools).and_return([ "workspace_write_file" ])
       calls = 0
       allow(Agents::ToolRegistry).to receive(:execute) do
         calls += 1
-        { ok: false, error: "disk full", path: "/app/a.rb" }
+        { ok: false, error: "disk full", path: "app/a.rb" }
       end
       allow(client).to receive(:chat).and_return(write_call, done_call)
 
@@ -1201,11 +1313,11 @@ RSpec.describe AgentRunner, type: :service do
     end
 
     it "re-runs every write when the run carries no turn id (§6 - direct runner)" do
-      allow(agent).to receive(:enabled_tools).and_return([ "write_file" ])
+      allow(agent).to receive(:enabled_tools).and_return([ "workspace_write_file" ])
       calls = 0
       allow(Agents::ToolRegistry).to receive(:execute) do
         calls += 1
-        { ok: true, path: "/app/a.rb", bytes_written: 10 }
+        { ok: true, path: "app/a.rb", bytes_written: 10 }
       end
       allow(client).to receive(:chat).and_return(write_call, done_call)
 
@@ -1303,6 +1415,154 @@ RSpec.describe AgentRunner, type: :service do
       expect(result[:cancelled]).to be_nil
       expect(streaming_msg.reload.content).to eq("all of it")
       expect(Run.last.reload.status).to eq("succeeded")
+    end
+  end
+
+  describe "streaming capability" do
+    it "uses synchronous chat when the selected connection disables streaming" do
+      integration = create(:tool_integration, organization: organization, provider: "custom-no-stream",
+        credentials: { "api_key" => "test-only-no-stream-key" }, config: {
+          "base_url" => "https://custom.example.test/v1", "auth_mode" => "bearer",
+          "models" => { agent.model => { "supports_streaming" => false } }
+        })
+      connection = Llm::ProviderConnection.new(provider: "custom-no-stream", integration: integration, model: agent.model)
+      real_client = Llm::Client.new(provider: "custom-no-stream", model: agent.model, connection: connection)
+      allow(agent).to receive(:llm_client).and_return(real_client)
+      expect(real_client).to receive(:chat).and_return({ content: "Synchronous reply", tool_calls: [], tokens: 4 })
+      expect(real_client).not_to receive(:stream_chat)
+
+      result = described_class.new(agent: agent, conversation: conversation, user: user).run("hello", stream: true)
+
+      expect(result[:content]).to eq("Synchronous reply")
+      expect(real_client.streaming_supported?).to be(false)
+    end
+  end
+
+  # ── inference outcome recording (Issue B) ───────────────────────────
+
+  describe "inference outcome recording" do
+    subject(:runner) { described_class.new(agent: agent, conversation: conversation, user: user) }
+
+    let!(:connection) do
+      create(:tool_integration, organization: organization, provider: "anthropic", credentials: { "api_key" => "k" })
+    end
+
+    it "records a successful provider call without touching updated_at" do
+      updated_before = connection.reload.updated_at
+      runner.send(:record_inference_outcome)
+      config = connection.reload.config
+      expect(config["last_inference_succeeded_at"]).to be_present
+      expect(config["last_inference_model_id"]).to eq(agent.model)
+      expect(config["last_inference_error_code"]).to be_nil
+      expect(connection.updated_at.to_f).to eq(updated_before.to_f)
+    end
+
+    it "records a typed provider failure as the blocking error code" do
+      runner.send(:record_inference_outcome, error_code: "provider_credit_insufficient")
+      config = connection.reload.config
+      expect(config["last_inference_error_code"]).to eq("provider_credit_insufficient")
+      expect(config["last_inference_succeeded_at"]).to be_nil
+    end
+
+    it "is a no-op without a stored connection for the effective provider" do
+      connection.destroy!
+      expect { runner.send(:record_inference_outcome) }.not_to raise_error
+    end
+  end
+
+  describe "renderable provider response verification" do
+    subject(:runner) { described_class.new(agent: agent, conversation: conversation, user: user) }
+
+    let(:model) { "gpt-test-model" }
+    let!(:integration) { create(:tool_integration, organization: organization, provider: "openai", credentials: { "api_key" => "test-only-key" }) }
+    let(:connection) { Llm::ProviderConnection.new(provider: "openai", integration: integration, model: model) }
+    let(:provider_client) { Llm::Client.new(provider: "openai", model: model, connection: connection) }
+
+    before do
+      agent.update!(provider: "openai", model: model)
+      allow(agent).to receive_messages(llm_client: provider_client, enabled_tools: [])
+      allow(Llm::ResourceSampler).to receive(:sample).and_return({})
+    end
+
+    def stub_chat_response(content:, tool_calls: [])
+      response = instance_double(HTTParty::Response, success?: true, body: {
+        choices: [ { finish_reason: tool_calls.any? ? "tool_calls" : "stop",
+                     message: { role: "assistant", content: content, tool_calls: tool_calls } } ],
+        usage: { completion_tokens: 5 }
+      }.to_json)
+      allow(HTTParty).to receive(:post).and_return(response)
+    end
+
+    def verification
+      integration.reload.config.fetch("inference_verifications").fetch(model)
+    end
+
+    it "records an empty ordinary response as failed verification" do
+      stub_chat_response(content: "   ")
+
+      runner.run("hi", stream: false)
+
+      expect(verification).to include("error_code" => "empty_response")
+      expect(verification).not_to have_key("succeeded_at")
+    end
+
+    it "records a reasoning-only stream ending in DONE as failed verification" do
+      allow(HTTParty).to receive(:post) do |_url, _options, &block|
+        block.call("data: {\"choices\":[{\"index\":0,\"delta\":{\"reasoning_content\":\"thinking\"}}]}\n\n")
+        block.call("data: {\"choices\":[],\"usage\":{\"completion_tokens\":5}}\n\n")
+        block.call("data: [DONE]\n\n")
+        double(code: "200")
+      end
+
+      result = runner.run("hi", stream: true) { |_chunk| }
+
+      expect(result[:content]).to eq("")
+      expect(verification).to include("error_code" => "empty_response")
+      expect(verification).not_to have_key("succeeded_at")
+    end
+
+    it "counts a tool-call-only response as successful inference" do
+      stub_chat_response(content: nil, tool_calls: [ { id: "call-1", type: "function",
+        function: { name: "test_tool", arguments: "{}" } } ])
+
+      runner.send(:chat_with_agent_model, [], [], stream: false)
+
+      expect(verification).to include("error_code" => nil)
+      expect(verification["succeeded_at"]).to be_present
+    end
+
+    it "counts nonblank content as successful inference" do
+      stub_chat_response(content: "visible answer")
+
+      runner.run("hi", stream: false)
+
+      expect(verification).to include("error_code" => nil)
+      expect(verification["succeeded_at"]).to be_present
+    end
+
+    it "records Bonsai under the canonical inference model and matching fingerprint" do
+      original_model = ENV["BONSAI_MODEL"]
+      ENV["BONSAI_MODEL"] = "canonical-bonsai-test-model"
+      agent.update!(provider: "bonsai", model: "stale-bonsai-label")
+      bonsai_integration = create(:tool_integration, organization: organization, provider: "bonsai", credentials: {})
+      bonsai_connection = Llm::ProviderConnection.new(provider: "bonsai", integration: bonsai_integration,
+        model: "stale-bonsai-label")
+      bonsai_client = Llm::Client.new(provider: "bonsai", model: "stale-bonsai-label", connection: bonsai_connection)
+      allow(agent).to receive(:llm_client).and_return(bonsai_client)
+      stub_chat_response(content: "local answer")
+
+      runner.run("hi", stream: false)
+
+      canonical = Llm::ProviderConnection.new(provider: "bonsai", integration: bonsai_integration,
+        model: "canonical-bonsai-test-model")
+      config = bonsai_integration.reload.config
+      expect(config["last_inference_model_id"]).to eq("canonical-bonsai-test-model")
+      expect(config["inference_verifications"]).to have_key("canonical-bonsai-test-model")
+      expect(config["inference_verifications"]).not_to have_key("stale-bonsai-label")
+      expect(config.dig("inference_verifications", "canonical-bonsai-test-model", "configuration_fingerprint"))
+        .to eq(canonical.inference_fingerprint)
+    ensure
+      ENV["BONSAI_MODEL"] = original_model
     end
   end
 end

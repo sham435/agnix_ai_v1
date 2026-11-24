@@ -30,6 +30,7 @@ RSpec.describe "AgentRunner plugin wiring", type: :service do
 
   before do
     allow(agent).to receive(:llm_client).and_return(client)
+    allow(Workspaces::Provider).to receive(:available?).and_return({ manager: false, docker: false })
   end
 
   describe "surfacing gate" do
@@ -98,6 +99,32 @@ RSpec.describe "AgentRunner plugin wiring", type: :service do
   end
 
   describe "dispatch routing" do
+    it "refuses a configured plugin excluded by per-message selection before dispatch" do
+      selection = conversation.messages.create!(role: "user", content: "math only",
+        metadata: { "tools" => [ "calculator" ] })
+      scoped = AgentRunner.new(agent: agent, conversation: conversation, user: user, source_message: selection)
+      expect(Tools::Dispatcher).not_to receive(:call)
+      expect(Agents::ToolRegistry).not_to receive(:execute)
+      result = scoped.send(:dispatch_tool_call, "slack.post_message", { "channel" => "#general", "text" => "hi" })
+      expect(result).to include(error_code: "tool_not_allowed", error: a_kind_of(String))
+    end
+
+    it "rechecks plugin availability at dispatch after integration is paused" do
+      expect(runner.tool_definitions).to include("slack.post_message")
+      integration.update!(is_active: false)
+      expect(Tools::Dispatcher).not_to receive(:call)
+      result = runner.send(:dispatch_tool_call, "slack.post_message", {})
+      expect(result).to include(error_code: "tool_not_allowed")
+    end
+
+    it "refuses an unconfigured catalog tool and an unknown dotted name" do
+      agent.update!(tools: [ "calculator" ])
+      expect(Tools::Dispatcher).not_to receive(:call)
+      %w[slack.post_message slack.fly_me].each do |name|
+        expect(runner.send(:dispatch_tool_call, name, {})).to include(error_code: "tool_not_allowed")
+      end
+    end
+
     it "sends dotted calls to the dispatcher with the pinned integration and org" do
       allow(client).to receive(:chat).and_return(
         {

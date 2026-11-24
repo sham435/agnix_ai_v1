@@ -5,6 +5,7 @@ Rails.application.routes.draw do
 
   # Root path.
   root "conversations#index"
+  get "dashboard", to: "conversations#index", as: :dashboard
 
   # Authentication.
   get    "login",       to: "sessions#new"
@@ -33,6 +34,13 @@ Rails.application.routes.draw do
     get   :integrations, to: "integrations#index"
     # Per-organization model provider keys (Settings::IntegrationsController#save_key).
     post  :integrations_keys, to: "integrations#save_key", as: :integrations_keys
+    post  :integrations_connection, to: "integrations#connection", as: :integrations_connection
+    post  :integrations_model, to: "integrations#model", as: :integrations_model
+    post  :integrations_default_model, to: "integrations#default_model", as: :integrations_default_model
+    post  :integrations_refresh, to: "integrations#refresh", as: :integrations_refresh
+    post  :integrations_custom, to: "integrations#save_custom", as: :integrations_custom
+    post  :integrations_manual_model, to: "integrations#save_model", as: :integrations_manual_model
+    post  :integrations_verify_model, to: "integrations#verify_model", as: :integrations_verify_model
     get   :api_keys, to: "api_keys#index"
     patch :theme, to: "preferences#update_theme"
   end
@@ -53,13 +61,14 @@ Rails.application.routes.draw do
     collection { get :search }
     resources :messages, only: [ :create ]
     member do
+      get :tasks
       match :regenerate, via: [ :get, :post ]
       match :stop,       via: [ :get, :post ]
       post  :interrupt
     end
   end
 
-  resources :agents, except: [ :index ] do
+  resources :agents do
     collection { get :search }
   end
 
@@ -99,6 +108,9 @@ Rails.application.routes.draw do
   get "explore", to: "explore#index", as: :explore
   post "explore/start", to: "explore#start", as: :explore_start
 
+  get "github/approval", to: "github_approvals#show", as: :github_approval
+  post "github/approval", to: "github_approvals#create"
+
   # Tool integrations. Phase 4 (Plugins Manager) adds the marketplace routes
   # additively: the custom collection paths (connect/<key>, plugin/<key>) are
   # matched before member show, and catalog keys are never uuid-shaped, so
@@ -133,6 +145,34 @@ Rails.application.routes.draw do
     delete "devices",                   to: "devices#close_everywhere", as: :devices
   end
 
+  # Sandboxed Docker workspaces. Every route is keyed by a workspace id and a
+  # path relative to /workspace; none of them accepts a host path.
+  get    "workspaces",                     to: "workspaces#index",        as: :workspaces
+  # Above `workspaces/:id`, or "panel" would be read as a workspace uuid.
+  get    "workspaces/panel",               to: "workspaces#panel",        as: :workspace_panel
+  get    "workspaces/:id",                 to: "workspaces#show",         as: :workspace
+  get    "workspaces/:id/files",           to: "workspaces#files",        as: :workspace_files
+  get    "workspaces/:id/file",            to: "workspaces#file",         as: :workspace_file
+  get    "workspaces/:id/logs",            to: "workspaces#logs",         as: :workspace_logs
+  get    "workspaces/:id/runs",            to: "workspaces#runs",         as: :workspace_runs
+  post   "workspaces/:id/exec",            to: "workspaces#exec",         as: :workspace_exec
+  post   "workspaces/:id/tests",           to: "workspaces#tests",        as: :workspace_tests
+  post   "workspaces/:id/preview",         to: "workspaces#start_preview", as: :workspace_preview_start
+  delete "workspaces/:id/preview",         to: "workspaces#stop_preview", as: :workspace_preview_stop
+  get    "workspaces/:id/export",          to: "workspaces#export",       as: :workspace_export
+  delete "workspaces/:id",                 to: "workspaces#destroy",      as: :workspace_destroy
+
+  # The authenticated preview gateway. A workspace never publishes a port and
+  # nothing here takes a destination: the id must belong to the signed-in user,
+  # the ?session= token must still be live, and the port must be the one that
+  # preview actually opened. format: false because the forwarded path belongs to
+  # the sandboxed app — /static/app.css is a file, not a request for css.
+  preview_via = %i[get head post put patch delete]
+  match "workspaces/:id/preview/:port/*path", to: "workspace_previews#proxy",
+        via: preview_via, as: :workspace_preview, constraints: { port: /\d+/ }, format: false
+  match "workspaces/:id/preview/:port", to: "workspace_previews#proxy",
+        via: preview_via, constraints: { port: /\d+/ }, format: false
+
   # Webhooks.
   namespace :webhooks do
     post "stripe",   to: "stripe#create"
@@ -144,11 +184,22 @@ Rails.application.routes.draw do
   # API v1.
   namespace :api do
     namespace :v1, defaults: { format: :json } do
+      namespace :owner do
+        get "tunnel", to: "tunnels#show"
+        post "tunnel/refresh", to: "tunnels#refresh"
+      end
       get    "csrf",         to: "csrf#show"
       post   "sessions",     to: "sessions#create"
       delete "sessions",     to: "sessions#destroy"
       get    "capabilities", to: "capabilities#index"
-      get    "library",      to: "assets#library"
+      get "models", to: "models#index"
+      get "models/providers", to: "models#providers"
+      post "models/refresh", to: "models#refresh"
+      patch "models/selection", to: "models#update"
+      patch "models/providers/:provider_id", to: "models#configure"
+      get "models/:id/status", to: "models#status", constraints: { id: /[^\/]+/ }
+      patch "conversations/:conversation_id/model", to: "models#update"
+      get "library",      to: "assets#library"
       resources :assets, only: [ :create, :show, :destroy ] do
         member do
           get  :download
@@ -176,6 +227,19 @@ Rails.application.routes.draw do
       post   "security/phone/confirm",     to: "phone#confirm"
       delete "security/devices/:id",       to: "devices#destroy",     as: :security_device
       delete "security/devices",           to: "devices#destroy_all", as: :security_devices
+
+      # The Coding Workspace as data, for the mobile screen: the same provider,
+      # the same ownership rules, the same argv rules and the same refusal words
+      # as the web panel. Nothing here takes a host path or a container name.
+      get    "workspaces",              to: "workspaces#index",          as: :workspaces
+      get    "workspaces/:id",          to: "workspaces#show",           as: :workspace
+      get    "workspaces/:id/file",     to: "workspaces#file",           as: :workspace_file
+      get    "workspaces/:id/runs",     to: "workspaces#runs",           as: :workspace_runs
+      post   "workspaces/:id/exec",     to: "workspaces#exec",           as: :workspace_exec
+      post   "workspaces/:id/tests",    to: "workspaces#tests",          as: :workspace_tests
+      post   "workspaces/:id/preview",  to: "workspaces#start_preview",  as: :workspace_preview_start
+      delete "workspaces/:id/preview",  to: "workspaces#stop_preview",   as: :workspace_preview_stop
+      delete "workspaces/:id",          to: "workspaces#destroy",        as: :workspace_stop
 
       # OpenAI-compatible gateway for OpenCode
       namespace :openai do

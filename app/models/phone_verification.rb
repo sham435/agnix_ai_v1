@@ -3,7 +3,9 @@
 # controls a SIM, which is a different claim from the time-based code in
 # TwoFactor, and the two are never interchangeable at sign-in.
 class PhoneVerification < ApplicationRecord
-  belongs_to :user
+  belongs_to :user, inverse_of: :phone_verifications
+
+  IssueResult = Struct.new(:status, :row, :retry_in, keyword_init: true)
 
   CODE_LENGTH = 6
   TTL = 5.minutes
@@ -53,6 +55,36 @@ class PhoneVerification < ApplicationRecord
   attr_reader :code
 
   class << self
+    # Every shared budget is locked in the same order across processes. The
+    # insert commits before delivery, so a provider failure still spends a send.
+    def issue_with_limits!(user, phone:, channel:, ip: nil)
+      connection_pool.with_connection do |connection|
+        transaction do
+          keys = [ "user:#{user.id}", "phone:#{phone}" ]
+          keys << "ip:#{ip}" if ip.present?
+          keys.map { |key| Digest::SHA256.digest("phone-verification:send:#{key}").unpack1("q>") }.sort.each do |key|
+            connection.execute("SELECT pg_advisory_xact_lock(#{key})")
+          end
+
+          if sent_by_user?(user) || sent_to_phone?(phone) || sent_from_ip?(ip)
+            next IssueResult.new(status: :limited)
+          end
+
+          recent = where(user_id: user.id).or(where(phone: phone))
+          recent = recent.or(where(ip: ip)) if ip.present?
+          last_sent_at = recent.maximum(:created_at)
+          if last_sent_at && last_sent_at > RESEND_COOLDOWN.ago
+            retry_in = (last_sent_at + RESEND_COOLDOWN - Time.current).ceil.clamp(1, RESEND_COOLDOWN.to_i)
+            next IssueResult.new(status: :cooldown, retry_in: retry_in)
+          end
+
+          next IssueResult.new(status: :unconfigured) if channel == "none"
+
+          IssueResult.new(status: :sent, row: issue!(user, phone: phone, channel: channel, ip: ip))
+        end
+      end
+    end
+
     def issue!(user, phone:, channel:, ip: nil, code: random_code)
       row = new(user: user, phone: phone, channel: channel, ip: ip,
         expires_at: Time.current + TTL)
@@ -72,7 +104,10 @@ class PhoneVerification < ApplicationRecord
     # the deployment names its country. Anything ambiguous is rejected instead
     # of silently rewritten into somebody else's number.
     def normalize(raw)
-      cleaned = raw.to_s.gsub(/[^\d+]/, "")
+      value = raw.to_s
+      return nil unless /\A[0-9+() .\-]+\z/.match?(value)
+
+      cleaned = value.delete("() .-")
       return nil if cleaned.blank?
 
       digits =
@@ -125,21 +160,25 @@ class PhoneVerification < ApplicationRecord
   end
 
   def verify(input)
-    return EXPIRED if expired?
-    return ALREADY_CONSUMED if consumed?
-    return EXHAUSTED if attempts_exhausted?
+    # with_lock reloads stale instances and holds the row through the verdict,
+    # attempt increment and ownership update. A code can succeed only once.
+    with_lock do
+      next ALREADY_CONSUMED if consumed?
+      next EXPIRED if expired?
+      next EXHAUSTED if attempts_exhausted?
 
-    # One atomic UPDATE carries the counter, so two parallel guesses cannot
-    # both slip past MAX_ATTEMPTS.
-    self.class.where(id: id).update_all("attempts = attempts + 1")
-    self.attempts += 1
-    return attempts_exhausted? ? EXHAUSTED : INVALID unless matches?(input)
-
-    transaction do
-      update!(consumed_at: Time.current)
-      user.update!(phone: phone, phone_verified_at: Time.current)
+      update!(attempts: attempts + 1)
+      if matches?(input) && claim_phone
+        VERIFIED
+      else
+        attempts_exhausted? ? EXHAUSTED : INVALID
+      end
     end
-    VERIFIED
+  end
+
+  def delivery_failed!
+    # Keep the row for every send budget, but never accept an undelivered code.
+    with_lock { update!(expires_at: Time.current) }
   end
 
   def code=(plaintext)
@@ -149,12 +188,32 @@ class PhoneVerification < ApplicationRecord
 
   private
 
+  def claim_phone
+    # A savepoint keeps the spent attempt even if another account owns the
+    # number (including a race caught by the unique index). Never move ownership.
+    user.with_lock(requires_new: true) do
+      user.update!(phone: phone, phone_verified_at: Time.current)
+      update!(consumed_at: Time.current)
+    end
+    true
+  rescue ActiveRecord::RecordInvalid => e
+    raise unless e.record.is_a?(User) && e.record.errors.of_kind?(:phone, :taken)
+
+    false
+  rescue ActiveRecord::RecordNotUnique
+    false
+  end
+
   def matches?(input)
     digest = code_digest
     return false if digest.blank?
+    return false unless input.is_a?(String) && /\A[0-9 -]+\z/.match?(input)
+
+    normalized = input.delete(" -")
+    return false unless /\A[0-9]{6}\z/.match?(normalized)
 
     # bcrypt compares in constant time relative to the input, which is the
     # point of storing these as password-style hashes rather than SHA-256.
-    BCrypt::Password.new(digest) == input.to_s.gsub(/\D/, "")
+    BCrypt::Password.new(digest) == normalized
   end
 end

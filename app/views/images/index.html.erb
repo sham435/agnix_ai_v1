@@ -3,13 +3,19 @@
     the grid below is the live Turbo Stream surface: optimistic cards prepend
     on create, Images::GenerateJob replaces cards by DOM id on completion.
     Chat-generated images land here too — same table, same stream. %>
-<%= turbo_stream_from "image_generations" %>
+<%= turbo_stream_from ImageGeneration.gallery_stream_name(current_user) %>
 
 <header class="sticky top-0 z-20 flex h-[64px] items-center justify-between gap-3 border-b border-border bg-sidebar/80 glass px-4">
   <div class="flex items-center gap-2 min-w-0">
     <button id="menuBtn" class="lg:hidden grid size-9 place-items-center rounded-xl bg-hover hover:bg-border text-fg-muted" aria-label="Open navigation menu">
       <svg class="size-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
     </button>
+    <%= link_to @back_to_chat_path,
+          class: "inline-flex min-h-[44px] min-w-[44px] shrink-0 items-center justify-center gap-2 rounded-xl px-2 text-fg-muted hover:bg-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent",
+          title: "Return to conversation", aria: { label: "Back to chat" } do %>
+      <svg class="size-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="m12 5-7 7 7 7M5 12h14"/></svg>
+      <span class="hidden sm:inline text-[13px]">Back to chat</span>
+    <% end %>
     <h1 class="text-[16px] font-semibold text-fg truncate">Images</h1>
     <span class="text-[12px] text-fg-subtle">· <%= @pagy.count %> generation<%= "s" unless @pagy.count == 1 %></span>
   </div>
@@ -23,6 +29,8 @@
 
     <%# ── Composer (pinned to image mode) ────────────────────────────────── %>
     <%= form_with scope: :image_generation, url: images_path, class: "rounded-2xl border border-border bg-panel/70 p-3 sm:p-4 focus-within:border-accent/40 transition" do |f| %>
+      <%= hidden_field_tag :conversation_id, @origin_conversation&.id %>
+      <%= hidden_field_tag :return_to, @back_to_chat_path if @origin_conversation %>
       <%= f.text_area :prompt,
             placeholder: "Describe an image to generate…",
             rows: 2,
@@ -65,11 +73,11 @@
     <% if @pagy.pages > 1 %>
       <nav class="flex items-center justify-center gap-3 pt-1" aria-label="Pages">
         <% if @pagy.prev %>
-          <%= link_to "← Previous", images_path(page: @pagy.prev), class: "rounded-xl border border-border bg-panel px-3.5 py-2 text-[13px] text-fg-muted hover:bg-hover hover:text-fg transition" %>
+          <%= link_to "← Previous", images_path(page: @pagy.prev, conversation_id: @origin_conversation&.id, return_to: (@back_to_chat_path if @origin_conversation)), class: "rounded-xl border border-border bg-panel px-3.5 py-2 text-[13px] text-fg-muted hover:bg-hover hover:text-fg transition" %>
         <% end %>
         <span class="text-[12.5px] text-fg-subtle">Page <%= @pagy.page %> of <%= @pagy.pages %></span>
         <% if @pagy.next %>
-          <%= link_to "Next →", images_path(page: @pagy.next), class: "rounded-xl border border-border bg-panel px-3.5 py-2 text-[13px] text-fg-muted hover:bg-hover hover:text-fg transition" %>
+          <%= link_to "Next →", images_path(page: @pagy.next, conversation_id: @origin_conversation&.id, return_to: (@back_to_chat_path if @origin_conversation)), class: "rounded-xl border border-border bg-panel px-3.5 py-2 text-[13px] text-fg-muted hover:bg-hover hover:text-fg transition" %>
         <% end %>
       </nav>
     <% end %>

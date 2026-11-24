@@ -1,0 +1,29 @@
+<%# The sandbox server's own output — `docker logs` of the preview container,
+    read through the manager — with the runs that produced it below. -%>
+<div class="card space-y-3">
+  <div class="flex items-center justify-between gap-3">
+    <p class="text-[12px] font-semibold uppercase tracking-wide text-fg-subtle">Logs</p>
+    <%= link_to "Refresh", workspace_path(workspace, section: "logs"), class: "text-[12px] text-accent-text hover:underline" %>
+  </div>
+
+  <% if @logs && @logs[:ok] != false %>
+    <% if @logs["stdout"].to_s.strip.empty? && @logs["stderr"].to_s.strip.empty? %>
+      <p class="text-[12px] text-fg-subtle">The preview container has written nothing yet.</p>
+    <% else %>
+      <% if @logs["stdout"].to_s.present? %>
+        <pre class="max-h-72 overflow-auto rounded-xl bg-canvas p-3 text-[11px] leading-relaxed text-fg"><%= @logs["stdout"] %></pre>
+      <% end %>
+      <% if @logs["stderr"].to_s.present? %>
+        <pre class="max-h-72 overflow-auto rounded-xl bg-canvas p-3 text-[11px] leading-relaxed text-red-600"><%= @logs["stderr"] %></pre>
+      <% end %>
+    <% end %>
+  <% else %>
+    <p class="text-[12px] text-fg-subtle"><%= @logs&.dig(:error) || "logs need the workspace manager" %></p>
+  <% end %>
+
+  <div class="space-y-2">
+    <% @runs.each do |run| %>
+      <%= render "workspaces/panels/run", run: run, show_argv: false %>
+    <% end %>
+  </div>
+</div>

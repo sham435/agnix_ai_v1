@@ -1,0 +1,28 @@
+<%#
+  Tests run inside the same container as the code, with the same limits. With
+  no command the provider picks one from the tree (pytest when it is configured
+  or a tests/ directory exists, unittest discovery otherwise) — it never
+  invents a passing result, and the exit code is the manager's.
+-%>
+<div class="card space-y-3">
+  <p class="text-[12px] font-semibold uppercase tracking-wide text-fg-subtle">Tests</p>
+
+  <%= form_with url: workspace_tests_path(workspace), method: :post,
+        class: "grid grid-cols-[1fr_auto] gap-2",
+        data: { turbo_frame: "workspace_panel_body" } do |f| %>
+    <%= f.text_field :command, placeholder: "python3 -m pytest -q  (blank = choose from the project)",
+          class: "min-w-0 rounded-lg border border-border bg-canvas px-2 py-1.5 font-mono text-[12px] text-fg",
+          aria: { label: "Test command" } %>
+    <%= f.submit "Run tests", class: "btn-primary cursor-pointer px-3 text-[12px]" %>
+  <% end %>
+
+  <% if @runs.blank? %>
+    <p class="text-[12px] text-fg-subtle">No test run has been recorded yet.</p>
+  <% else %>
+    <div class="space-y-2">
+      <% @runs.each do |run| %>
+        <%= render "workspaces/panels/run", run: run, show_argv: true %>
+      <% end %>
+    </div>
+  <% end %>
+</div>

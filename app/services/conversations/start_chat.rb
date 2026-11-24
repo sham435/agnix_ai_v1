@@ -14,13 +14,16 @@ module Conversations
       # title: overrides the content-derived title (Explore passes
       # "New conversation with <agent>").
       def call(user:, agent:, content: nil, title: nil)
+        resolver = Llm::ModelSelection.new(user: user, organization: agent.organization)
+        selection = resolver.snapshot
         conversation = user.conversations.create!(
           agent: agent,
+          metadata: selection ? { "selected_model" => selection } : {},
           title: title.presence || content.to_s.truncate(50, omission: "...")
         )
         return conversation if content.blank?
 
-        message = conversation.messages.create!(role: "user", content: content)
+        message = conversation.messages.create!(role: "user", content: content, metadata: selection ? { "selected_model" => selection } : {})
 
         # Provision the streaming assistant placeholder NOW and hand its
         # request_id to the job, so the redirected show page renders the
@@ -41,6 +44,7 @@ module Conversations
           conversation_id: conversation.id,
           user_id: user.id,
           message_content: message.content,
+          message_id: message.id,
           request_id: request_id
         )
 

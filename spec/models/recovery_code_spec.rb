@@ -13,9 +13,13 @@ RSpec.describe RecoveryCode do
       codes = described_class.generate!(user)
 
       expect(codes).to have_attributes(size: described_class::COUNT)
-      expect(codes).to all(match(/\A[A-Z2-9]{10}\z/))
+      expect(codes).to all(match(/\A[#{described_class::ALPHABET}]{#{described_class::LENGTH}}\z/))
       expect(user.reload.recovery_codes.pluck(:code_digest))
         .to all(match(/\A\h{64}\z/))
+    end
+
+    it "provides at least 80 bits of uniformly sampled randomness per code" do
+      expect(described_class::LENGTH * Math.log2(described_class::ALPHABET.length)).to be >= 80
     end
 
     it "never stores a plaintext code anywhere on the row" do

@@ -1,0 +1,8 @@
+<section class="mx-auto max-w-3xl p-6 text-neutral-100">
+  <h1 class="text-xl font-semibold">GitHub confirmation result</h1>
+  <% if @result[:ok] %>
+    <p class="mt-4">Created issue #<%= @result[:issue_number] %>. The confirmation is now consumed.</p>
+  <% else %>
+    <p class="mt-4">The write was not completed: <%= @result[:error_code] %>. This confirmation cannot be retried after an attempted write.</p>
+  <% end %>
+</section>

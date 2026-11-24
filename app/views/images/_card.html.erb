@@ -50,7 +50,8 @@
       </span>
       <p class="line-clamp-3 text-[12px] leading-snug text-fg-muted"><%= generation.error.presence || "Generation failed." %></p>
       <div class="mt-1 flex items-center gap-2">
-        <%= button_to "Regenerate", regenerate_image_path(generation), method: :post,
+        <%= button_to "Retry", regenerate_image_path(generation), method: :post,
+              disabled: !generation.retry_available?, title: generation.error,
               class: "rounded-lg border border-border bg-elevated px-2.5 py-1 text-[12px] font-medium text-fg-muted hover:bg-hover hover:text-fg transition" %>
         <%= button_to "Delete", image_path(generation), method: :delete,
               class: "rounded-lg border border-border bg-elevated px-2.5 py-1 text-[12px] font-medium text-fg-muted hover:bg-hover hover:text-red-600 dark:hover:text-red-400 transition" %>

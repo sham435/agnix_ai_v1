@@ -1,7 +1,9 @@
 require_relative "../boot"
 
 Rails.application.configure do
-  config.log_level = :debug
+  config.log_level = :warn
+
+  config.enable_reloading = false
 
   # Eager load code for performance.
   config.eager_load = true

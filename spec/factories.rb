@@ -282,4 +282,31 @@ FactoryBot.define do
                         content_type: "image/png")
     end
   end
+
+  factory :workspace do
+    association :user
+    sequence(:name) { |n| "Workspace #{n}" }
+    runtime { "python3" }
+    state { "ready" }
+  end
+
+  factory :workspace_run do
+    association :workspace
+    kind { "exec" }
+    argv { [ "python3", "-V" ] }
+    ok { true }
+    exit_code { 0 }
+    duration_ms { 120 }
+    stdout { "Python 3.12" }
+    stderr { nil }
+    stdout_bytes { 10 }
+    stderr_bytes { 0 }
+  end
+
+  factory :workspace_preview_session do
+    association :workspace
+    port { 8000 }
+    sequence(:token) { |n| "previewtoken#{n}#{SecureRandom.urlsafe_base64(8)}" }
+    expires_at { 30.minutes.from_now }
+  end
 end
