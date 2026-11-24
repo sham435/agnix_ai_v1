@@ -1164,6 +1164,7 @@ export default class extends Controller {
 
   // Click anywhere outside the composer closes the library panel.
   handleDocClick(e) {
+    if (!this.hasLibraryPanelTarget) return
     const panel = this.libraryPanelTarget
     if (!panel || panel.classList.contains("hidden")) return
     if (!this.element.contains(e.target)) panel.classList.add("hidden")
