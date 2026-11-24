@@ -15,8 +15,10 @@ RSpec.describe "Settings provider architecture", type: :request do
     WebMock.disable_net_connect!(allow_localhost: true)
   end
 
-  let(:user) { create(:user) }
-  let(:organization) { create(:organization, owner: user) }
+  let(:user) { create(:user, email: "settings-provider-architecture-owner@example.test") }
+  let(:organization) do
+    create(:organization, owner: user, slug: "settings-provider-architecture-org")
+  end
   let(:provider_id) { "custom-acme" }
   let(:base_url) { "https://custom.example.test/v1" }
   let(:api_key) { "test-only-custom-api-key-9f2c" }
@@ -283,7 +285,7 @@ RSpec.describe "Settings provider architecture", type: :request do
       end
     end
 
-    it "uses an existing environment key for a blank save without copying it into encrypted credentials" do
+    it "accepts a blank save without copying or exposing an unopted environment key" do
       ENV["NVIDIA_NIM_API_KEY"] = nvidia_key
 
       expect(save_nvidia_key(:omitted)).to have_http_status(:ok)
@@ -292,7 +294,7 @@ RSpec.describe "Settings provider architecture", type: :request do
       expect(connection.is_active?).to be(true)
       expect(connection.api_key).to be_nil
       resolved = Llm::ProviderConnection.resolve(organization: organization, provider: provider_id, model: model_id)
-      expect(resolved.api_key).to eq(nvidia_key)
+      expect(resolved.api_key).to be_nil
       expect(a_request(:any, %r{\Ahttps://integrate\.api\.nvidia\.com})).not_to have_been_made
     end
 
@@ -322,7 +324,7 @@ RSpec.describe "Settings provider architecture", type: :request do
     it "uses the exact registry label in the read-only member summary" do
       create(:tool_integration, organization: organization, provider: provider_id,
                                 credentials: { "api_key" => nvidia_key })
-      member = create(:user)
+      member = create(:user, email: "settings-provider-readonly-member@example.test")
       create(:membership, user: member, organization: organization, role: "member")
       api_login(member)
 
@@ -725,7 +727,7 @@ RSpec.describe "Settings provider architecture", type: :request do
       "model verification" => [ :settings_integrations_verify_model_path, :verify ]
     }.each do |label, (path_name, action)|
       it "rejects a non-owner #{label}" do
-        member = create(:user)
+        member = create(:user, email: "settings-provider-nonowner-member@example.test")
         create(:membership, user: member, organization: organization, role: "member")
         api_login(member)
         mutation_params = case action

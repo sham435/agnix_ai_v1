@@ -5,7 +5,9 @@ require "rails_helper"
 RSpec.describe Llm::ModelCatalogue do
   subject(:catalogue) { described_class.new(organization) }
 
-  let(:organization) { create(:organization) }
+  let(:organization) do
+    create(:organization, owner: create(:user, email: "model-catalogue-owner@example.test"), slug: "model-catalogue-org")
+  end
   let(:bonsai_url) { "http://127.0.0.1:8080/v1/models" }
 
   before do
@@ -171,7 +173,10 @@ RSpec.describe Llm::ModelCatalogue do
     end
 
     it "isolates other organizations" do
-      expect(described_class.new(create(:organization)).call[:models].pluck(:provider_id)).not_to include("anthropic")
+      other = create(:organization,
+        owner: create(:user, email: "model-catalogue-other-owner@example.test"), slug: "model-catalogue-other-org")
+
+      expect(described_class.new(other).call[:models].pluck(:provider_id)).not_to include("anthropic")
     end
 
     it "rejects disabled connections" do

@@ -2,6 +2,8 @@
 
 require "rails_helper"
 
+# rubocop:disable RSpec/ExampleLength, RSpec/MultipleExpectations
+
 # Browser-side rendering pipeline: optimistic user bubbles, animated
 # thinking indicator, empty-state handling, and responsive layout.
 #
@@ -13,7 +15,7 @@ require "rails_helper"
 #     state before the server has finished broadcasting the reconcile —
 #     otherwise the reconcile lands in the same tick as the submit and
 #     the assertion window vanishes.
-RSpec.describe "Chat rendering & responsive UI", :js, :js, type: :system do
+RSpec.describe "Chat rendering & responsive UI", :js, type: :system do
   let!(:user) do
     User.create!(email: "renderer@example.com", password: "password123", name: "Renderer")
   end
@@ -122,7 +124,8 @@ RSpec.describe "Chat rendering & responsive UI", :js, :js, type: :system do
       streaming_msg = conversation.messages.create!(role: "user", content: "hi")
       # Attach an in-flight assistant placeholder the same way the job does.
       placeholder = conversation.messages.create!(
-        role: "assistant", content: "", metadata: { "streaming" => true }
+        role: "assistant", content: "",
+        metadata: { "streaming" => true, "stream_started_at" => Time.current.utc.iso8601 }
       )
       expect(streaming_msg).to be_present
 
@@ -142,7 +145,8 @@ RSpec.describe "Chat rendering & responsive UI", :js, :js, type: :system do
     it "cycles the dot count via the Stimulus controller on ~400 ms ticks" do
       conversation.messages.create!(role: "user", content: "hi")
       placeholder = conversation.messages.create!(
-        role: "assistant", content: "", metadata: { "streaming" => true }
+        role: "assistant", content: "",
+        metadata: { "streaming" => true, "stream_started_at" => Time.current.utc.iso8601 }
       )
 
       visit conversation_path(conversation)
@@ -241,3 +245,5 @@ RSpec.describe "Chat rendering & responsive UI", :js, :js, type: :system do
     end
   end
 end
+
+# rubocop:enable RSpec/ExampleLength, RSpec/MultipleExpectations

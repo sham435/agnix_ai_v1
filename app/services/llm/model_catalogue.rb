@@ -145,7 +145,7 @@ module Llm
       credentials = connection&.decrypted_credentials.to_h || {}
       headers = credentials["secret_headers"]
       selected_key = key.presence || connection&.api_key.presence || ProviderRegistry.environment_key(provider) ||
-        ProviderRegistry.credentials_key(provider)
+        ProviderRegistry.credentials_key(provider) || ProviderRegistry.default_api_key(provider)
       [ selected_key, credentials["api_key"], *(headers.is_a?(Hash) ? headers.values : []) ].filter_map do |value|
         value.to_s.presence
       end.uniq
@@ -166,7 +166,8 @@ module Llm
         providers << entry
         paused = connection && !connection.is_active?
         config = connection&.config.to_h || {}
-        key = connection&.api_key.presence || ProviderRegistry.environment_key(provider) || ProviderRegistry.credentials_key(provider)
+        key = connection&.api_key.presence || ProviderRegistry.environment_key(provider) || ProviderRegistry.credentials_key(provider) ||
+          ProviderRegistry.default_api_key(provider)
         secrets = credential_secrets(provider, connection, key)
         manual_rows = manual_model_rows(config, secrets)
         rows = manual_rows

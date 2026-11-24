@@ -121,6 +121,7 @@ RSpec.describe "Chat composer", :js, type: :system do
     expect(page).to have_field("message-input", with: "", wait: 5)
     fill_in "message-input", with: "Persistent follow-up"
     find("#message-input").send_keys(:enter)
+    expect(page).to have_css("[data-chat-input-target='taskCount']", text: "2", wait: 5)
     fill_in "message-input", with: "Persistent steering"
     find("#message-input").send_keys([ :meta, :enter ])
     expect(page).to have_css("[data-chat-input-target='taskCount']", text: "3", wait: 5)
@@ -258,17 +259,11 @@ RSpec.describe "Chat composer", :js, type: :system do
     login_as user
     conversation = Conversation.create!(user: user, agent: agent, title: "Newer attachment")
     visit conversation_path(conversation)
-    draft_token = page.evaluate_script(<<~JS)
-      (() => {
-        const form = document.querySelector("[data-controller~='chat-input']")
-        return window.Stimulus.getControllerForElementAndIdentifier(form, "chat-input").draftToken()
-      })()
-    JS
-    AttachmentDraft.record!(user: user, draft_token: draft_token, asset: asset)
     stub_composer_desktop!
 
     fill_in "message-input", with: "Send without the new file"
     find("#message-input").send_keys(:enter)
+    expect(page).to have_css("[data-optimistic-user]", text: "Send without the new file", wait: 5)
     find("button[title='Add from Library']").click
     within "[data-chat-input-target='libraryItems']" do
       find("button[data-asset-id='#{asset.id}']").click

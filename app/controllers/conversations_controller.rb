@@ -3,6 +3,14 @@ class ConversationsController < ApplicationController
   rescue_from Llm::ModelCatalogue::Error do |error|
     respond_to do |format|
       format.json { render json: { error_code: error.code, error: error.message }, status: :unprocessable_entity }
+      format.turbo_stream do
+        if action_name == "create"
+          render turbo_stream: turbo_stream.update("chat-submission-error",
+            partial: "conversations/submission_error", locals: { error: error.message }), status: :unprocessable_entity
+        else
+          redirect_to conversations_path(prompt: params[:content]), alert: error.message
+        end
+      end
       format.any { redirect_to conversations_path(prompt: params[:content]), alert: error.message }
     end
   end
@@ -79,8 +87,6 @@ class ConversationsController < ApplicationController
   # whether a run is already in flight, the placeholder claim) live in
   # Conversations::RegenerateChat so this stays a thin flash/redirect shell.
   def regenerate
-    redirect_to @conversation and return if request.get?
-
     outcome = Conversations::RegenerateChat.call(conversation: @conversation, user: current_user)
     flash_key = outcome.status == :queued ? :notice : :alert
 
@@ -144,7 +150,7 @@ class ConversationsController < ApplicationController
 
     render turbo_stream: turbo_stream.append(
       "messages-list",
-      html: %(<div role="status" class="px-3.5 py-2 text-[13px] text-fg-muted rounded-lg border border-border bg-panel">#{note}</div>)
+      view_context.tag.div(note, role: "status", class: "px-3.5 py-2 text-[13px] text-fg-muted rounded-lg border border-border bg-panel")
     )
   end
 

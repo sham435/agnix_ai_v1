@@ -1,6 +1,6 @@
 FactoryBot.define do
   factory :user do
-    sequence(:email) { |n| "user#{n}@shams.ai" }
+    sequence(:email) { |n| "user#{n}-#{SecureRandom.uuid}@shams.ai" }
     name { "Test User" }
     password { "password123" }
     role { "user" }
@@ -17,7 +17,7 @@ FactoryBot.define do
 
   factory :organization do
     sequence(:name) { |n| "Org #{n}" }
-    sequence(:slug) { |n| "org-#{n}" }
+    sequence(:slug) { |n| "org-#{n}-#{SecureRandom.uuid}" }
     association :owner, factory: :user
     plan { "free" }
 
@@ -42,7 +42,7 @@ FactoryBot.define do
 
   factory :agent do
     sequence(:name) { |n| "Agent #{n}" }
-    sequence(:slug) { |n| "agent-#{n}" }
+    sequence(:slug) { |n| "agent-#{n}-#{SecureRandom.uuid}" }
     association :organization
     system_prompt { "You are a helpful AI assistant." }
     model { "claude-sonnet-4-6" }

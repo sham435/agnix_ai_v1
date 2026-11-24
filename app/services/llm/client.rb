@@ -84,7 +84,8 @@ module Llm
       return connection.api_key if connection
 
       api_key.presence || ProviderRegistry.environment_key(provider) || ProviderRegistry.credentials_key(provider) ||
-        (provider == "openai" ? ENV["OPENROUTER_API_KEY"].to_s.strip.presence : nil)
+        (provider == "openai" ? ENV["OPENROUTER_API_KEY"].to_s.strip.presence : nil) ||
+        ProviderRegistry.default_api_key(provider)
     end
 
     def legacy_openrouter?

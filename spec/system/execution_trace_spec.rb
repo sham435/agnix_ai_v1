@@ -26,7 +26,10 @@ RSpec.describe "Execution trace & streaming contract", :js, type: :system do
                   organization: org, provider: "anthropic", model: "claude-sonnet-4-6", tools: [])
   end
   let!(:conversation) { Conversation.create!(user: user, agent: agent, title: "Trace") }
-  let!(:placeholder) { conversation.messages.create!(role: "assistant", content: "", metadata: { "streaming" => true }) }
+  let!(:placeholder) do
+    conversation.messages.create!(role: "assistant", content: "",
+      metadata: { "streaming" => true, "stream_started_at" => Time.current.utc.iso8601 })
+  end
 
   before { login_as user }
 

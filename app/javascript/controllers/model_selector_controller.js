@@ -2,7 +2,7 @@ import { Controller } from "@hotwired/stimulus"
 
 export default class extends Controller {
   static targets = ["label", "list", "search", "status", "panel"]
-  static values = { conversationId: String }
+  static values = { conversationId: String, default: "" }
 
   connect() { this.load() }
   disconnect() { this.abort?.abort() }
@@ -17,7 +17,8 @@ export default class extends Controller {
     this.abort = new AbortController()
     this.statusTarget.textContent = "Discovering models…"
     try {
-      const query = new URLSearchParams({ conversation_id: this.conversationIdValue })
+      const query = new URLSearchParams()
+      if (this.conversationIdValue) query.set("conversation_id", this.conversationIdValue)
       const response = await fetch(`/api/v1/models${refresh ? '/refresh' : ''}?${query}`, {
         method: refresh ? "POST" : "GET", credentials: "same-origin", signal: this.abort.signal,
         headers: { Accept: "application/json", "X-CSRF-Token": document.querySelector('meta[name="csrf-token"]')?.content || "" }
@@ -99,10 +100,13 @@ export default class extends Controller {
     if (this.saving) return
     this.saving = true
     try {
-      const response = await fetch(`/api/v1/conversations/${encodeURIComponent(this.conversationIdValue)}/model`, {
+      const url = this.conversationIdValue
+        ? `/api/v1/conversations/${encodeURIComponent(this.conversationIdValue)}/model`
+        : "/api/v1/models/selection"
+      const response = await fetch(url, {
         method: "PATCH", credentials: "same-origin",
         headers: { "Content-Type": "application/json", Accept: "application/json", "X-CSRF-Token": document.querySelector('meta[name="csrf-token"]')?.content || "" },
-        body: JSON.stringify(selection)
+        body: JSON.stringify(this.conversationIdValue ? selection : { ...selection, scope: "user" })
       })
       const data = await response.json()
       if (!response.ok) throw new Error(data.error || "Could not select model.")

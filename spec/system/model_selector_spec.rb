@@ -1,9 +1,9 @@
 require "rails_helper"
 
 RSpec.describe "Dynamic chat model selector", :js, type: :system do
-  let(:user) { create(:user) }
-  let(:organization) { create(:organization, owner: user) }
-  let(:agent) { create(:agent, organization: organization, tools: []) }
+  let(:user) { create(:user, email: "model-selector@example.test") }
+  let(:organization) { create(:organization, owner: user, slug: "model-selector-org") }
+  let(:agent) { create(:agent, organization: organization, slug: "model-selector-agent", tools: []) }
   let(:conversation) { create(:conversation, user: user, agent: agent) }
 
   before do

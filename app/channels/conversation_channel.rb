@@ -1,6 +1,8 @@
 # Conversation Channel - Streams messages and agent responses for a specific conversation.
 class ConversationChannel < ApplicationCable::Channel
   def subscribed
+    return close_inactive_session! unless active_auth_session?
+
     @conversation = Conversation.find(params[:conversation_id])
 
     # Only allow subscribed users.
@@ -18,6 +20,8 @@ class ConversationChannel < ApplicationCable::Channel
 
   # Receive messages from the client.
   def speak(data)
+    return close_inactive_session! unless active_auth_session?
+
     admission = Conversations::TurnAdmission.call(
       conversation: @conversation,
       user: current_user,
@@ -40,6 +44,8 @@ class ConversationChannel < ApplicationCable::Channel
 
   # Stop generation.
   def stop(_data)
+    return close_inactive_session! unless active_auth_session?
+
     runs = @conversation.runs.active.to_a
     plans = @conversation.agent_runs.active.update_all(status: "interrupted")
     live = @conversation.messages.where(role: "assistant").order(created_at: :desc).limit(5)

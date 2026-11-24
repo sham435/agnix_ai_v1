@@ -55,8 +55,8 @@ RSpec.describe "Dynamic model catalogue", type: :request do
 
   # rubocop:disable RSpec/ExampleLength, RSpec/MultipleExpectations
   it "sets an owner-controlled organization default after fingerprinted inference" do
-    connection = create(:tool_integration, organization: organization, provider: "bonsai", credentials: {})
-    selected = Llm::ProviderConnection.new(provider: "bonsai", integration: connection, model: "bonsai-2-27b")
+    create(:tool_integration, organization: organization, provider: "bonsai", credentials: {})
+    selected = Llm::ProviderConnection.resolve(organization: organization, provider: "bonsai", model: "bonsai-2-27b")
     Llm::InferenceTracker.record(selected, "bonsai-2-27b", api_family: selected.api_family,
       fingerprint: selected.inference_fingerprint)
 

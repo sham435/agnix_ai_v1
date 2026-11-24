@@ -57,6 +57,16 @@ RSpec.describe AgentAutoFixer do
     (Dir.children(log_dir) - before).each { |name| FileUtils.remove_entry(File.join(log_dir, name)) }
   end
 
+  it "uses the conversation agent's organization-aware provider connection" do
+    agent = create(:agent)
+    conversation = create(:conversation, agent: agent)
+    resolved_client = instance_double(Llm::Client)
+    allow(agent).to receive(:llm_client).and_return(resolved_client)
+    fixer = described_class.new(error: RuntimeError.new("boom"), backtrace: [], conversation: conversation)
+
+    expect(fixer.send(:llm_client)).to eq(resolved_client)
+  end
+
   # A fixer wired to the probe file, with the provider call replaced by a stub.
   def build_fixer(path = target)
     described_class.new(error: RuntimeError.new("boom"), backtrace: [ "#{path}:2:in `call'" ]).tap do |fixer|

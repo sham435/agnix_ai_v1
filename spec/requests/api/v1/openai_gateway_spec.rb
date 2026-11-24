@@ -6,7 +6,7 @@
 require "rails_helper"
 
 RSpec.describe "API v1 OpenAI gateway", type: :request do
-  let(:user) { create(:user) }
+  let(:user) { create(:user, email: "openai-gateway-owner@example.test") }
   let(:bonsai_url) { "#{ENV.fetch('BONSAI2_BASE_URL', 'http://127.0.0.1:8080/v1')}/chat/completions" }
   let(:completion) do
     {
@@ -47,6 +47,53 @@ RSpec.describe "API v1 OpenAI gateway", type: :request do
     expect(response).to have_http_status(:ok)
     expect(JSON.parse(response.body)).to eq(JSON.parse(completion.to_json))
     expect(a_request(:post, bonsai_url).with { |req| JSON.parse(req.body)["chat_template_kwargs"] == { "enable_thinking" => false } }).to have_been_made.once
+  end
+
+  it "redacts upstream error bodies and preserves the gateway error contract" do
+    sensitive = "sk-test-only-secret owner@example.test private prompt"
+    stub_request(:post, bonsai_url).to_return(status: 429,
+      body: { error: { message: sensitive } }.to_json, headers: { "Content-Type" => "application/json" })
+    api_login(user)
+    allow(Rails.logger).to receive(:warn)
+
+    post "/api/v1/openai/chat/completions",
+         params: { messages: [ { role: "user", content: "hi" } ] }.to_json,
+         headers: api_headers.merge("Content-Type" => "application/json")
+
+    expect(response).to have_http_status(:too_many_requests)
+    expect(JSON.parse(response.body).dig("error", "message")).to eq("The model service could not complete the request.")
+    expect(response.body).not_to include(sensitive, "owner@example.test", "private prompt")
+    expect(Rails.logger).to have_received(:warn).with("[OpenAI Gateway] upstream returned HTTP 429")
+  end
+
+  it "does not expose exception details to clients or logs" do
+    sensitive = "sk-test-only-secret owner@example.test private prompt"
+    stub_request(:post, bonsai_url).to_raise(Net::ReadTimeout.new(sensitive))
+    api_login(user)
+    allow(Rails.logger).to receive(:error)
+
+    post "/api/v1/openai/chat/completions",
+         params: { messages: [ { role: "user", content: "hi" } ] }.to_json,
+         headers: api_headers.merge("Content-Type" => "application/json")
+
+    expect(response).to have_http_status(:bad_gateway)
+    expect(response.body).not_to include(sensitive, "owner@example.test", "private prompt")
+    expect(Rails.logger).to have_received(:error).with("[OpenAI Gateway] Net::ReadTimeout")
+  end
+
+  it "redacts streaming upstream errors before writing any event bytes" do
+    sensitive = "sk-test-only-secret owner@example.test private prompt"
+    stub_request(:post, bonsai_url).to_return(status: 502, body: sensitive)
+    api_login(user)
+    allow(Rails.logger).to receive(:warn)
+
+    post "/api/v1/openai/chat/completions",
+         params: { stream: true, messages: [ { role: "user", content: "hi" } ] }.to_json,
+         headers: api_headers.merge("Content-Type" => "application/json")
+
+    expect(response).to have_http_status(:bad_gateway)
+    expect(response.body).not_to include(sensitive, "owner@example.test", "private prompt")
+    expect(JSON.parse(response.body).dig("error", "code")).to eq("upstream_error")
   end
 
   it "leaves unrelated authenticated API endpoints working" do

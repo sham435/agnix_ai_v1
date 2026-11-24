@@ -103,6 +103,7 @@
 
           <div class="flex items-center justify-between pt-2 border-t border-border mt-2 gap-2">
             <div class="flex items-center gap-1.5 min-w-0">
+              <%= render "conversations/model_selector", conversation: nil %>
               <%# §4-5: Tools button — the panel opens above the composer and
                   lists Capabilities::Registry entries with truthful state, plus
                   the four integrations named in the requirements. %>
@@ -131,11 +132,13 @@
                       class="grid size-9 place-items-center rounded-xl bg-gradient-to-b from-emerald-400 to-emerald-600 text-black hover:brightness-110 active:scale-95 transition shadow-lg shadow-emerald-900/30"
                       aria-label="Send message"
                       title="Send">
-                <svg class="size-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M5 12l14-7-7 14-2-5-2z"/></svg>
+                <svg class="size-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M5 12l14-7-7 14-2-5-5-2z"/></svg>
               </button>
             </div>
           </div>
         </div>
+
+        <div id="chat-submission-error" data-chat-input-target="error" role="alert" hidden class="mt-2 rounded-lg border border-red-500/20 bg-red-500/5 px-3.5 py-2 text-[13px] text-red-600 dark:text-red-400"></div>
       <% end %>
 
       <%# §4-5: Tools panel — server-rendered from Capabilities::Registry so

@@ -39,11 +39,22 @@ module Llm
       end
 
       integration = stored if stored&.is_active?
-      key = api_key.presence || integration&.api_key.presence || ProviderRegistry.environment_key(requested_provider) ||
-        ProviderRegistry.credentials_key(requested_provider) ||
-        (requested_provider == "openai" ? ENV["OPENROUTER_API_KEY"].to_s.strip.presence : nil)
+      server_credentials_allowed = ProviderRegistry.definition(requested_provider)[:local] ||
+        authorized_system_fallback?(organization, requested_provider, model)
+      key = api_key.presence || integration&.api_key.presence ||
+        (ProviderRegistry.environment_key(requested_provider) if server_credentials_allowed) ||
+        (ProviderRegistry.credentials_key(requested_provider) if server_credentials_allowed) ||
+        (ENV["OPENROUTER_API_KEY"].to_s.strip.presence if server_credentials_allowed && requested_provider == "openai") ||
+        ProviderRegistry.default_api_key(requested_provider)
       new(provider: requested_provider, integration: integration, api_key: key, model: model)
     end
+
+    def self.authorized_system_fallback?(organization, provider, model)
+      organization.settings["allow_system_model_fallback"] == true &&
+        provider == ENV["SHAMS_DEFAULT_MODEL_PROVIDER"].to_s.strip.presence &&
+        model.to_s == ENV["SHAMS_DEFAULT_MODEL_ID"].to_s.strip.presence
+    end
+    private_class_method :authorized_system_fallback?
 
     def custom?
       ProviderRegistry.custom?(provider)

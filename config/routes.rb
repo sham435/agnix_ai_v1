@@ -62,8 +62,8 @@ Rails.application.routes.draw do
     resources :messages, only: [ :create ]
     member do
       get :tasks
-      match :regenerate, via: [ :get, :post ]
-      match :stop,       via: [ :get, :post ]
+      post :regenerate
+      post :stop
       post  :interrupt
     end
   end

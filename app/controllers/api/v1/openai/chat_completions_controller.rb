@@ -47,6 +47,14 @@ module Api
 
             req["Connection"] = "close"
             http.request(req) do |upstream|
+              status = upstream.code.to_i
+              if status.between?(400, 599)
+                Rails.logger.warn("[OpenAI Gateway] upstream returned HTTP #{status}")
+                response.status = status
+                response.headers["Content-Type"] = "application/json"
+                response.stream.write(gateway_error.to_json)
+                break
+              end
               upstream.read_body do |chunk|
                 next if chunk.nil? || chunk.empty?
                 response.stream.write(chunk)
@@ -56,19 +64,30 @@ module Api
             response.stream.close
           else
             resp = http.request(req)
-            render json: JSON.parse(resp.body), status: resp.code.to_i
+            status = resp.code.to_i
+            if status.between?(400, 599)
+              Rails.logger.warn("[OpenAI Gateway] upstream returned HTTP #{status}")
+              render json: gateway_error, status: status
+            else
+              render json: JSON.parse(resp.body), status: status
+            end
           end
         rescue StandardError => e
-          Rails.logger.error("[OpenAI Gateway] #{e.class}: #{e.message}")
+          Rails.logger.error("[OpenAI Gateway] #{e.class}")
           begin
             response.stream.close
           rescue StandardError
             nil
           end
-          render json: { error: { message: e.message, type: "server_error", code: 500 } }, status: :internal_server_error
+          render json: gateway_error, status: :bad_gateway
         end
 
         private
+
+        def gateway_error
+          { error: { message: "The model service could not complete the request.",
+                     type: "server_error", code: "upstream_error" } }
+        end
 
         def request_body
           model = params[:model] || ENV.fetch("BONSAI_MODEL", "bonsai-2-27b")

@@ -284,7 +284,7 @@ class AgentAutoFixer
         # Prefer the conversation's own agent model: it is configured for this
         # project, points at the local Bonsai/Ollama servers in most runs, and
         # needs no external network or paid API keys.
-        Llm::Client.new(provider: agent.provider, model: agent.model, api_key: agent.try(:api_key))
+        agent.llm_client
       else
         Llm::Client.new(provider: "opencode", model: "big-pickle", api_key: ENV.fetch("OPENCODE_API_KEY", ""))
       end

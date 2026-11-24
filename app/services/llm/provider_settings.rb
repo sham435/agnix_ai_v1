@@ -71,6 +71,7 @@ module Llm
         config = connection&.config.to_h || {}
         environment_key = ProviderRegistry.environment_key(provider)
         configured = connection&.api_key.present? || environment_key.present? || ProviderRegistry.credentials_key(provider).present? ||
+          ProviderRegistry.default_api_key(provider).present? ||
           (ProviderRegistry.custom?(provider) && connection && config.fetch("auth_mode", "none") == "none")
         (discovered || { provider_id: provider, provider_name: ProviderRegistry.name(provider), custom: ProviderRegistry.custom?(provider),
                          connection_status: "unavailable", readiness: "unavailable", inference_ready: false,
@@ -190,7 +191,7 @@ module Llm
       previous_fingerprint = transport_fingerprint(connection)
       submitted_key = candidate.strip
       key = submitted_key.presence || connection&.api_key.presence || ProviderRegistry.environment_key(provider) ||
-        ProviderRegistry.credentials_key(provider)
+        ProviderRegistry.credentials_key(provider) || ProviderRegistry.default_api_key(provider)
       raise Error.new("credentials_unavailable", "Enter an API key before saving.") if key.blank?
 
       rows = verified_at = nil
@@ -443,7 +444,7 @@ module Llm
         raise Error.new("model_unavailable", "This model is unavailable.")
       end
       api_key = connection.api_key.presence || ProviderRegistry.environment_key(provider) ||
-        ProviderRegistry.credentials_key(provider)
+        ProviderRegistry.credentials_key(provider) || ProviderRegistry.default_api_key(provider)
       selected_connection = ProviderConnection.new(provider: provider, integration: connection, api_key: api_key,
         model: model_id)
       client = Client.new(provider: provider, model: model_id, connection: selected_connection, max_tokens: 16)

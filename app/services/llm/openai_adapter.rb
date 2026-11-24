@@ -84,7 +84,7 @@ module Llm
         retry
       end
 
-      { content: state[:content], tool_calls: ordered_tool_calls(state),
+      { content: state[:content], reasoning: state[:reasoning], tool_calls: ordered_tool_calls(state),
         tokens: state[:tokens] || estimate_tokens(state[:content]), finish_reason: state[:finish_reason] || "stop" }
     end
 
@@ -136,7 +136,7 @@ module Llm
       content = message["content"]
       raise ProviderError.new(ProviderError::MESSAGES["invalid_provider_response"],
         code: "invalid_provider_response") unless content.nil? || content.is_a?(String)
-      { content: content.to_s, tool_calls: tool_calls,
+      { content: content.to_s, reasoning: (message["reasoning_content"] || message["reasoning"]).to_s, tool_calls: tool_calls,
         tokens: data.dig("usage", "completion_tokens") || estimate_tokens(content),
         finish_reason: choice["finish_reason"] || (tool_calls.any? ? "tool_calls" : "stop") }
     end

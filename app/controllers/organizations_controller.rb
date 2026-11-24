@@ -58,6 +58,8 @@ class OrganizationsController < ApplicationController
   # `plan` is deliberately not permitted: it is a billing state and only the
   # Stripe webhook path may change it.
   def organization_params
-    params.require(:organization).permit(:name, :slug, settings: {})
+    permitted = params.require(:organization).permit(:name, :slug, settings: [ :brand_color, :logo_url ])
+    permitted[:settings] = @organization.settings.merge(permitted[:settings]) if permitted.key?(:settings)
+    permitted
   end
 end

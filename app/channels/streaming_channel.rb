@@ -1,6 +1,8 @@
 # Streaming Channel - Receives streamed content from agent runs.
 class StreamingChannel < ApplicationCable::Channel
   def subscribed
+    return close_inactive_session! unless active_auth_session?
+
     # Stream from the user-specific channel.
     stream_from "streaming:#{current_user.id}" if current_user
   end
@@ -11,6 +13,8 @@ class StreamingChannel < ApplicationCable::Channel
 
   # Receive messages from the client.
   def receive(data)
+    return close_inactive_session! unless active_auth_session?
+
     case data["action"]
     when "stop_generation"
       # Signal the agent runner to stop.

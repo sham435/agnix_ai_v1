@@ -586,6 +586,29 @@ RSpec.describe AgentStreamJob, type: :job do
       expect(failed[:conversation_id]).to eq(conversation.id)
     end
 
+    it "treats a returned truncated verdict as failure and retains the superseded reply" do
+      superseded = conversation.messages.create!(role: "assistant", content: "the answer to keep")
+      allow(runner).to receive(:run) do
+        row = conversation.messages.reload.where(role: "assistant").order(:created_at).last
+        row.update!(content: "partial answer", metadata: row.metadata.except("streaming").merge(
+          "error" => "The model's response was cut off at its token limit.", "error_code" => "response_truncated"
+        ))
+        { content: "partial answer", tokens: 40, error_code: "response_truncated",
+          error: "The model's response was cut off at its token limit." }
+      end
+      payloads = broadcasted_payloads
+
+      described_class.perform_now(
+        conversation_id: conversation.id, user_id: user.id,
+        message_content: "Hi", replaces_message_id: superseded.id
+      )
+
+      expect(payloads.map { |p| p[:type] }).not_to include("completed")
+      expect(payloads.find { |p| p[:type] == "failed" }[:code]).to eq("response_truncated")
+      expect(conversation.messages.reload.find_by(id: superseded.id)&.content).to eq("the answer to keep")
+      expect(conversation.messages.where(role: "assistant").order(:created_at).last.content).to eq("partial answer")
+    end
+
     it "keeps the superseded reply when the re-run only reports failure" do
       superseded = conversation.messages.create!(role: "assistant", content: "the answer to keep")
       stub_reported_failure

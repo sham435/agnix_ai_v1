@@ -9,9 +9,11 @@ require "rails_helper"
 # stopped nothing and the tab got no reply to the click at all.
 
 RSpec.describe "Conversation stop", type: :request do
-  let(:organization) { create(:organization) }
+  let(:organization) do
+    create(:organization, owner: create(:user, email: "stop-owner@example.test"), slug: "stop-org")
+  end
   let(:user) { organization.owner }
-  let(:agent) { create(:agent, organization: organization) }
+  let(:agent) { create(:agent, organization: organization, slug: "stop-agent") }
   let(:conversation) { create(:conversation, user: user, agent: agent) }
   let(:headers) do
     { "X-CSRF-Token" => api_headers["X-CSRF-Token"],
@@ -38,6 +40,17 @@ RSpec.describe "Conversation stop", type: :request do
       conversation.messages.create!(role: "assistant", content: "Half an ", metadata: {
         "streaming" => true, "stream_started_at" => Time.current.utc.iso8601, "request_id" => "req-1"
       })
+    end
+
+    it "does not expose stopping to GET or HEAD requests" do
+      get stop_conversation_path(conversation), headers: { "Accept" => "application/json" }
+      expect(response).to have_http_status(:not_found)
+      head stop_conversation_path(conversation), headers: { "Accept" => "application/json" }
+      expect(response).to have_http_status(:not_found)
+
+      expect(run.reload.status).to eq("running")
+      expect(plan_run.reload.status).to eq("executing")
+      expect(placeholder.reload).to be_streaming
     end
 
     it "cancels the chat run and the plan run, and answers the tab" do
@@ -67,7 +80,9 @@ RSpec.describe "Conversation stop", type: :request do
 
       post stop_conversation_path(conversation), headers: headers
 
+      expect(response.body).to include("<div role=\"status\"")
       expect(response.body).to include("Nothing is running in this conversation.")
+      expect(response.body).not_to include("&lt;div")
       expect(frames.map { |frame| frame[:type] }).to eq([ "background_tasks" ])
       expect(frames.sole).to include(active: 0, queued: 0)
     end

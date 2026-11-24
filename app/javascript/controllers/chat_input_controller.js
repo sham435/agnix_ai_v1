@@ -10,7 +10,7 @@ import { Controller } from "@hotwired/stimulus"
 // land in Active Storage behind an Asset row; "Add from Library" references an
 // existing asset id directly — selecting a Library file never re-uploads it.
 export default class extends Controller {
-  static targets = ["input", "hint", "fileInput", "chips", "libraryPanel", "libraryItems", "libraryEmpty", "librarySearch", "libraryPreview", "libraryPreviewTitle", "libraryPreviewBody", "send", "taskStatus", "taskPanel", "taskCount", "taskList"]
+  static targets = ["input", "hint", "fileInput", "chips", "libraryPanel", "libraryItems", "libraryEmpty", "librarySearch", "libraryPreview", "libraryPreviewTitle", "libraryPreviewBody", "send", "taskStatus", "taskPanel", "taskCount", "taskList", "error"]
 
   // In-flight submission guard. Distinct from the short HTTP round trip:
   //   submitting  — the POST is in flight
@@ -32,6 +32,8 @@ export default class extends Controller {
     this._pendingAttachmentKeys = []
     this._lastLineCount = 1
     this._lastHintAt = 0
+    this._composing = false
+    this._pendingKeydownAdmission = null
     this._uploadSeq = 0
     this._pollTimers = {}
     this._libraryPollTimers = {} // assetId -> interval while extraction is pending
@@ -51,6 +53,10 @@ export default class extends Controller {
       this.inputTarget.addEventListener("keydown", this._onKeydown)
       this.inputTarget.addEventListener("input", this._onInput)
       this.inputTarget.addEventListener("paste", this._onPaste)
+      this._onCompositionStart = () => { this._composing = true }
+      this._onCompositionEnd = () => { this._composing = false }
+      this.inputTarget.addEventListener("compositionstart", this._onCompositionStart)
+      this.inputTarget.addEventListener("compositionend", this._onCompositionEnd)
       this.autosize()
     }
     if (this.hasFileInputTarget) {
@@ -186,6 +192,8 @@ export default class extends Controller {
       this.inputTarget.removeEventListener("keydown", this._onKeydown)
       this.inputTarget.removeEventListener("input", this._onInput)
       this.inputTarget.removeEventListener("paste", this._onPaste)
+      this.inputTarget.removeEventListener("compositionstart", this._onCompositionStart)
+      this.inputTarget.removeEventListener("compositionend", this._onCompositionEnd)
     }
     if (this.hasFileInputTarget && this._onChange) {
       this.fileInputTarget.removeEventListener("change", this._onChange)
@@ -216,21 +224,28 @@ export default class extends Controller {
 
   keydown(e) {
     // Never submit while an IME (Chinese/Japanese/Korean) composition is open:
-    // the Enter that commits the candidate must not send the message.
-    if (e.isComposing || e.keyCode === 229) return
+    // the Enter that commits the candidate must not send the message. Track
+    // composition state ourselves too, because Firefox fires compositionend
+    // before the committing keydown (isComposing is already false there).
+    if (e.isComposing || e.keyCode === 229 || this._composing) return
 
     const isEnter = e.key === "Enter"
     if (!isEnter) return
 
     const hasModifier = e.metaKey || e.ctrlKey
-    if (e.shiftKey || e.altKey || (!hasModifier && e.key !== "Enter")) return
+    // Shift+Enter inserts a newline (default textarea behaviour) — never
+    // intercept it. Alt+Enter is left to the browser's default handling.
+    if (e.shiftKey) return
+    if (e.altKey) return
 
     e.preventDefault()
     if (!this.hasInputTarget || this.inputTarget.value.trim() === "") return
     if (this._submitState === "submitting") return
     if (this.uploadInProgress()) { this.showTempHint(); return }
 
-    this.ensureAdmissionField().value = this.isBusy() ? (hasModifier ? "steer" : "queue") : "start"
+    const admission = this.isBusy() ? (hasModifier ? "steer" : "queue") : "start"
+    this._pendingKeydownAdmission = admission
+    this.ensureAdmissionField().value = admission
     if (typeof this.element.requestSubmit === "function") {
       this.element.requestSubmit()
     } else {
@@ -324,7 +339,8 @@ export default class extends Controller {
     }
 
     const busy = this.isBusy()
-    const requested = this.ensureAdmissionField().value
+    const requested = this._pendingKeydownAdmission || this.ensureAdmissionField().value
+    this._pendingKeydownAdmission = null
     const admission = busy ? (requested === "steer" ? "steer" : "queue") : "start"
     const cid = this.ensureClientRequestId()
     this.ensureDraftTokenField()
@@ -498,25 +514,38 @@ export default class extends Controller {
     this._pendingAdmission = null
     this._pendingContent = null
     this._pendingAttachmentKeys = []
+    this._pendingKeydownAdmission = null
     const hidden = this.element.querySelector('input[type="hidden"][name="message[client_request_id]"]')
     if (hidden) hidden.value = ""
+    const admission = this.element.querySelector('input[type="hidden"][name="message[admission]"]')
+    if (admission) admission.value = "start"
     this.showSubmissionError(Array.isArray(detail?.errors) ? detail.errors : [])
     this.inputTarget?.focus()
   }
 
   showSubmissionError(errors) {
-    const list = document.getElementById("messages-list")
-    if (!list) return
-    list.querySelectorAll("[data-submission-error]").forEach((node) => node.remove())
-    const note = document.createElement("div")
-    note.dataset.submissionError = "true"
-    note.setAttribute("role", "alert")
-    note.className = "rounded-lg border border-red-500/20 bg-red-500/5 px-3.5 py-2 text-[13px] text-red-600 dark:text-red-400"
+    let note = this.hasErrorTarget ? this.errorTarget : null
+    if (!note) {
+      const list = document.getElementById("messages-list")
+      if (!list) return
+      list.querySelectorAll("[data-submission-error]").forEach((node) => node.remove())
+      note = document.createElement("div")
+      note.dataset.submissionError = "true"
+      note.setAttribute("role", "alert")
+      note.className = "rounded-lg border border-red-500/20 bg-red-500/5 px-3.5 py-2 text-[13px] text-red-600 dark:text-red-400"
+      list.appendChild(note)
+    }
     const reason = errors.filter(Boolean).join(" ")
     note.textContent = `${reason || "Message not accepted."} Your draft is preserved.`
-    list.appendChild(note)
-    clearTimeout(this._errorTimer)
-    this._errorTimer = setTimeout(() => note.remove(), 8000)
+    note.classList.remove("hidden")
+    if (this.hasErrorTarget) clearTimeout(this._errorTimer)
+    else this._errorTimer = setTimeout(() => note.remove(), 8000)
+  }
+
+  clearSubmissionError() {
+    if (!this.hasErrorTarget) return
+    this.errorTarget.replaceChildren()
+    this.errorTarget.classList.add("hidden")
   }
 
   // ── In-flight guard state machine ──────────────────────────────────────
@@ -1198,6 +1227,7 @@ export default class extends Controller {
 
   autosize() {
     if (!this.hasInputTarget) return
+    this.clearSubmissionError()
     const el = this.inputTarget
     el.style.height = "auto"
     el.style.height = `${el.scrollHeight}px`
@@ -1252,6 +1282,9 @@ export default class extends Controller {
       this._pendingAdmission = null
       this._pendingContent = null
       this._pendingAttachmentKeys = []
+      this._pendingKeydownAdmission = null
+      const admissionField = this.element.querySelector('input[type="hidden"][name="message[admission]"]')
+      if (admissionField) admissionField.value = "start"
       return
     }
 

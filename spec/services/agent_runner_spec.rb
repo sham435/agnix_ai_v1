@@ -365,13 +365,36 @@ RSpec.describe AgentRunner, type: :service do
 
       expect(result[:incomplete]).to be(true)
       expect(result[:truncated]).to be(true)
+      expect(result[:error_code]).to eq("response_truncated")
+      expect(result[:error]).to include("cut off at its token limit")
       # The words that DID stream are preserved, not replaced by an apology.
       expect(result[:content]).to eq("the beginning of a long answer")
+
+      run = conversation.runs.sole
+      expect(run.status).to eq("failed")
+      expect(run.output).to eq("the beginning of a long answer")
+      expect(run.tokens_used).to eq(4000)
 
       msg = conversation.messages.where(role: "assistant").last
       expect(msg.content).to eq("the beginning of a long answer")
       expect(msg.metadata["truncated"]).to be(true)
+      expect(msg.metadata["error_code"]).to eq("response_truncated")
       expect(msg.metadata["empty_response"]).to be_nil
+    end
+
+    it "fails an empty response and emits an honest terminal status" do
+      allow(client).to receive(:stream_chat).and_return(content: "", tool_calls: [], tokens: 0, finish_reason: "stop")
+      chunks = []
+
+      result = runner.run("say something", stream: true) { |chunk| chunks << chunk }
+
+      expect(result[:error_code]).to eq("empty_response")
+      expect(result[:content]).to eq("")
+      expect(conversation.runs.sole.status).to eq("failed")
+      expect(chunks).to include(hash_including(type: "status", phase: "failed", error_code: "empty_response"))
+      msg = conversation.messages.where(role: "assistant").last
+      expect(msg.metadata).to include("empty_response" => true, "error_code" => "empty_response")
+      expect(msg.metadata["error"]).to be_present
     end
 
     it "still reports a finish_reason=stop answer as complete" do
@@ -1517,7 +1540,7 @@ RSpec.describe AgentRunner, type: :service do
       result = runner.run("hi", stream: true) { |_chunk| }
 
       expect(result[:content]).to eq("")
-      expect(verification).to include("error_code" => "empty_response")
+      expect(verification).to include("error_code" => "reasoning_only")
       expect(verification).not_to have_key("succeeded_at")
     end
 

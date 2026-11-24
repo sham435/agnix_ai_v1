@@ -1,0 +1,17 @@
+<div class="relative" data-controller="model-selector" <% if conversation %>data-model-selector-conversation-id-value="<%= conversation.id %>"<% end %>>
+  <button type="button" class="text-accent-text hover:underline py-2" data-action="model-selector#toggle" aria-label="Select chat model">
+    Model · <span data-model-selector-target="label">Loading…</span>
+  </button>
+  <div hidden data-model-selector-target="panel" class="absolute left-0 top-full z-50 w-80 max-w-[85vw] rounded-xl border border-border bg-surface-raised p-3 shadow-xl">
+    <input type="search" placeholder="Search models" aria-label="Search models" class="input-field w-full" data-model-selector-target="search" data-action="input->model-selector#search">
+    <div class="max-h-72 overflow-y-auto" data-model-selector-target="list"></div>
+    <p role="status" class="text-xs text-fg-subtle my-2" data-model-selector-target="status"></p>
+    <div class="flex justify-between gap-2">
+      <button type="button" class="text-xs text-accent-text py-2" data-action="model-selector#refresh">Refresh catalogue</button>
+      <% if conversation %>
+        <button type="button" class="text-xs text-accent-text py-2" data-action="model-selector#reset">Use organization default</button>
+      <% end %>
+      <%= link_to "Manage providers", settings_integrations_path, class: "text-xs text-accent-text py-2" %>
+    </div>
+  </div>
+</div>

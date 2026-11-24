@@ -86,7 +86,7 @@ export default class extends Controller {
       this._sweepTimer = null
     }
     if (this.subscription) {
-      this.subscription.unsubscribe()
+      Promise.resolve(this.subscription).then((subscription) => subscription?.unsubscribe()).catch(() => {})
       this.subscription = null
     }
     if (this.observer) {

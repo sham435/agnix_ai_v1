@@ -61,7 +61,7 @@ module Llm
         discovery: "openai", api_families: %w[chat_completions], read_timeout: 120
       },
       "bonsai" => {
-        name: "Bonsai", base_url: nil, env_key: nil, discovery: "bonsai",
+        name: "Bonsai", base_url: nil, env_key: "BONSAI_API_KEY", default_api_key: "local", discovery: "bonsai",
         api_families: %w[chat_completions], read_timeout: 600, local: true
       },
       "ollama" => {
@@ -103,6 +103,10 @@ module Llm
     def environment_key(provider)
       key = env_key(provider)
       key && ENV[key].to_s.strip.presence
+    end
+
+    def default_api_key(provider)
+      definition(provider)[:default_api_key]
     end
 
     def credentials_key(provider)

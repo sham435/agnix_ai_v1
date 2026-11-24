@@ -88,12 +88,11 @@ class Run < ApplicationRecord
     record_state!("exited", note: exit_note)
   end
 
-  def fail!(error)
-    update!(
-      status: :failed,
-      error_message: error.to_s,
-      finished_at: Time.current
-    )
+  def fail!(error, output: nil, tokens_used: nil)
+    attributes = { status: :failed, error_message: error.to_s, finished_at: Time.current }
+    attributes[:output] = output unless output.nil?
+    attributes[:tokens_used] = tokens_used unless tokens_used.nil?
+    update!(attributes)
     record_state!("exited", note: "failed: #{error}")
   end
 

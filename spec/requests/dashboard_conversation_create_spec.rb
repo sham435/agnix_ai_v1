@@ -26,6 +26,18 @@ RSpec.describe "Dashboard new-chat streaming placeholder", type: :request do
       expect(response).to have_http_status(:ok)
       expect(response.body).to include("Shams")
     end
+
+    it "offers user-scoped model selection and an inline submission error target" do
+      api_login(user)
+
+      get conversations_path
+
+      page = Nokogiri::HTML(response.body)
+      selector = page.at_css('[data-controller="model-selector"]')
+      expect(selector).to be_present
+      expect(selector["data-model-selector-conversation-id-value"]).to be_nil
+      expect(page.at_css('#chat-submission-error[data-chat-input-target="error"][hidden]')).to be_present
+    end
   end
 
   it "selects only an active agent in the signed-in organization" do
@@ -75,6 +87,29 @@ RSpec.describe "Dashboard new-chat streaming placeholder", type: :request do
   end
 
   describe "POST /conversations (home composer) with content" do
+    it "returns a Turbo Stream error without clearing the draft when the selected model is unavailable" do
+      user.update!(settings: {
+        "preferred_models" => { organization.id.to_s => { "provider_id" => "opencode", "model_id" => "retired-model" } }
+      })
+      catalogue = Llm::ModelCatalogue.new(organization)
+      allow(catalogue).to receive(:call).and_return(models: [])
+      allow(Llm::ModelCatalogue).to receive(:new).with(organization).and_return(catalogue)
+      api_login(user)
+
+      post conversations_path,
+           params: { content: "Keep this exact draft", agent_id: agent.id },
+           headers: api_headers.merge("Accept" => "text/vnd.turbo-stream.html")
+
+      expect(response).to have_http_status(:unprocessable_entity)
+      expect(response.media_type).to eq("text/vnd.turbo-stream.html")
+      expect(response.body).to include('target="chat-submission-error"')
+      expect(response.body).to include("Selected model is unavailable")
+      expect(response.body).to include('data-chat-input-target="error"')
+      expect(Conversation.count).to eq(0)
+      expect(AgentStreamJob).not_to have_received(:perform_later)
+      expect(user.reload.settings.dig("preferred_models", organization.id.to_s, "model_id")).to eq("retired-model")
+    end
+
     it "provisions an assistant streaming placeholder carrying a request_id" do
       api_login(user)
 

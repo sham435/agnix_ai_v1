@@ -98,24 +98,46 @@ RSpec.describe Llm::ProviderConnection do
   end
 
   describe ".resolve" do
-    let(:organization) { create(:organization) }
+    let(:organization) do
+      create(:organization, owner: create(:user, email: "provider-owner@example.test"), slug: "provider-resolution-org")
+    end
 
     before do
       ENV.delete("GROQ_API_KEY")
+      ENV.delete("BONSAI_API_KEY")
+      ENV.delete("SHAMS_DEFAULT_MODEL_PROVIDER")
+      ENV.delete("SHAMS_DEFAULT_MODEL_ID")
       ENV["OPENROUTER_BASE_URL"] = "https://openrouter.ai/api/v1"
       allow(Llm::ProviderRegistry).to receive(:credentials_key).with("groq").and_return(nil)
       allow(Llm::ProviderRegistry).to receive(:credentials_key).with("openai").and_return(nil)
+      allow(Llm::ProviderRegistry).to receive(:credentials_key).with("bonsai").and_return(nil)
     end
 
-    it "falls back to the environment and then Rails credentials" do
+    it "does not expose server credentials without explicit fallback permission" do
       ENV["GROQ_API_KEY"] = "test-only-environment-key"
+      allow(Llm::ProviderRegistry).to receive(:credentials_key).with("groq").and_return("test-only-rails-key")
+
+      resolved = described_class.resolve(organization: organization, provider: "groq", model: "test-model")
+
+      expect(resolved.api_key).to be_nil
+      expect(resolved.headers).not_to have_key("Authorization")
+    end
+
+    it "uses server credentials only for the opted-in system provider and model" do
+      organization.update!(settings: { "allow_system_model_fallback" => true })
+      ENV["SHAMS_DEFAULT_MODEL_PROVIDER"] = "groq"
+      ENV["SHAMS_DEFAULT_MODEL_ID"] = "test-model"
+      ENV["GROQ_API_KEY"] = "test-only-environment-key"
+
       expect(described_class.resolve(organization: organization, provider: "groq", model: "test-model").api_key)
         .to eq("test-only-environment-key")
+      expect(described_class.resolve(organization: organization, provider: "groq", model: "other-model").api_key).to be_nil
 
       ENV.delete("GROQ_API_KEY")
       allow(Llm::ProviderRegistry).to receive(:credentials_key).with("groq").and_return("test-only-rails-key")
       expect(described_class.resolve(organization: organization, provider: "groq", model: "test-model").api_key)
         .to eq("test-only-rails-key")
+      expect(described_class.resolve(organization: organization, provider: "cerebras", model: "test-model").api_key).to be_nil
     end
 
     it "prefers an active organization key over fallback credentials" do
@@ -143,6 +165,34 @@ RSpec.describe Llm::ProviderConnection do
       expect(explicit.api_key).to eq("test-only-explicit-key")
       expect(explicit.integration).to be_nil
       expect(row.reload.is_active?).to be(false)
+    end
+
+    it "uses Bonsai's synthetic local key without a stored credential" do
+      resolved = described_class.resolve(organization: organization, provider: "bonsai", model: "bonsai-2-27b")
+
+      expect(resolved.api_key).to eq("local")
+      expect(resolved.base_url).to eq("http://127.0.0.1:8080/v1")
+    end
+
+    it "lets an environment or organization key override Bonsai's synthetic default" do
+      ENV["BONSAI_API_KEY"] = "test-only-environment-key"
+      expect(described_class.resolve(organization: organization, provider: "bonsai", model: "bonsai-27b").api_key)
+        .to eq("test-only-environment-key")
+
+      row = create(:tool_integration, organization: organization, provider: "bonsai",
+                                     credentials: { "api_key" => "test-only-organization-key" })
+      resolved = described_class.resolve(organization: organization, provider: "bonsai", model: "bonsai-27b")
+      expect(resolved.api_key).to eq("test-only-organization-key")
+      expect(resolved.integration).to eq(row)
+    end
+
+    it "does not let Bonsai's synthetic key bypass a disabled organization row" do
+      create(:tool_integration, organization: organization, provider: "bonsai", is_active: false)
+
+      resolved = described_class.resolve(organization: organization, provider: "bonsai", model: "bonsai-27b")
+
+      expect(resolved.api_key).to be_nil
+      expect(resolved.integration).to be_nil
     end
 
     it "reroutes a persisted legacy OpenAI key to OpenRouter without rewriting the row" do

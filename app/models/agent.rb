@@ -114,17 +114,12 @@ class Agent < ApplicationRecord
       temperature: config.fetch("temperature", 0.7),
       max_tokens: config.fetch("max_tokens", 4096),
       top_p: config.fetch("top_p", nil),
-      api_key: api_key,
       model_config: nil
     )
   end
 
   def api_key
-    credential = organization.tool_integrations.find_by(provider: provider, is_active: true)
-    credential&.decrypted_credentials&.fetch("api_key", nil) ||
-      Rails.application.credentials.dig(provider.to_sym, :api_key) ||
-      ENV.fetch("#{provider.upcase}_API_KEY", default_api_key) ||
-      (provider == "openai" ? ENV.fetch("OPENROUTER_API_KEY", "") : "")
+    Llm::ProviderConnection.resolve(organization: organization, provider: provider, model: model).api_key
   end
 
   def duplicate(user)
@@ -133,13 +128,5 @@ class Agent < ApplicationRecord
       copy.slug = nil
       copy.organization = user.active_organization
     end
-  end
-
-  private
-
-  # The local Bonsai llama.cpp server needs no real key, but expects a
-  # Bearer header; "local" also matches a server started with --api-key local.
-  def default_api_key
-    provider == "bonsai" ? "local" : ""
   end
 end

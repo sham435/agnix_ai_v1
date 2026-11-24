@@ -230,7 +230,8 @@ RSpec.describe Llm::Client do
     end
 
     it "accepts the rerouted connection resolved from a persisted legacy OpenAI row" do
-      organization = create(:organization)
+      organization = create(:organization,
+        owner: create(:user, email: "client-legacy-openrouter-owner@example.test"), slug: "client-legacy-openrouter-org")
       create(:tool_integration, organization: organization, provider: "openai",
                                 credentials: { "api_key" => "sk-or-v1-persisted-legacy" })
       connection = Llm::ProviderConnection.resolve(
@@ -250,7 +251,8 @@ RSpec.describe Llm::Client do
   end
 
   it "keeps a disabled organization connection authoritative over environment credentials" do
-    organization = create(:organization)
+    organization = create(:organization,
+      owner: create(:user, email: "client-disabled-connection-owner@example.test"), slug: "client-disabled-connection-org")
     create(:tool_integration, organization: organization, provider: "anthropic", is_active: false,
                               credentials: { "api_key" => "test-only-disabled-key" })
     ENV["ANTHROPIC_API_KEY"] = "test-only-environment-key"

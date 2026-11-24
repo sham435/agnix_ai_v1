@@ -5,15 +5,9 @@
 
 # Regenerate wiring regression.
 #
-# The Regenerate affordance is a link. Under Turbo, `link_to ... method: :post`
-# only emits the legacy `data-method` attribute, which Turbo Drive ignores — the
-# click is dispatched as a GET. ConversationsController#regenerate deliberately
-# treats a bare GET as a no-op guard (it must never destroy history or enqueue a
-# run on a plain navigation/prefetch). So unless the link carries
-# `data-turbo-method="post"`, clicking Regenerate silently does nothing and the
-# thread appears stuck on the previous (still-streaming) "Shams AI is thinking…"
-# bubble. These specs lock in both halves: the markup that makes the control a
-# real POST, and the controller behaviour for GET vs POST.
+# Regeneration mutates history and enqueues work, so its route accepts POST only.
+# Turbo links must carry `data-turbo-method="post"`; GET and HEAD must never reach
+# the action through navigation, prefetch, or Rails' HEAD-to-GET fallback.
 #
 # The behaviour half also pins the two live-app regressions: the old reply must
 # survive a re-run (it used to be destroyed before enqueueing, so a failing run
@@ -23,8 +17,8 @@
 require "rails_helper"
 
 RSpec.describe "Conversation regenerate", type: :request do
-  let(:user) { create(:user) }
-  let(:agent) { create(:agent) }
+  let(:user) { create(:user, email: "regenerate-owner@example.test") }
+  let(:agent) { create(:agent, organization: create(:organization, owner: user, slug: "regenerate-org"), slug: "regenerate-agent") }
   let(:conversation) { create(:conversation, user: user, agent: agent) }
   let(:enqueued) { [] }
 
@@ -58,11 +52,13 @@ RSpec.describe "Conversation regenerate", type: :request do
     expect(regenerate_links).to all(include('data-turbo-method="post"'))
   end
 
-  it "short-circuits a bare GET without touching history or the queue" do
-    expect { get regenerate_conversation_path(conversation) }
-      .not_to change { conversation.messages.count }
+  it "does not expose regeneration to GET or HEAD requests" do
+    get regenerate_conversation_path(conversation), headers: { "Accept" => "application/json" }
+    expect(response).to have_http_status(:not_found)
+    head regenerate_conversation_path(conversation), headers: { "Accept" => "application/json" }
+    expect(response).to have_http_status(:not_found)
 
-    expect(response).to redirect_to(conversation_path(conversation))
+    expect(conversation.messages.where(role: "assistant").count).to eq(1)
     expect(AgentStreamJob).not_to have_received(:perform_later)
   end
 

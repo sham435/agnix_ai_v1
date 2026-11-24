@@ -535,11 +535,19 @@ class AgentRunner
           # so the view can render a distinct "no response" state and the
           # context filter can drop it from history.
           raw = response[:content].to_s
+          reasoning = response[:reasoning].to_s
           content, research_meta = finalize_research_answer(raw.strip)
           final_meta = (@streaming_message&.metadata || {}).dup
           final_meta.delete("streaming")
           final_meta["deep_research"] = research_meta unless research_meta.empty?
-          final_meta["empty_response"] = true if content.empty?
+          if content.empty?
+            # Keep empty_response true so the blank-content validation passes
+            # and the UI's "no response" state still applies; reasoning_only
+            # additionally distinguishes a reasoning-only reply from a truly
+            # empty one.
+            final_meta["empty_response"] = true
+            final_meta["reasoning_only"] = true if reasoning.present?
+          end
 
           # finish_reason "length" means the model hit max_tokens mid-sentence:
           # the reply is cut off, NOT complete. Keep the partial text (do not
@@ -561,17 +569,35 @@ class AgentRunner
             )
           end
 
-          create_memory(user_message, content) if content.present?
-
-          if truncated
-            run_record.finish!(output: content, tokens_used: total_tokens,
-              exit_note: "reply truncated at the max_tokens cap (finish_reason=length)")
+          if content.empty? || truncated
+            error_code = if truncated
+              "response_truncated"
+            elsif reasoning.present?
+              "reasoning_only"
+            else
+              "empty_response"
+            end
+            error_message = if truncated
+              "The model's response was cut off at its token limit. Try again or increase the agent's token limit."
+            elsif reasoning.present?
+              "The model returned reasoning but no user-visible answer. Try again or choose another model."
+            else
+              "The model returned no response. Try again or choose another model."
+            end
+            final_meta["error"] = error_message
+            final_meta["error_code"] = error_code
+            assistant_msg.update!(metadata: final_meta)
+            run_record.fail!(error_message, output: content, tokens_used: total_tokens)
+            yield({ type: "status", phase: "failed", error: error_message, error_code: error_code }) if block_given?
             return {
-              content: content, tool_calls: [], tokens: total_tokens,
-              actions: tool_call_results.count { |entry| action_succeeded?(entry[:result]) }, incomplete: true, truncated: true,
+              content: content, reasoning: reasoning, tool_calls: [], tokens: total_tokens,
+              actions: tool_call_results.count { |entry| action_succeeded?(entry[:result]) },
+              incomplete: true, truncated: truncated, error: error_message, error_code: error_code,
               messages: conversation.messages.to_a
             }
           end
+
+          create_memory(user_message, content)
 
           run_record.finish!(output: content, tokens_used: total_tokens)
 
@@ -852,9 +878,11 @@ class AgentRunner
 
   def record_inference_result(result)
     error_code = if result[:content].to_s.strip.present? || Array(result[:tool_calls]).any?
-                   nil
+      nil
+    elsif result[:reasoning].to_s.present?
+      "reasoning_only"
     else
-                   "empty_response"
+      "empty_response"
     end
     record_inference_outcome(error_code: error_code)
   end
@@ -977,7 +1005,23 @@ class AgentRunner
 
   def tool_schemas_for_selection
     return [] if build_tool_schemas.empty?
-    return build_tool_schemas unless explicit_model_selection
+    selection = explicit_model_selection
+    return build_tool_schemas unless selection
+    # The agent's own configured model may still be unverified for NATIVE tool
+    # calling (e.g. Bonsai, whose local catalogue deliberately reports
+    # supports_tools: nil). In that case we must NOT raise (text inference
+    # still proceeds) and we must NOT send native tool schemas (honesty:
+    # never claim capabilities we have not verified). build_client_for_agent
+    # already resolves this pairing without verification, so keep the two
+    # consistent. A genuine switch to another model still requires verified
+    # tool support (strict gate below). Tools remain available only after a
+    # real native tool-call inference succeeds and the catalogue records it.
+    if selection["provider_id"] == agent.provider && selection["model_id"] == agent.model
+      model = Llm::ModelCatalogue.new(agent.organization)
+        .resolve!({ "provider_id" => effective_provider, "model_id" => effective_model }, tools: false)
+      return build_tool_schemas if model[:supports_tools] == true
+      return []  # unverified native tool support: text inference proceeds, no native schemas sent
+    end
 
     model = Llm::ModelCatalogue.new(agent.organization)
       .resolve!({ "provider_id" => effective_provider, "model_id" => effective_model }, tools: true)

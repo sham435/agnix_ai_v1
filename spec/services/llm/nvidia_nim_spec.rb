@@ -17,7 +17,9 @@ RSpec.describe Llm::Client, "NVIDIA NIM integration" do
     WebMock.disable_net_connect!(allow_localhost: true)
   end
 
-  let(:organization) { create(:organization) }
+  let(:organization) do
+    create(:organization, owner: create(:user, email: "nvidia-nim-owner@example.test"), slug: "nvidia-nim-org")
+  end
   let(:api_key) { "test-only-nvidia-organization-key" }
   let(:environment_key) { "test-only-nvidia-environment-key" }
   let(:rails_key) { "test-only-nvidia-rails-key" }
@@ -55,7 +57,10 @@ RSpec.describe Llm::Client, "NVIDIA NIM integration" do
     ])
   end
 
-  it "resolves credentials in organization, environment, then Rails credentials order" do
+  it "resolves organization credentials before an opted-in environment and Rails fallback" do
+    organization.update!(settings: { "allow_system_model_fallback" => true })
+    ENV["SHAMS_DEFAULT_MODEL_PROVIDER"] = "nvidia_nim"
+    ENV["SHAMS_DEFAULT_MODEL_ID"] = model_id
     ENV["NVIDIA_NIM_API_KEY"] = environment_key
 
     expect(connection.api_key).to eq(api_key)

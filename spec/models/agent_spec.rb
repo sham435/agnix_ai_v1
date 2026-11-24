@@ -67,6 +67,28 @@ RSpec.describe Agent, type: :model do
       expect(agent.api_key).to eq("sk-or-v1-org-stored-key")
       expect(agent.llm_client.send(:adapter).api_key).to eq("sk-or-v1-org-stored-key")
     end
+
+    it "does not expose a shared server key to an unopted organization" do
+      org = create(:organization)
+      agent = create(:agent, organization: org, provider: "openai", model: "test-model")
+      allow(Llm::ProviderRegistry).to receive(:environment_key).with("openai").and_return("test-only-server-key")
+      allow(Llm::ProviderRegistry).to receive(:credentials_key).with("openai").and_return(nil)
+
+      expect(agent.api_key).to be_nil
+      expect(agent.llm_client.send(:adapter).api_key).to be_nil
+    end
+
+    it "uses a shared server key only for the opted-in system tuple" do
+      org = create(:organization, settings: { "allow_system_model_fallback" => true })
+      agent = create(:agent, organization: org, provider: "openai", model: "test-model")
+      allow(ENV).to receive(:[]).and_call_original
+      allow(ENV).to receive(:[]).with("SHAMS_DEFAULT_MODEL_PROVIDER").and_return("openai")
+      allow(ENV).to receive(:[]).with("SHAMS_DEFAULT_MODEL_ID").and_return("test-model")
+      allow(Llm::ProviderRegistry).to receive(:environment_key).with("openai").and_return("test-only-server-key")
+      allow(Llm::ProviderRegistry).to receive(:credentials_key).with("openai").and_return(nil)
+
+      expect(agent.llm_client.send(:adapter).api_key).to eq("test-only-server-key")
+    end
   end
 
   describe "#enabled_tools" do
@@ -75,7 +97,7 @@ RSpec.describe Agent, type: :model do
         { name: "calculator", enabled: true },
         { name: "web_search", enabled: false }
       ])
-      expect(agent.enabled_tools.map { |t| t[:name] || t["name"] }).to eq(["calculator"])
+      expect(agent.enabled_tools.map { |t| t[:name] || t["name"] }).to eq([ "calculator" ])
     end
   end
 

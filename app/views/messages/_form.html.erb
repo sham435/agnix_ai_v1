@@ -26,7 +26,7 @@
 
       <button type="submit" data-chat-input-target="send" class="absolute right-0 bottom-2.5 size-8 grid place-items-center rounded-lg bg-gradient-to-b from-emerald-400 to-emerald-600 text-black hover:brightness-110 active:scale-95 transition disabled:opacity-40 disabled:pointer-events-none">
         <svg class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round">
-          <path d="M5 12l14-7-7 14-2-5-2z"/>
+          <path d="M5 12l14-7-7 14-2-5-5-2z"/>
         </svg>
       </button>
     </div>
@@ -223,4 +223,6 @@
       </ul>
     </details>
   </div>
+
+  <div id="chat-submission-error" data-chat-input-target="error" role="alert" hidden class="mt-2 rounded-lg border border-red-500/20 bg-red-500/5 px-3.5 py-2 text-[13px] text-red-600 dark:text-red-400"></div>
 <% end %>
