@@ -2,8 +2,8 @@
   <button type="button" class="text-accent-text hover:underline py-2" data-action="model-selector#toggle" aria-label="Select chat model" data-model-selector-target="button">
     Model · <span data-model-selector-target="label">Loading…</span>
   </button>
-  <div hidden data-model-selector-target="backdrop" class="fixed inset-0 z-40 bg-black/30" data-action="click->model-selector#close"></div>
-  <div hidden data-model-selector-target="panel" class="fixed right-0 top-0 z-50 h-full w-80 max-w-[90vw] overflow-y-auto border-l border-border bg-surface-raised p-4 shadow-2xl">
+  <div hidden data-model-selector-target="backdrop" class="fixed inset-0 z-40 bg-black/40 backdrop-blur-sm" data-action="click->model-selector#close"></div>
+  <div hidden data-model-selector-target="panel" class="fixed left-1/2 top-1/2 z-50 w-[90vw] max-w-md -translate-x-1/2 -translate-y-1/2 max-h-[80vh] overflow-y-auto rounded-2xl border border-border bg-surface-raised p-4 shadow-2xl">
     <div class="mb-3 flex items-center justify-between">
       <h2 class="text-[15px] font-semibold text-fg">Select model</h2>
       <button type="button" class="grid size-8 place-items-center rounded-lg hover:bg-hover text-fg-subtle" data-action="model-selector#close" aria-label="Close">✕</button>
