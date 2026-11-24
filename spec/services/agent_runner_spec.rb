@@ -351,6 +351,50 @@ RSpec.describe AgentRunner, type: :service do
 
   # ── §2b/§2c: a truncated reply is honest, not a silent success ───────
 
+  describe "native tool capability gate (Bonsai honesty)" do
+    subject(:runner) { described_class.new(agent: agent, conversation: conversation, user: user) }
+
+    before do
+      allow(agent).to receive(:enabled_tools).and_return(%w[test_tool])
+      allow(agent).to receive(:provider).and_return("bonsai")
+      allow(agent).to receive(:model).and_return("bonsai-2-27b")
+      allow(Workspaces::Provider).to receive(:available?).and_return({ manager: false, docker: false })
+    end
+
+    it "does not raise and sends no native tool schemas for an unverified default model" do
+      allow(runner).to receive(:explicit_model_selection).and_return(
+        "provider_id" => "bonsai", "model_id" => "bonsai-2-27b"
+      )
+      allow_any_instance_of(Llm::ModelCatalogue).to receive(:resolve!)
+        .and_return(supports_tools: nil)
+
+      expect { runner.send(:tool_schemas_for_selection) }.not_to raise_error
+      expect(runner.send(:tool_schemas_for_selection)).to eq([])
+    end
+
+    it "sends native tool schemas when the default model is verified tool-capable" do
+      allow(runner).to receive(:explicit_model_selection).and_return(
+        "provider_id" => "bonsai", "model_id" => "bonsai-2-27b"
+      )
+      allow_any_instance_of(Llm::ModelCatalogue).to receive(:resolve!)
+        .and_return(supports_tools: true)
+
+      expect(runner.send(:tool_schemas_for_selection)).not_to be_empty
+    end
+
+    it "keeps strict capability verification when switching to another model" do
+      allow(runner).to receive(:explicit_model_selection).and_return(
+        "provider_id" => "openai", "model_id" => "gpt-4"
+      )
+      allow_any_instance_of(Llm::ModelCatalogue).to receive(:resolve!)
+        .and_raise(Llm::ModelCatalogue::Error.new("capability_unverified",
+          "Tool support is not verified for this model."))
+
+      expect { runner.send(:tool_schemas_for_selection) }
+        .to raise_error(Llm::ModelCatalogue::Error) { |e| expect(e.code).to eq("capability_unverified") }
+    end
+  end
+
   describe "truncated reply detection" do
     subject(:runner) { described_class.new(agent: agent, conversation: conversation, user: user) }
 
