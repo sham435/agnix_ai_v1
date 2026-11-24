@@ -1,10 +1,11 @@
 import { Controller } from "@hotwired/stimulus"
 
 export default class extends Controller {
-  static targets = ["label", "list", "search", "status", "panel", "backdrop", "button"]
+  static targets = ["label", "list", "search", "status", "panel", "button"]
   static values = { conversationId: String, default: "" }
 
   connect() {
+    this._trigger = this.hasButtonTarget ? this.buttonTarget : null
     this._onDocClick = (e) => {
       if (this.panelTarget.hidden) return
       if (!this.element.contains(e.target)) this.close()
@@ -25,12 +26,11 @@ export default class extends Controller {
   toggle() {
     const open = this.panelTarget.hidden
     this.panelTarget.hidden = !open
-    if (this.hasBackdropTarget) this.backdropTarget.hidden = !open
     if (open) this.searchTarget.focus()
   }
   close() {
     this.panelTarget.hidden = true
-    if (this.hasBackdropTarget) this.backdropTarget.hidden = true
+    if (this._trigger?.isConnected) this._trigger.focus()
   }
 
   async load(refresh = false) {
