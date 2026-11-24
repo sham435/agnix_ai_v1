@@ -83,7 +83,7 @@ module Llm
       return false if name == "stream" && supports?("supports_streaming") == false
       return false if supports?("supports_tools") == false && %w[tools tool_choice parallel_tool_calls].include?(name)
 
-      %w[model messages input stream].include?(name) || supported_parameters.include?(name)
+      %w[model messages input stream chat_template_kwargs].include?(name) || supported_parameters.include?(name)
     end
 
     def secret_values
