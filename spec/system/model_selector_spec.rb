@@ -21,7 +21,7 @@ RSpec.describe "Dynamic chat model selector", :js, type: :system do
   # rubocop:disable RSpec/MultipleExpectations
   it "groups discovered models by provider" do
     # Connection alone must never read as inference readiness (M14 Issue B).
-    expect(page).to have_text("Anthropic · catalogue discovered - inference unverified")
+    expect(page).to have_text("Anthropic · catalogue discovered - model metadata found")
     expect(page).not_to have_text("inference verified by a real request")
   end
   # rubocop:enable RSpec/MultipleExpectations

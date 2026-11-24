@@ -4,13 +4,29 @@ export default class extends Controller {
   static targets = ["label", "list", "search", "status", "panel"]
   static values = { conversationId: String, default: "" }
 
-  connect() { this.load() }
-  disconnect() { this.abort?.abort() }
+  connect() {
+    this._onDocClick = (e) => {
+      if (this.panelTarget.hidden) return
+      if (!this.element.contains(e.target)) this.close()
+    }
+    this._onKeydown = (e) => {
+      if (e.key === "Escape" && !this.panelTarget.hidden) { e.preventDefault(); this.close() }
+    }
+    document.addEventListener("click", this._onDocClick)
+    document.addEventListener("keydown", this._onKeydown)
+    this.load()
+  }
+  disconnect() {
+    this.abort?.abort()
+    document.removeEventListener("click", this._onDocClick)
+    document.removeEventListener("keydown", this._onKeydown)
+  }
 
   toggle() {
     this.panelTarget.hidden = !this.panelTarget.hidden
     if (!this.panelTarget.hidden) this.searchTarget.focus()
   }
+  close() { this.panelTarget.hidden = true }
 
   async load(refresh = false) {
     this.abort?.abort()
@@ -38,7 +54,7 @@ export default class extends Controller {
   static READINESS = {
     billing_blocked: "billing blocked - provider credits are insufficient",
     inference_ready: "inference verified by a real request",
-    catalogue_available: "catalogue discovered - inference unverified",
+    catalogue_available: "catalogue discovered - model metadata found",
     connected: "credentials configured - no catalogue yet",
     access_restricted: "access restricted by provider policy",
     configuration_invalid: "connection configuration needs attention",
@@ -59,7 +75,9 @@ export default class extends Controller {
       failed: model.last_inference_error_code || "inference failed",
       unverified: "inference unverified"
     }[model.inference_status] || "inference unverified"
-    return `${model.api_family || "chat_completions"} · ${inference}`
+    const tools = model.supports_tools === true ? "tool support verified"
+      : (model.supports_tools === false ? "tool support unavailable" : "tool support unverified")
+    return `${model.api_family || "chat_completions"} · ${inference} · ${tools}`
   }
 
   render() {
@@ -72,10 +90,18 @@ export default class extends Controller {
     const query = this.searchTarget.value.trim().toLowerCase()
     for (const provider of data.providers) {
       const models = data.models.filter(model => model.provider_id === provider.provider_id && `${model.display_name} ${model.model_id} ${model.provider_name} ${model.api_family}`.toLowerCase().includes(query))
-      const heading = document.createElement("h3")
-      heading.className = "text-xs font-semibold text-fg-subtle mt-3 mb-1"
-      heading.textContent = `${provider.provider_name} · ${this.providerStatus(provider)}`
-      this.listTarget.append(heading)
+      if (models.length === 0 && query) continue
+      const details = document.createElement("details")
+      const selectedInGroup = models.some(m => m === chosen)
+      // Keep groups expanded by default so models stay clickable; users can
+      // collapse a provider with its summary toggle to reduce visual noise.
+      details.open = true
+      const summary = document.createElement("summary")
+      summary.className = "cursor-pointer text-xs font-semibold text-fg-subtle mt-2 mb-1 select-none"
+      summary.textContent = `${provider.provider_name} · ${this.providerStatus(provider)}`
+      details.append(summary)
+      const group = document.createElement("div")
+      group.className = "space-y-1"
       for (const model of models) {
         const button = document.createElement("button")
         button.type = "button"
@@ -87,8 +113,10 @@ export default class extends Controller {
         button.textContent = `${active ? 'Selected · ' : ''}${model.display_name} · ${model.local ? 'Local' : 'Cloud'} · ${this.modelStatus(model, provider)}${capabilities.length ? ' · ' + capabilities.join(', ') : ''}`
         button.setAttribute("aria-pressed", String(active))
         button.addEventListener("click", () => this.select({ provider_id: model.provider_id, model_id: model.model_id }))
-        this.listTarget.append(button)
+        group.append(button)
       }
+      details.append(group)
+      this.listTarget.append(details)
     }
     const errors = data.providers.filter(provider => provider.error_code).map(provider => `${provider.provider_name}: ${provider.error_code}`)
     this.statusTarget.textContent = errors.join(" · ") || (data.models.length ? "Discovery does not verify inference." : "No available models.")

@@ -249,7 +249,7 @@
 
                 <% models = @provider_inventory[:models].select { |m| m[:provider_id] == pid } %>
                 <% if models.any? %>
-                  <ul class="space-y-1.5">
+                  <ul class="space-y-1 max-h-72 overflow-y-auto pr-1">
                     <% models.each do |model| %>
                       <%
                         inference_label = {
@@ -263,7 +263,7 @@
                           else "bg-hover text-fg-subtle"
                           end
                       %>
-                      <li class="rounded-lg bg-panel px-3 py-3 space-y-2">
+                      <li class="rounded-lg bg-panel px-3 py-2 space-y-1.5">
                         <div class="flex flex-wrap items-start justify-between gap-2">
                           <div class="min-w-0">
                             <div class="flex flex-wrap items-center gap-2">
